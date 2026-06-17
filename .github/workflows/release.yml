@@ -1,0 +1,65 @@
+name: release
+
+# Build the single-file executables for Windows, macOS (Intel + Apple Silicon),
+# and Linux whenever you push a version tag like v1.4.0, and attach them to a
+# GitHub Release automatically.
+#
+#   git tag v1.4.0
+#   git push origin v1.4.0
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: {}   # also allow manual runs from the Actions tab
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build executables (all platforms)
+        run: npx @yao-pkg/pkg . --targets node20-win-x64,node20-macos-x64,node20-macos-arm64,node20-linux-x64 --out-path dist
+
+      - name: Name the files clearly
+        run: |
+          cd dist
+          ls -la
+          # pkg names outputs after the package + target; normalize to friendly names.
+          for f in *; do
+            case "$f" in
+              *win*x64*|*win.exe|*-win*) mv -f "$f" "U1-Print-Hub-Windows-x64.exe" 2>/dev/null || true ;;
+              *macos*arm64*) mv -f "$f" "U1-Print-Hub-macOS-AppleSilicon" 2>/dev/null || true ;;
+              *macos*x64*)   mv -f "$f" "U1-Print-Hub-macOS-Intel" 2>/dev/null || true ;;
+              *linux*x64*|*-linux*) mv -f "$f" "U1-Print-Hub-Linux-x64" 2>/dev/null || true ;;
+            esac
+          done
+          ls -la
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          body: |
+            ## U1 Print Hub
+
+            Download the build for your OS, put it in its own folder, and run it —
+            no Node.js needed. A browser opens to the dashboard; use **Settings**
+            to add your printers.
+
+            **Windows:** Windows may warn "unknown publisher" (the app isn't code-signed).
+            Click **More info → Run anyway**.
+            **macOS:** right-click the file → **Open** the first time to get past Gatekeeper.
+
+            LAN-only and no login — keep it on your local network; do not expose it to the internet.

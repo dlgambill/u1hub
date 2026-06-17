@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<!-- U1 Print Hub — index v1.4 -->
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>U1 Print Hub</title>
+<style>
+  :root{
+    --chassis:#1A1C22; --panel:#23262E; --panel-2:#2B2F38;
+    --line:#353A45; --line-soft:#2E323B;
+    --ink:#ECEEF2; --ink-dim:#9AA0AC; --ink-faint:#6A7180;
+    --signal:#FFB200; --ok:#46C18C; --idle:#545B69; --bad:#E06A5C; --busy:#5B9BF0;
+    --mono: ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+    --sans: ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;height:100%;}
+  body{background:var(--chassis); color:var(--ink); font-family:var(--sans); -webkit-font-smoothing:antialiased; min-height:100vh;
+    background-image:radial-gradient(60% 70% at 70% -10%, rgba(255,178,0,.05), transparent 60%);}
+  .shell{display:grid; grid-template-columns:312px 1fr; min-height:100vh;}
+  .side{border-right:1px solid var(--line); display:flex; flex-direction:column; min-height:100vh;}
+  .side .head{display:flex; align-items:center; justify-content:space-between; padding:18px 18px 14px; border-bottom:1px solid var(--line);}
+  .mark{display:flex; align-items:baseline; gap:10px;}
+  .mark .glyph{font-family:var(--mono); font-size:12px; letter-spacing:.3em; color:var(--signal); font-weight:600;}
+  .mark h1{font-size:13px; letter-spacing:.34em; text-transform:uppercase; font-weight:700; margin:0;}
+  .refresh{font:inherit; font-size:11px; letter-spacing:.06em; color:var(--ink-dim); background:transparent; border:1px solid var(--line); border-radius:6px; padding:6px 10px; cursor:pointer;}
+  .refresh:hover{color:var(--ink); border-color:var(--ink-faint);}
+  .folderline{font-family:var(--mono); font-size:10.5px; color:var(--ink-faint); padding:9px 18px; border-bottom:1px solid var(--line-soft); letter-spacing:.02em; word-break:break-all;}
+  .filter{padding:11px 14px; border-bottom:1px solid var(--line-soft);}
+  .filter input{width:100%; font:inherit; font-size:13px; color:var(--ink); background:var(--panel-2); border:1px solid var(--line); border-radius:7px; padding:8px 11px;}
+  .filter input::placeholder{color:var(--ink-faint);}
+  .list{flex:1; overflow:auto; padding:8px;}
+  .job{display:block; width:100%; text-align:left; cursor:pointer; background:transparent; border:1px solid transparent; border-radius:8px; padding:11px 12px; margin-bottom:4px; color:var(--ink); font:inherit;}
+  .job:hover{background:var(--panel); border-color:var(--line-soft);}
+  .job.active{background:var(--panel); border-color:var(--signal);}
+  .job .jn{font-size:13.5px; font-weight:600; word-break:break-all; line-height:1.3;}
+  .job .jm{font-family:var(--mono); font-size:10.5px; color:var(--ink-faint); margin-top:4px; letter-spacing:.02em;}
+  .empty-list{padding:26px 18px; color:var(--ink-dim); font-size:13px; line-height:1.55;}
+  .empty-list code{font-family:var(--mono); font-size:12px; color:var(--ink);}
+  .main{padding:24px 26px 70px; max-width:980px;}
+
+  .sechead{display:flex; align-items:center; gap:12px; margin:22px 0 2px;}
+  .sechead:first-child{margin-top:0;}
+  .sechead h2{font-size:12px; letter-spacing:.22em; text-transform:uppercase; color:var(--signal); margin:0; font-weight:700;}
+  .sechead .count{font-family:var(--mono); font-size:11px; color:var(--ink-faint); letter-spacing:.04em;}
+  .subnote{font-size:12.5px; color:var(--ink-dim); margin:8px 0 0; line-height:1.5;}
+  .subnote b{color:var(--ink);}
+
+  /* selected job summary */
+  .jobcard{background:var(--panel); border:1px solid var(--line); border-radius:11px; padding:15px 17px; margin-top:12px; display:none;}
+  .jobcard.show{display:block;}
+  .jobcard .jt{font-size:15px; font-weight:700; word-break:break-all;}
+  .jobcard .jmeta{font-family:var(--mono); font-size:11.5px; color:var(--ink-dim); margin-top:3px;}
+  .needstrip{display:flex; gap:14px; flex-wrap:wrap; margin-top:13px;}
+  .need{display:flex; align-items:center; gap:8px; font-size:12.5px;}
+  .need .sw{width:22px; height:22px; border-radius:5px; border:1px solid rgba(255,255,255,.18);}
+  .need .nx{font-family:var(--mono); font-size:11px; color:var(--ink-faint);}
+  .nohint{font-size:12px; color:var(--ink-faint); margin-top:11px; line-height:1.5;}
+
+  /* fleet */
+  .fleet{display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:14px; margin-top:14px;}
+  .pcard{background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:15px; display:flex; flex-direction:column; gap:13px;}
+  .pcard.offline{opacity:.55;}
+  .pcard .top{display:flex; align-items:center; justify-content:space-between; gap:10px;}
+  .pcard .pn{font-size:15px; font-weight:700;}
+  .pill{font-family:var(--mono); font-size:10px; letter-spacing:.12em; text-transform:uppercase; padding:4px 9px; border-radius:20px; display:flex; align-items:center; gap:6px; white-space:nowrap;}
+  .pill .dot{width:7px; height:7px; border-radius:50%;}
+  .pill.idle{color:var(--ok); background:rgba(70,193,140,.12);} .pill.idle .dot{background:var(--ok);}
+  .pill.busy{color:var(--busy); background:rgba(91,155,240,.12);} .pill.busy .dot{background:var(--busy);}
+  .pill.off{color:var(--ink-faint); background:rgba(120,128,140,.12);} .pill.off .dot{background:var(--ink-faint);}
+  .pill.err{color:var(--bad); background:rgba(224,106,92,.12);} .pill.err .dot{background:var(--bad);}
+  .heads{display:grid; grid-template-columns:repeat(4,1fr); gap:9px;}
+  .h{border:1px solid var(--line-soft); border-radius:8px; overflow:hidden; background:var(--panel-2);}
+  .h.match{border-color:var(--signal); box-shadow:0 0 0 1px var(--signal);}
+  .h .sw{height:40px; border-bottom:1px solid rgba(0,0,0,.3);}
+  .h.empty .sw{background:repeating-linear-gradient(135deg,#262a32,#262a32 6px,#222630 6px,#222630 12px); height:40px;}
+  .h .lab{padding:5px 6px 7px; text-align:center;}
+  .h .ht{font-family:var(--mono); font-size:9px; color:var(--ink-faint); letter-spacing:.08em;}
+  .h .hm{font-size:10px; color:var(--ink-dim); margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .pcard .foot{display:flex; align-items:center; gap:9px;}
+  .pcard .matchline{font-size:11.5px; color:var(--ink-dim); flex:1;}
+  .pcard .matchline .approx{color:var(--ink-faint); font-style:italic;}
+  .bedrow{display:flex; align-items:center; gap:8px; margin:11px 0 2px; font-size:12px;}
+  .bedrow .bedlabel{color:var(--ink-dim); font-weight:700; letter-spacing:.04em; text-transform:uppercase; font-size:11px;}
+  .bedrow .bedtemp{font-family:var(--mono); color:var(--ink);}
+  .bedrow .bedset{width:62px; font:inherit; font-size:12.5px; color:var(--ink); background:var(--panel-2); border:1px solid var(--line); border-radius:6px; padding:5px 7px; margin-left:auto;}
+  .bedrow .bedbtn{padding:6px 10px; font-size:12px;}
+  .jobloading{display:none; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px;}
+  .jobloading.show{display:block;}
+  .jobloading .jlname{font-size:13px; color:var(--ink-dim); margin-bottom:10px;}
+  .jobloading .jlbar{height:5px; background:var(--panel-2); border-radius:3px; overflow:hidden;}
+  .jobloading .jlfill{height:100%; width:35%; background:var(--signal); border-radius:3px; animation:jlslide 1s ease-in-out infinite;}
+  @keyframes jlslide{0%{margin-left:-35%}100%{margin-left:100%}}
+  .pcard .matchline b{color:var(--signal);}
+  .btn{font:inherit; font-size:12.5px; font-weight:700; letter-spacing:.02em; cursor:pointer; border-radius:7px; padding:9px 14px; border:1px solid transparent;}
+  .btn.primary{background:var(--signal); color:#1a1400;} .btn.primary:hover{filter:brightness(1.06);}
+  .btn.ghost{background:transparent; color:var(--ink); border-color:var(--line);} .btn.ghost:hover{border-color:var(--ink-faint);}
+  .btn:disabled{opacity:.4; cursor:default;}
+  .pstatus{font-family:var(--mono); font-size:11px; min-height:14px;}
+  .pstatus.ok{color:var(--ok);} .pstatus.err{color:var(--bad);} .pstatus.work{color:var(--signal);}
+  .progress{height:4px; border-radius:3px; background:var(--panel-2); overflow:hidden;}
+  .progress > i{display:block; height:100%; background:var(--busy);}
+  .cmap{display:flex; flex-direction:column; gap:7px; padding-top:11px; border-top:1px solid var(--line-soft);}
+  .cmaphdr{font-family:var(--mono); font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:var(--ink-faint);}
+  .cmaprow{display:flex; align-items:center; gap:8px;}
+  .cmaprow .fsw{width:18px; height:18px; border-radius:4px; border:1px solid rgba(255,255,255,.18); flex:none;}
+  .cmaprow .flab{font-family:var(--mono); font-size:11px; color:var(--ink-dim); flex:none; width:104px;}
+  .cmaprow .arrow{color:var(--ink-faint); flex:none;}
+  .cmaprow select{flex:1; min-width:0; font-size:12.5px; padding:7px 8px;}
+  .topbar{display:flex; justify-content:flex-end; align-items:center; gap:12px; margin-bottom:6px;}
+  .vbadge{font-family:var(--mono); font-size:10.5px; letter-spacing:.04em; color:var(--ink-faint);}
+  .vbadge.bad{color:var(--bad); font-weight:700;}
+  .gear{font:inherit; font-size:12px; color:var(--ink-dim); background:transparent; border:1px solid var(--line); border-radius:7px; padding:7px 12px; cursor:pointer;}
+  .gear:hover{color:var(--ink); border-color:var(--ink-faint);}
+  .setup{display:none; margin-bottom:18px;}
+  .setup.show{display:block;}
+  .setcard{background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:17px; margin-top:10px;}
+  .fl{display:block; font-size:12px; font-weight:700; letter-spacing:.04em; color:var(--ink-dim); margin-bottom:6px; text-transform:uppercase;}
+  .fl .hint{text-transform:none; font-weight:400; color:var(--ink-faint); letter-spacing:0; margin-left:6px;}
+  .field{width:100%; font:inherit; font-size:14px; color:var(--ink); background:var(--panel-2); border:1px solid var(--line); border-radius:7px; padding:10px 12px;}
+  .prow{display:flex; gap:8px; margin-bottom:7px;}
+  .prow input{flex:1; min-width:0;}
+  .prow .pname{flex:none; width:90px;}
+  .prow .rm{flex:none; background:transparent; border:1px solid var(--line); color:var(--ink-dim); border-radius:7px; padding:0 11px; cursor:pointer; font-size:16px;}
+  .prow .rm:hover{color:var(--bad); border-color:var(--bad);}
+  .discwrap{margin-top:8px;}
+  .discrow{display:flex; align-items:center; gap:9px; padding:8px 10px; border:1px solid var(--line-soft); border-radius:8px; margin-bottom:6px; font-size:13px;}
+  .discrow .di{font-family:var(--mono); font-size:11.5px; color:var(--ink-dim); flex:1;}
+  .discrow .di b{color:var(--ink); font-family:var(--sans); font-size:13px;}
+  .tipfoot{margin-top:34px; padding-top:18px; border-top:1px solid var(--line); text-align:center;}
+  .tipfoot a{display:inline-block; font-size:13.5px; font-weight:700; color:#1a1400; background:var(--signal); padding:10px 20px; border-radius:8px; text-decoration:none;}
+  .tipfoot a:hover{filter:brightness(1.06);}
+
+  details.diag{margin-top:22px; border-top:1px solid var(--line); padding-top:14px;}
+  details.diag summary{font-family:var(--mono); font-size:11.5px; color:var(--ink-faint); letter-spacing:.08em; cursor:pointer; text-transform:uppercase;}
+  details.diag pre{margin-top:11px; background:#15171c; border:1px solid var(--line); border-radius:7px; padding:12px; font-family:var(--mono); font-size:11.5px; color:var(--ink-dim); max-height:240px; overflow:auto; white-space:pre-wrap; word-break:break-all;}
+  .warn{display:none; margin-top:12px; background:#2a1f1c; border:1px solid #5a3b34; border-radius:8px; padding:11px 13px; font-size:12.5px; color:#f0c9c0; line-height:1.5;}
+  .warn.show{display:block;}
+
+  @media (max-width:880px){
+    .shell{grid-template-columns:1fr;}
+    .side{min-height:auto; border-right:none; border-bottom:1px solid var(--line);}
+    .list{max-height:34vh;}
+    .fleet{grid-template-columns:1fr;}
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="side">
+    <div class="head"><div class="mark"><span class="glyph">//</span><h1>U1 Hub</h1></div><button class="refresh" id="refresh">Refresh</button></div>
+    <div class="folderline" id="folderline">…</div>
+    <div class="filter"><input id="filter" placeholder="Filter files…" /></div>
+    <div class="list" id="list"></div>
+  </aside>
+  <main class="main">
+    <div class="topbar">
+      <span class="vbadge" id="vbadge"></span>
+      <button class="gear" id="gear" title="Settings">⚙ Settings</button>
+    </div>
+    <div class="setup" id="setup">
+      <div class="sechead"><h2>Settings</h2><span class="count" id="setupmsg"></span></div>
+      <div class="setcard">
+        <label class="fl">G-code folder <span class="hint">your Orca output folder</span></label>
+        <input class="field" id="setFolder" placeholder="e.g. C:/Users/you/gcode" />
+
+        <label class="fl" style="margin-top:14px">Printers</label>
+        <div id="setPrinters"></div>
+        <div class="row" style="margin-top:8px">
+          <button class="btn ghost" id="addPrinter">+ Add manually</button>
+          <button class="btn ghost" id="discover">⟳ Discover on network</button>
+        </div>
+        <div id="discwrap" class="discwrap"></div>
+
+        <div class="row" style="margin-top:16px">
+          <button class="btn primary" id="saveCfg">Save</button>
+          <span class="pstatus" id="cfgStatus"></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="sechead"><h2>Selected job</h2><span class="count" id="needcount"></span></div>
+    <div class="jobloading" id="jobloading"><div class="jlname" id="jlname"></div><div class="jlbar"><div class="jlfill"></div></div></div>
+    <div class="jobcard" id="jobcard">
+      <div class="jt" id="jt"></div>
+      <div class="jmeta" id="jmeta"></div>
+      <div class="needstrip" id="needstrip"></div>
+      <div class="nohint" id="nohint"></div>
+      <div class="warn" id="warn"></div>
+    </div>
+    <p class="subnote" id="noselect">Pick a file from the queue to see the colors it needs, then push it to a machine below.</p>
+
+    <div class="sechead"><h2>Fleet</h2><span class="count" id="fleetcount"></span></div>
+    <div class="fleet" id="fleet"></div>
+
+    <details class="diag"><summary>Network inventory — for DHCP reservations</summary>
+      <div id="invwrap" style="margin-top:11px;font-size:12.5px;color:var(--ink-dim)">Expand to load…</div>
+    </details>
+
+    <details class="diag"><summary>Job diagnostics</summary><pre id="diagpre">Select a file.</pre></details>
+
+    <div class="tipfoot"><a href="https://venmo.com/u/dgambill" target="_blank" rel="noopener">Buy me a beer 🍺</a></div>
+  </main>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const VERSION = "1.4";
+let FILES = [], SELECTED = null, MAP = null, FLEET = [], MAPSEL = {};
+
+init();
+async function init(){ await checkVersion(); await loadConfigUI(); await loadFiles(); await loadFleet(); setInterval(loadFiles, 15000); setInterval(()=>{ const a=document.activeElement; if(a && a.closest && a.closest("#fleet") && (a.tagName==="SELECT"||a.tagName==="INPUT")) return; loadFleet(); }, 5000); }
+
+async function checkVersion(){
+  const b=$("vbadge");
+  try{
+    const sv=(await (await fetch("/api/version")).json()).version;
+    if(sv===VERSION){ b.className="vbadge"; b.textContent="v"+VERSION; }
+    else { b.className="vbadge bad"; b.textContent="page v"+VERSION+" ≠ server v"+sv+" — restart server.js"; }
+  }catch(e){
+    b.className="vbadge bad"; b.textContent="page v"+VERSION+" · server has no version — update & restart server.js";
+  }
+}
+$("refresh").addEventListener("click", ()=>{ loadFiles(); loadFleet(); });
+$("filter").addEventListener("input", renderList);
+
+async function loadFiles(){
+  try{ const d = await (await fetch("/api/files")).json();
+    if(d.error){ $("folderline").textContent=d.error; FILES=[]; renderList(); return; }
+    $("folderline").textContent=d.folder; FILES=d.files; renderList();
+  }catch(e){ $("folderline").textContent="Server unreachable"; }
+}
+function fmtSize(b){ return b>1048576 ? (b/1048576).toFixed(1)+" MB" : Math.max(1,Math.round(b/1024))+" KB"; }
+function fmtTime(ms){ const d=new Date(ms), df=(Date.now()-ms)/1000;
+  if(df<60)return"just now"; if(df<3600)return Math.floor(df/60)+"m ago"; if(df<86400)return Math.floor(df/3600)+"h ago";
+  return d.toLocaleDateString([],{month:"short",day:"numeric"})+" "+d.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}); }
+function esc(s){ return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+
+function renderList(){
+  const q=$("filter").value.trim().toLowerCase(), list=$("list");
+  if(!FILES.length){ list.innerHTML='<div class="empty-list">No <code>.gcode</code> files here yet.<br><br>Point <code>gcodeFolder</code> in <code>config.json</code> at your Orca output folder, then Refresh.</div>'; return; }
+  const shown=FILES.filter(f=>!q||f.name.toLowerCase().includes(q));
+  if(!shown.length){ list.innerHTML='<div class="empty-list">Nothing matches that filter.</div>'; return; }
+  list.innerHTML="";
+  shown.forEach(f=>{ const b=document.createElement("button"); b.className="job"+(SELECTED===f.name?" active":"");
+    b.innerHTML=`<div class="jn">${esc(f.name)}</div><div class="jm">${fmtTime(f.mtime)} · ${fmtSize(f.size)}</div>`;
+    b.addEventListener("click",()=>selectFile(f.name)); list.appendChild(b); });
+}
+
+async function selectFile(name){
+  SELECTED=name; MAPSEL={}; renderList();
+  $("jlname").textContent="Opening "+name+"…";
+  $("jobloading").classList.add("show");
+  $("jobcard").classList.remove("show");
+  $("noselect").style.display="none";
+  try{ const m=await (await fetch("/api/map?file="+encodeURIComponent(name))).json();
+    $("jobloading").classList.remove("show");
+    if(m.error){ MAP=null; $("noselect").style.display=""; return; } MAP=m; renderJob(); renderFleet();
+  }catch(e){ $("jobloading").classList.remove("show"); $("noselect").style.display=""; }
+}
+
+function neededColors(){ return MAP ? MAP.palette.filter(s=>s.used) : []; }
+
+function renderJob(){
+  $("noselect").style.display="none";
+  $("jobcard").classList.add("show");
+  $("jt").textContent=SELECTED;
+  $("jmeta").textContent=(MAP.meta||[]).join("  ·  ");
+  const need=neededColors();
+  $("needcount").textContent=need.length+(need.length===1?" color":" colors");
+  const strip=$("needstrip"); strip.innerHTML="";
+  need.forEach(s=>{ const d=document.createElement("div"); d.className="need";
+    d.innerHTML=`<span class="sw" style="background:${s.hex||'#3a3f49'}"></span><span>${esc(s.type||'PLA')}</span><span class="nx">P${s.i+1} · ${s.hex||'—'}</span>`;
+    strip.appendChild(d); });
+  const over=need.length>(MAP.physicalHeads||4);
+  $("nohint").innerHTML = `Uses <b style="color:var(--ink)">${need.length}</b> of ${MAP.paletteCount} palette colors. `+
+    (over?`<b style="color:var(--bad)">More than the U1's 4 toolheads</b> — needs a mid-print swap or a re-slice.`
+        :`Load these into any heads; confirm head mapping on the machine's screen at start.`);
+  const warn=$("warn");
+  if(MAP.noColors){ warn.classList.add("show"); warn.textContent="No filament_colour in this file — showing material only."; } else warn.classList.remove("show");
+  $("diagpre").textContent="Tool-changes in body: "+(MAP.anyTC?"yes":"no")+"\n\n"+((MAP.keys&&MAP.keys.length)?MAP.keys.join("\n"):(MAP.allKeys||[]).join("\n"));
+}
+
+async function loadFleet(){
+  try{ FLEET=await (await fetch("/api/fleet")).json(); renderFleet(); }
+  catch(e){ $("fleet").innerHTML='<p class="subnote">Fleet unreachable.</p>'; }
+}
+
+// Advisory match only. "redmean" is a cheap perceptual distance — it treats
+// two shades of the same color (e.g. two light blues) as close, where plain
+// RGB distance wrongly calls them far apart. Tune MATCH_THRESHOLD to taste:
+// lower = stricter (fewer rings), higher = looser (more rings). ~165 treats
+// same-family shades as a match while keeping navy/red/yellow distinct.
+const MATCH_THRESHOLD = 165;
+function colorDist(a,b){
+  const pa=hexRGB(a), pb=hexRGB(b); if(!pa||!pb) return 1e9;
+  const rm=(pa[0]+pb[0])/2, dr=pa[0]-pb[0], dg=pa[1]-pb[1], db=pa[2]-pb[2];
+  return Math.sqrt((2+rm/256)*dr*dr + 4*dg*dg + (2+(255-rm)/256)*db*db);
+}
+function hexRGB(h){ if(!h) return null; const m=/^#?([0-9a-f]{6})$/i.exec(h.trim()); if(!m) return null;
+  const n=parseInt(m[1],16); return [(n>>16)&255,(n>>8)&255,n&255]; }
+
+// greedy: assign each needed color to its nearest still-free loaded head
+function defaultMapping(need, heads){
+  const taken=new Set(), map={};
+  need.forEach(n=>{
+    let bestD=1e9, bestIdx=-1;
+    heads.forEach((h,hi)=>{
+      if(!h||!h.loaded||taken.has(hi)) return;
+      const d=(n.hex&&h.hex)?colorDist(n.hex,h.hex):1e9;
+      if(d<bestD){ bestD=d; bestIdx=hi; }
+    });
+    if(bestIdx>=0){ map[n.i]=bestIdx; taken.add(bestIdx); }
+  });
+  return map;
+}
+
+function renderFleet(){
+  const need=neededColors();
+  const wrap=$("fleet"); wrap.innerHTML="";
+  let online=0;
+  FLEET.forEach(p=>{
+    if(p.online) online++;
+    const card=document.createElement("div");
+    card.className="pcard"+(p.online?"":" offline");
+    // status pill
+    let pillCls="off", pillTxt="Offline";
+    if(p.online){
+      if(p.state==="printing"){ pillCls="busy"; pillTxt="Printing "+Math.round((p.progress||0)*100)+"%"; }
+      else if(p.state==="paused"){ pillCls="busy"; pillTxt="Paused"; }
+      else if(p.state==="error"){ pillCls="err"; pillTxt="Error"; }
+      else { pillCls="idle"; pillTxt="Idle"; }
+    }
+    // heads
+    const heads=(p.heads||[]);
+    const headsHtml=heads.map((h,i)=>{
+      if(!h || !h.loaded) return `<div class="h empty"><div class="sw"></div><div class="lab"><div class="ht">T${i}</div><div class="hm">—</div></div></div>`;
+      // advisory match: is this head close to any needed color?
+      let match=false;
+      if(need.length){ for(const n of need){ if(n.hex && h.hex && colorDist(n.hex,h.hex)<MATCH_THRESHOLD){ match=true; break; } } }
+      return `<div class="h${match?' match':''}"><div class="sw" style="background:${h.hex||'#3a3f49'}"></div>`+
+             `<div class="lab"><div class="ht">T${i}</div><div class="hm">${esc(h.material||'')}</div><div class="ht" style="margin-top:2px">${h.hex||""}</div></div></div>`;
+    }).join("");
+    // factual heads-loaded, plus a separate ADVISORY color-match note
+    let matchHtml="";
+    if(p.online){
+      const loadedCount=heads.filter(h=>h&&h.loaded).length;
+      if(need.length){
+        let got=0;
+        need.forEach(n=>{ if(heads.some(h=>h&&h.hex&&n.hex&&colorDist(n.hex,h.hex)<MATCH_THRESHOLD)) got++; });
+        const note = got===need.length ? "all colors look close" : `~${got} of ${need.length} colors look close`;
+        matchHtml=`<span class="matchline">${loadedCount}/4 heads loaded · <span class="approx">${note}</span></span>`;
+      } else {
+        matchHtml=`<span class="matchline">${loadedCount}/4 heads loaded</span>`;
+      }
+    }
+    const busy = p.online && (p.state==="printing"||p.state==="paused");
+    const canSend = p.online && SELECTED && !busy;
+    // per-color head picker (default: greedy nearest distinct head)
+    let mapHtml="";
+    if(canSend && need.length){
+      const dft=defaultMapping(need, heads);
+      const loaded=heads.map((h,hi)=>({hi,h})).filter(x=>x.h&&x.h.loaded);
+      if(loaded.length){
+        const rows=need.map(n=>{
+          const saved=MAPSEL[p.id+":"+n.i];
+          const chosen=(saved!==undefined)?String(saved):String(dft[n.i] ?? "");
+          const opts=loaded.map(({hi,h})=>{
+            const sel=(chosen!=="" && chosen===String(hi))?" selected":"";
+            return `<option value="${hi}"${sel}>T${hi} · ${h.hex}${h.material?(" "+esc(h.material)):""}</option>`;
+          }).join("");
+          return `<div class="cmaprow"><span class="fsw" style="background:${n.hex||'#3a3f49'}"></span>`+
+                 `<span class="flab">P${n.i+1} ${n.hex||''}</span><span class="arrow">→</span>`+
+                 `<select class="cmsel" data-card="${p.id}" data-pi="${n.i}">${opts}</select></div>`;
+        }).join("");
+        mapHtml=`<div class="cmap"><div class="cmaphdr">Send each color from →</div>${rows}</div>`;
+      }
+    }
+    card.innerHTML=`
+      <div class="top"><span class="pn">${esc(p.name)}</span><span class="pill ${pillCls}"><span class="dot"></span>${pillTxt}</span></div>
+      ${p.state==="printing"?`<div class="progress"><i style="width:${Math.round((p.progress||0)*100)}%"></i></div>`:""}
+      <div class="heads">${headsHtml}</div>
+      ${p.online?`<div class="bedrow"><span class="bedlabel">Bed</span><span class="bedtemp">${p.bed?Math.round(p.bed.temp)+'° / '+Math.round(p.bed.target)+'°':'—'}</span>`+
+        `<input class="bedset" id="bedin-${p.id}" type="number" min="0" max="120" placeholder="°C"><button class="btn ghost bedbtn" data-bed="${p.id}">Set</button><button class="btn ghost bedbtn" data-bed="${p.id}" data-off="1">Off</button></div>`:""}
+      ${mapHtml}
+      <div class="foot">
+        ${matchHtml}
+        <button class="btn ghost" ${canSend?"":"disabled"} data-id="${p.id}" data-start="0">Upload</button>
+        <button class="btn primary" ${canSend?"":"disabled"} data-id="${p.id}" data-start="1">Print</button>
+      </div>
+      <div class="pstatus" id="pst-${p.id}"></div>`;
+    wrap.appendChild(card);
+  });
+  $("fleetcount").textContent=online+"/"+FLEET.length+" online";
+  wrap.querySelectorAll("button[data-id]").forEach(b=>{
+    b.addEventListener("click",()=>pushTo(parseInt(b.dataset.id,10), b.dataset.start==="1"));
+  });
+  wrap.querySelectorAll(".cmsel").forEach(s=>{
+    s.addEventListener("change",()=>{ MAPSEL[s.dataset.card+":"+s.dataset.pi]=s.value; });
+  });
+  wrap.querySelectorAll("button[data-bed]").forEach(b=>{
+    b.addEventListener("click",()=>setBed(parseInt(b.dataset.bed,10), b.dataset.off==="1"));
+  });
+}
+
+async function setBed(printer, off){
+  const inp=$("bedin-"+printer);
+  const temp=off?0:parseInt((inp&&inp.value)||"",10);
+  const st=$("pst-"+printer);
+  if(!off && !Number.isFinite(temp)){ if(st){ st.className="pstatus err"; st.textContent="Enter a bed temp first"; } return; }
+  if(st){ st.className="pstatus work"; st.textContent=off?"Turning bed off…":("Setting bed to "+temp+"°…"); }
+  try{
+    const r=await fetch("/api/bedtemp",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({printer,temp})});
+    const d=await r.json(); if(!r.ok||d.error) throw new Error(d.error||("HTTP "+r.status));
+    if(st){ st.className="pstatus ok"; st.textContent=off?"Bed off":("Bed set to "+d.target+"°"); }
+    loadFleet();
+  }catch(e){ if(st){ st.className="pstatus err"; st.textContent=e.message; } }
+}
+
+async function pushTo(printer, start){
+  if(!SELECTED){ return; }
+  const map={};
+  document.querySelectorAll('.cmsel[data-card="'+printer+'"]').forEach(s=>{ map[s.dataset.pi]=parseInt(s.value,10); });
+  const mapped=Object.keys(map).length;
+  const st=$("pst-"+printer); if(st){ st.className="pstatus work"; st.textContent=(start?"Sending + starting…":"Uploading…"); }
+  try{
+    const r=await fetch("/api/print",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({file:SELECTED,printer,start,map})});
+    const d=await r.json(); if(!r.ok||d.error) throw new Error(d.error||("HTTP "+r.status));
+    if(st){ st.className="pstatus ok"; st.textContent=(start?"Printing on "+d.printer:"Uploaded to "+d.printer)+(mapped?" — heads mapped":""); }
+    loadFleet();
+  }catch(e){ if(st){ st.className="pstatus err"; st.textContent=e.message; } }
+}
+
+// ---- network inventory (load on first expand) ----
+let invLoaded=false;
+document.querySelectorAll("details.diag").forEach(d=>{
+  if(d.querySelector("#invwrap")) d.addEventListener("toggle",()=>{ if(d.open && !invLoaded){ invLoaded=true; loadInventory(); } });
+});
+async function loadInventory(){
+  const wrap=$("invwrap"); wrap.textContent="Loading…";
+  try{
+    const rows=await (await fetch("/api/inventory")).json();
+    let html='<table style="width:100%;border-collapse:collapse;font-family:var(--mono);font-size:11.5px">'+
+      '<tr style="color:var(--ink-faint);text-align:left"><th style="padding:5px 8px">Printer</th><th style="padding:5px 8px">IP</th><th style="padding:5px 8px">MAC (for reservation)</th><th style="padding:5px 8px">Serial</th></tr>';
+    rows.forEach(r=>{
+      if(!r.online){ html+=`<tr><td style="padding:5px 8px">${esc(r.name)}</td><td colspan="3" style="padding:5px 8px;color:var(--bad)">offline — ${esc(r.error||"")}</td></tr>`; return; }
+      html+=`<tr style="border-top:1px solid var(--line-soft)"><td style="padding:5px 8px;color:var(--ink)">${esc(r.name)}${r.device_name&&r.device_name!==r.name?` <span style="color:var(--ink-faint)">(${esc(r.device_name)})</span>`:""}</td>`+
+            `<td style="padding:5px 8px">${esc(r.ip||"—")}</td>`+
+            `<td style="padding:5px 8px;color:var(--signal)">${esc(r.mac||"—")}</td>`+
+            `<td style="padding:5px 8px;color:var(--ink-faint)">${esc(r.serial||"—")}</td></tr>`;
+    });
+    html+='</table><p style="margin-top:10px;color:var(--ink-faint);font-size:11.5px;line-height:1.5">In your router, bind each MAC to its IP (DHCP reservation) so addresses stop changing. The OS hostname is shared (<code>lava</code>), so for names use router DNS / hosts entries pointing at these IPs — not mDNS.</p>';
+    wrap.innerHTML=html;
+  }catch(e){ wrap.textContent="Could not load inventory: "+e.message; }
+}
+
+// ---- settings / discovery / tip ----
+$("gear").addEventListener("click",()=>$("setup").classList.toggle("show"));
+$("addPrinter").addEventListener("click",()=>addPrinterRow("",""));
+$("discover").addEventListener("click",runDiscover);
+$("saveCfg").addEventListener("click",saveConfig);
+
+async function loadConfigUI(){
+  try{
+    const c=await (await fetch("/api/config")).json();
+    $("setFolder").value=c.gcodeFolder||"";
+    $("setPrinters").innerHTML="";
+    (c.printers||[]).forEach(p=>addPrinterRow(p.name,p.url));
+    if(!c.configured){ $("setup").classList.add("show"); $("setupmsg").textContent="welcome — add your printers to begin"; if(!$("setPrinters").children.length) addPrinterRow("",""); }
+  }catch(e){}
+}
+function addPrinterRow(name,url){
+  const row=document.createElement("div"); row.className="prow";
+  row.innerHTML=`<input class="field pname" placeholder="U1" value="${esc(name||"")}"><input class="field purl" placeholder="http://192.168.1.50" value="${esc(url||"")}"><button class="rm" title="Remove">×</button>`;
+  row.querySelector(".rm").addEventListener("click",()=>row.remove());
+  $("setPrinters").appendChild(row);
+}
+function gatherPrinters(){
+  return [...$("setPrinters").querySelectorAll(".prow")].map(r=>({
+    name:r.querySelector(".pname").value.trim(), url:r.querySelector(".purl").value.trim()
+  })).filter(p=>p.url);
+}
+async function runDiscover(){
+  const w=$("discwrap"); w.innerHTML='<div class="discrow"><span class="di">Scanning the network… (~10s)</span></div>';
+  try{
+    const d=await (await fetch("/api/discover")).json();
+    if(!d.found.length){ w.innerHTML='<div class="discrow"><span class="di">No printers found on '+esc((d.subnets||[]).join(", "))+'. Add manually instead.</span></div>'; return; }
+    const have=new Set(gatherPrinters().map(p=>p.url.replace(/\/+$/,"")));
+    w.innerHTML="";
+    d.found.forEach(f=>{
+      const already=have.has(f.url.replace(/\/+$/,""));
+      const row=document.createElement("div"); row.className="discrow";
+      row.innerHTML=`<span class="di"><b>${esc(f.device_name||f.machine_type||"Printer")}</b> · ${esc(f.ip)}${f.mac?" · "+esc(f.mac):""}</span>`+
+        `<button class="btn ghost" ${already?"disabled":""}>${already?"Added":"Add"}</button>`;
+      const btn=row.querySelector("button");
+      if(!already) btn.addEventListener("click",()=>{ addPrinterRow(f.device_name||"U1", f.url); btn.disabled=true; btn.textContent="Added"; });
+      w.appendChild(row);
+    });
+  }catch(e){
+    const msg=/Unexpected token|not valid JSON|DOCTYPE/i.test(e.message)
+      ? "This needs the updated server.js — replace it and restart the hub." : e.message;
+    w.innerHTML='<div class="discrow"><span class="di" style="color:var(--bad)">Scan failed: '+esc(msg)+'</span></div>';
+  }
+}
+async function saveConfig(){
+  const s=$("cfgStatus"); s.className="pstatus work"; s.textContent="Saving…";
+  const body={ gcodeFolder:$("setFolder").value.trim(), printers:gatherPrinters() };
+  try{
+    const c=await (await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})).json();
+    if(c.error) throw new Error(c.error);
+    s.className="pstatus ok"; s.textContent="Saved";
+    $("setupmsg").textContent="";
+    loadFiles(); loadFleet();
+  }catch(e){ s.className="pstatus err"; s.textContent=e.message; }
+}
+</script>
+</body>
+</html>

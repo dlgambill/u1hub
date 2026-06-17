@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.log
+capture-*.log
+gcode/*.gcode
+gcode/*.mapped.gcode
+
+config.json
