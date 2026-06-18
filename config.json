@@ -1,0 +1,34 @@
+{
+  "gcodeFolder": "X:\\u1-print-hub\\gcode",
+  "port": 4545,
+  "printers": [
+    {
+      "name": "U1",
+      "url": "http://192.168.12.35"
+    },
+    {
+      "name": "U2",
+      "url": "http://192.168.12.242"
+    },
+    {
+      "name": "U3",
+      "url": "http://192.168.12.88"
+    },
+    {
+      "name": "U4",
+      "url": "http://192.168.12.66"
+    },
+    {
+      "name": "U5",
+      "url": "http://192.168.12.94"
+    },
+    {
+      "name": "U6",
+      "url": "http://192.168.12.83"
+    }
+  ],
+  "tip": {
+    "label": "Buy me a beer 🍺",
+    "url": "https://venmo.com/u/dgambill"
+  }
+}

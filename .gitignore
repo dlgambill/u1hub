@@ -4,5 +4,3 @@ dist/
 capture-*.log
 gcode/*.gcode
 gcode/*.mapped.gcode
-
-config.json

@@ -1,14 +1,16 @@
-// server.js — U1 Print Hub  ·  v1.4
+// server.js — U1 Print Hub  ·  v1.5
 // Watches a folder of sliced gcode, shows the toolhead/color map per file,
 // and pushes the chosen file to the chosen printer via Moonraker (server-side,
 // so no browser CORS headaches).
 
-const VERSION = "1.4";
+const VERSION = "1.5";
 
 const express = require("express");
 const fs = require("fs");
+const http = require("http");
 const path = require("path");
 const os = require("os");
+const { Transform } = require("stream");
 const { parseGcodeMap } = require("./parser");
 
 // When packaged as a single executable (pkg), __dirname points inside the
@@ -116,7 +118,40 @@ function rewriteColors(text, colorMap) {
   return text;
 }
 
-app.post("/api/print", async (req, res) => {
+// Stream a file to the printer as multipart/form-data, reporting bytes sent so
+// the UI can show a real upload progress bar. Resolves on the printer's 2xx.
+function uploadWithProgress(base, fp, name, job) {
+  return new Promise((resolve, reject) => {
+    const boundary = "----u1hub" + Math.random().toString(16).slice(2);
+    const pre = Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${name}"\r\nContent-Type: application/octet-stream\r\n\r\n`);
+    const post = Buffer.from(`\r\n--${boundary}--\r\n`);
+    const fileSize = fs.statSync(fp).size;
+    job.total = pre.length + fileSize + post.length;
+    job.sent = 0;
+    const u = new URL(base + "/server/files/upload");
+    const req = http.request({
+      protocol: u.protocol, hostname: u.hostname, port: u.port || 80, path: u.pathname, method: "POST",
+      headers: { "Content-Type": "multipart/form-data; boundary=" + boundary, "Content-Length": job.total }
+    }, res => {
+      let b = ""; res.setEncoding("utf8"); res.on("data", d => b += d);
+      res.on("end", () => (res.statusCode < 300 ? resolve(b) : reject(new Error("Upload " + res.statusCode + ": " + b.slice(0, 160)))));
+    });
+    req.on("error", reject);
+    req.write(pre); job.sent += pre.length;
+    const fileStream = fs.createReadStream(fp);
+    const counter = new Transform({ transform(chunk, _e, cb) { job.sent += chunk.length; cb(null, chunk); } });
+    fileStream.on("error", reject);
+    counter.on("error", reject);
+    counter.on("data", chunk => { if (!req.write(chunk)) { counter.pause(); req.once("drain", () => counter.resume()); } });
+    counter.on("end", () => { req.write(post); job.sent += post.length; req.end(); });
+    fileStream.pipe(counter);
+  });
+}
+
+const JOBS = new Map();   // jobId -> { phase, sent, total, done, error, result, ts }
+const newJobId = () => "j" + Date.now() + Math.random().toString(16).slice(2, 6);
+
+app.post("/api/print", (req, res) => {
   const { file, printer, start, map } = req.body || {};
   const fp = safeFile(file);
   if (!fp || !fs.existsSync(fp)) return res.status(404).json({ error: "File not found" });
@@ -137,31 +172,91 @@ app.post("/api/print", async (req, res) => {
   const name = path.basename(fp);
   const gcode = async script => {
     const r = await fetch(base + "/printer/gcode/script?script=" + encodeURIComponent(script), { method: "POST" });
-    const body = await r.text();
-    if (!r.ok) throw new Error("gcode (" + r.status + "): " + body.slice(0, 200));
+    if (!r.ok) throw new Error("gcode (" + r.status + "): " + (await r.text()).slice(0, 200));
   };
 
-  try {
-    // 1) Upload the file WITHOUT auto-printing (so we can set the map first).
-    const form = new FormData();                        // Node 18+ global
-    form.append("file", new Blob([fs.readFileSync(fp)]), name);
-    const up = await fetch(base + "/server/files/upload", { method: "POST", body: form });
-    if (!up.ok) return res.status(502).json({ error: "Upload " + up.status + ": " + (await up.text()).slice(0, 200) });
+  // Kick the work off in the background and hand the client a job id to poll.
+  const jobId = newJobId();
+  const job = { phase: "upload", sent: 0, total: 0, done: false, error: null, result: null, ts: Date.now() };
+  JOBS.set(jobId, job);
+  res.json({ jobId });
 
-    // 2) Send the toolhead mapping exactly the way Orca does — Klipper macros.
-    if (tools.length) {
-      const lines = tools.map(t => `SET_PRINT_EXTRUDER_MAP CONFIG_EXTRUDER=${t} MAP_EXTRUDER=${map[t]}`);
-      lines.push("SET_PRINT_USED_EXTRUDERS EXTRUDERS=" + tools.map(t => map[t]).join(","));
-      lines.push("SET_PRINT_PREFERENCES BED_LEVEL=0 FLOW_CALIBRATE=0 TIME_LAPSE_CAMERA=0");
-      await gcode(lines.join("\n"));
+  (async () => {
+    try {
+      await uploadWithProgress(base, fp, name, job);     // 1) upload (with progress)
+      if (tools.length) {                                 // 2) toolhead mapping macros
+        job.phase = "mapping";
+        const lines = tools.map(t => `SET_PRINT_EXTRUDER_MAP CONFIG_EXTRUDER=${t} MAP_EXTRUDER=${map[t]}`);
+        lines.push("SET_PRINT_USED_EXTRUDERS EXTRUDERS=" + tools.map(t => map[t]).join(","));
+        lines.push("SET_PRINT_PREFERENCES BED_LEVEL=0 FLOW_CALIBRATE=0 TIME_LAPSE_CAMERA=0");
+        await gcode(lines.join("\n"));
+      }
+      if (start) { job.phase = "starting"; await gcode(`SDCARD_PRINT_FILE FILENAME="${name}"`); }
+      job.result = { printer: p.name, started: !!start, mapped: tools.length };
+      job.phase = "done"; job.done = true;
+    } catch (e) {
+      job.error = e.message; job.done = true; job.phase = "error";
     }
+  })();
+});
 
-    // 3) Start the print (after the map is set).
-    if (start) await gcode(`SDCARD_PRINT_FILE FILENAME="${name}"`);
+// Poll a print job's progress. Cleans the record up once a finished job is read.
+app.get("/api/print-status", (req, res) => {
+  const job = JOBS.get(req.query.job);
+  if (!job) return res.status(404).json({ error: "No such job" });
+  const out = { phase: job.phase, sent: job.sent, total: job.total, done: job.done, error: job.error, result: job.result };
+  if (job.done) setTimeout(() => JOBS.delete(req.query.job), 5000);
+  res.json(out);
+});
 
-    res.json({ ok: true, printer: p.name, started: !!start, mapped: tools.length });
+// ---- Print control: pause / resume / cancel (standard Klipper macros) ----
+app.post("/api/printctl", async (req, res) => {
+  const { printer, action } = req.body || {};
+  const p = PRINTERS[printer];
+  if (!p) return res.status(400).json({ error: "Unknown printer" });
+  const cmd = { pause: "PAUSE", resume: "RESUME", cancel: "CANCEL_PRINT" }[action];
+  if (!cmd) return res.status(400).json({ error: "Bad action" });
+  const base = String(p.url).replace(/\/+$/, "");
+  try {
+    const r = await fetch(base + "/printer/gcode/script?script=" + encodeURIComponent(cmd), { method: "POST" });
+    if (!r.ok) return res.status(502).json({ error: "Moonraker " + r.status + ": " + (await r.text()).slice(0, 160) });
+    res.json({ ok: true, action });
   } catch (e) {
-    res.status(502).json({ error: "Could not reach " + p.name + " (" + base + "): " + e.message });
+    res.status(502).json({ error: "Could not reach " + p.name + ": " + e.message });
+  }
+});
+
+// ---- Exclude-object: live plate map + skip a single object mid-print ----
+app.get("/api/plate", async (req, res) => {
+  const p = PRINTERS[req.query.printer];
+  if (!p) return res.status(400).json({ error: "Unknown printer" });
+  const base = String(p.url).replace(/\/+$/, "");
+  try {
+    const r = await fetch(base + "/printer/objects/query?exclude_object", { method: "GET" });
+    if (!r.ok) return res.status(502).json({ error: "Moonraker " + r.status });
+    const eo = (((await r.json()).result || {}).status || {}).exclude_object || {};
+    res.json({
+      objects: (eo.objects || []).map(o => ({ name: o.name, center: o.center, polygon: o.polygon })),
+      current: eo.current_object || null,
+      excluded: eo.excluded_objects || []
+    });
+  } catch (e) {
+    res.status(502).json({ error: "Could not reach " + p.name + ": " + e.message });
+  }
+});
+
+app.post("/api/exclude", async (req, res) => {
+  const { printer, name } = req.body || {};
+  const p = PRINTERS[printer];
+  if (!p) return res.status(400).json({ error: "Unknown printer" });
+  if (!name || /["\r\n]/.test(name)) return res.status(400).json({ error: "Bad object name" });
+  const base = String(p.url).replace(/\/+$/, "");
+  try {
+    const r = await fetch(base + "/printer/gcode/script?script=" + encodeURIComponent(`EXCLUDE_OBJECT NAME=${name}`), { method: "POST" });
+    if (!r.ok) return res.status(502).json({ error: "Moonraker " + r.status + ": " + (await r.text()).slice(0, 160) });
+    res.json({ ok: true, excluded: name });
+  } catch (e) {
+    res.status(502).json({ error: "Could not reach " + p.name + ": " + e.message });
   }
 });
 
@@ -194,7 +289,7 @@ function decodeHeads(ptc) {
 
 async function probe(p) {
   const base = String(p.url).replace(/\/+$/, "");
-  const url = base + "/printer/objects/query?print_task_config&print_stats&display_status&heater_bed";
+  const url = base + "/printer/objects/query?print_task_config&print_stats&display_status&heater_bed&exclude_object";
   try {
     const ctrl = new AbortController();
     const to = setTimeout(() => ctrl.abort(), 3500);
@@ -208,6 +303,10 @@ async function probe(p) {
     const ps = st.print_stats || {};
     const ds = st.display_status || {};
     const hb = st.heater_bed || {};
+    const eo = st.exclude_object || {};
+    const plate = (eo.objects && eo.objects.length)
+      ? { total: eo.objects.length, excluded: (eo.excluded_objects || []).length, current: eo.current_object || null }
+      : null;
     // logical-filament -> physical-head map (first 4 entries of the table)
     const mapTable = Array.isArray(ptc.extruder_map_table) ? ptc.extruder_map_table.slice(0, 4) : null;
     return {
@@ -216,6 +315,7 @@ async function probe(p) {
       filename: ps.filename || "",
       progress: typeof ds.progress === "number" ? ds.progress : 0,
       bed: (typeof hb.temperature === "number") ? { temp: hb.temperature, target: hb.target || 0 } : null,
+      plate,
       heads, mapTable
     };
   } catch (e) {

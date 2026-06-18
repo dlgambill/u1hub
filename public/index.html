@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- U1 Print Hub — index v1.4 -->
+<!-- U1 Print Hub — index v1.5 -->
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
@@ -92,6 +92,26 @@
   .jobloading .jlbar{height:5px; background:var(--panel-2); border-radius:3px; overflow:hidden;}
   .jobloading .jlfill{height:100%; width:35%; background:var(--signal); border-radius:3px; animation:jlslide 1s ease-in-out infinite;}
   @keyframes jlslide{0%{margin-left:-35%}100%{margin-left:100%}}
+  .pushbar{width:100%;}
+  .pushlabel{font-size:11px; color:var(--ink-dim); margin-bottom:4px;}
+  .pbar{height:5px; background:var(--panel-2); border-radius:3px; overflow:hidden;}
+  .pbar i{display:block; height:100%; background:var(--signal); border-radius:3px; transition:width .25s ease;}
+  .btn.danger{color:#ff6b6b; border-color:#5a2a2a;}
+  .btn.danger:hover{background:#3a1c1c; border-color:var(--bad);}
+  .modal{display:none; position:fixed; inset:0; background:rgba(0,0,0,.62); z-index:50; align-items:center; justify-content:center; padding:18px;}
+  .modal.show{display:flex;}
+  .modalbox{background:var(--panel); border:1px solid var(--line); border-radius:14px; max-width:560px; width:100%; max-height:90vh; overflow:auto; padding:16px;}
+  .modalhdr{display:flex; justify-content:space-between; align-items:center; font-weight:700; font-size:14px; margin-bottom:12px;}
+  .modalx{background:transparent; border:none; color:var(--ink-dim); font-size:17px; cursor:pointer; line-height:1;}
+  .modalx:hover{color:var(--ink);}
+  .platewrap{background:var(--panel-2); border-radius:10px; padding:10px;}
+  .platesvg{width:100%; height:auto; max-height:60vh; display:block;}
+  .platesvg .po{fill:#2b6cb0; stroke:#16385f; stroke-width:.8; cursor:pointer; opacity:.9; transition:fill .1s;}
+  .platesvg .po:hover{fill:var(--bad); opacity:1;}
+  .platesvg .po.cur{fill:var(--signal); stroke:#a87600;}
+  .platesvg .po.ex{fill:#262a31; stroke:#363b44; opacity:.45; cursor:default;}
+  .platehint{font-size:11.5px; color:var(--ink-faint); margin-top:9px; text-align:center;}
+  .platenote{color:var(--ink-dim); padding:26px; text-align:center; font-size:13px;}
   .pcard .matchline b{color:var(--signal);}
   .btn{font:inherit; font-size:12.5px; font-weight:700; letter-spacing:.02em; cursor:pointer; border-radius:7px; padding:9px 14px; border:1px solid transparent;}
   .btn.primary{background:var(--signal); color:#1a1400;} .btn.primary:hover{filter:brightness(1.06);}
@@ -202,15 +222,28 @@
 
     <div class="tipfoot"><a href="https://venmo.com/u/dgambill" target="_blank" rel="noopener">Buy me a beer 🍺</a></div>
   </main>
+
+  <div class="modal" id="platemodal">
+    <div class="modalbox">
+      <div class="modalhdr"><span id="platetitle">Plate</span><button class="modalx" id="platex">✕</button></div>
+      <div class="platewrap" id="platewrap"></div>
+      <div class="platehint">Tap an object to skip it — the rest of the plate keeps printing. Skipping can't be undone.</div>
+    </div>
+  </div>
 </div>
 
 <script>
 const $ = id => document.getElementById(id);
-const VERSION = "1.4";
+const VERSION = "1.5";
 let FILES = [], SELECTED = null, MAP = null, FLEET = [], MAPSEL = {};
 
 init();
-async function init(){ await checkVersion(); await loadConfigUI(); await loadFiles(); await loadFleet(); setInterval(loadFiles, 15000); setInterval(()=>{ const a=document.activeElement; if(a && a.closest && a.closest("#fleet") && (a.tagName==="SELECT"||a.tagName==="INPUT")) return; loadFleet(); }, 5000); }
+async function init(){ await checkVersion(); await loadConfigUI(); await loadFiles(); await loadFleet(); 
+  $("platex").addEventListener("click", closePlate);
+  $("platemodal").addEventListener("click", e=>{ if(e.target===$("platemodal")) closePlate(); });
+  setInterval(loadFiles, 15000);
+  setInterval(()=>{ if(PUSHES>0) return; const a=document.activeElement; if(a && a.closest && a.closest("#fleet") && (a.tagName==="SELECT"||a.tagName==="INPUT")) return; loadFleet(); }, 5000);
+}
 
 async function checkVersion(){
   const b=$("vbadge");
@@ -386,8 +419,15 @@ function renderFleet(){
       ${mapHtml}
       <div class="foot">
         ${matchHtml}
-        <button class="btn ghost" ${canSend?"":"disabled"} data-id="${p.id}" data-start="0">Upload</button>
-        <button class="btn primary" ${canSend?"":"disabled"} data-id="${p.id}" data-start="1">Print</button>
+        ${busy
+          ? (p.state==="paused"
+                ? `<button class="btn ghost" data-ctl="${p.id}" data-act="resume">Resume</button>`
+                : `<button class="btn ghost" data-ctl="${p.id}" data-act="pause">Pause</button>`)
+            + `<button class="btn danger" data-ctl="${p.id}" data-act="cancel">Cancel</button>`
+            + (p.plate&&p.plate.total>1?`<button class="btn ghost" data-plate="${p.id}">Plate ${p.plate.total-p.plate.excluded}/${p.plate.total}</button>`:"")
+          : `<button class="btn ghost" ${canSend?"":"disabled"} data-id="${p.id}" data-start="0">Upload</button>`
+            + `<button class="btn primary" ${canSend?"":"disabled"} data-id="${p.id}" data-start="1">Print</button>`
+        }
       </div>
       <div class="pstatus" id="pst-${p.id}"></div>`;
     wrap.appendChild(card);
@@ -402,6 +442,100 @@ function renderFleet(){
   wrap.querySelectorAll("button[data-bed]").forEach(b=>{
     b.addEventListener("click",()=>setBed(parseInt(b.dataset.bed,10), b.dataset.off==="1"));
   });
+  wrap.querySelectorAll("button[data-ctl]").forEach(b=>{
+    b.addEventListener("click",()=>ctl(parseInt(b.dataset.ctl,10), b.dataset.act));
+  });
+  wrap.querySelectorAll("button[data-plate]").forEach(b=>{
+    b.addEventListener("click",()=>openPlate(parseInt(b.dataset.plate,10)));
+  });
+}
+
+let PUSHES=0;
+async function pushTo(printer, start){
+  if(!SELECTED){ return; }
+  const map={};
+  document.querySelectorAll('.cmsel[data-card="'+printer+'"]').forEach(s=>{ map[s.dataset.pi]=parseInt(s.value,10); });
+  const mapped=Object.keys(map).length;
+  const st=$("pst-"+printer);
+  if(st){ st.className="pstatus work"; st.innerHTML=pushBar(0,"Starting upload…"); }
+  PUSHES++;
+  try{
+    const r=await fetch("/api/print",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({file:SELECTED,printer,start,map})});
+    const d=await r.json(); if(!r.ok||d.error||!d.jobId) throw new Error(d.error||("HTTP "+r.status));
+    await pollJob(d.jobId, st, start, mapped);
+  }catch(e){ if(st){ st.className="pstatus err"; st.textContent=e.message; } }
+  finally{ PUSHES=Math.max(0,PUSHES-1); }
+  loadFleet();
+}
+function pushBar(pct, label){
+  return `<div class="pushbar"><div class="pushlabel">${esc(label)}</div><div class="pbar"><i style="width:${pct}%"></i></div></div>`;
+}
+async function pollJob(jobId, st, start, mapped){
+  for(;;){
+    await new Promise(r=>setTimeout(r,400));
+    let d;
+    try{ d=await (await fetch("/api/print-status?job="+encodeURIComponent(jobId))).json(); }catch(e){ continue; }
+    if(d.error){ if(st){ st.className="pstatus err"; st.textContent=d.error; } return; }
+    if(st){
+      if(d.phase==="upload" && d.total){ const pct=Math.min(100,Math.round(d.sent/d.total*100)); st.className="pstatus work"; st.innerHTML=pushBar(pct,"Uploading "+pct+"%"); }
+      else if(d.phase==="mapping"){ st.className="pstatus work"; st.innerHTML=pushBar(100,"Setting head mapping…"); }
+      else if(d.phase==="starting"){ st.className="pstatus work"; st.innerHTML=pushBar(100,"Starting print…"); }
+    }
+    if(d.done){
+      if(st){ st.className="pstatus ok"; st.textContent=(start?"Printing on "+((d.result&&d.result.printer)||""):"Uploaded")+(mapped?" — heads mapped":""); }
+      return;
+    }
+  }
+}
+
+async function ctl(printer, act){
+  if(act==="cancel" && !confirm("Cancel this print? This can't be undone.")) return;
+  const st=$("pst-"+printer);
+  if(st){ st.className="pstatus work"; st.textContent={pause:"Pausing…",resume:"Resuming…",cancel:"Cancelling…"}[act]; }
+  try{
+    const r=await fetch("/api/printctl",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({printer,action:act})});
+    const d=await r.json(); if(!r.ok||d.error) throw new Error(d.error||("HTTP "+r.status));
+    if(st){ st.className="pstatus ok"; st.textContent={pause:"Paused",resume:"Resumed",cancel:"Cancelled"}[act]; }
+    loadFleet();
+  }catch(e){ if(st){ st.className="pstatus err"; st.textContent=e.message; } }
+}
+
+// ---- Plate map (exclude-object) ----
+let PLATE_PRINTER=null, PLATE_TIMER=null;
+function openPlate(printer){ PLATE_PRINTER=printer; $("platemodal").classList.add("show"); refreshPlate(); if(PLATE_TIMER) clearInterval(PLATE_TIMER); PLATE_TIMER=setInterval(refreshPlate,3000); }
+function closePlate(){ $("platemodal").classList.remove("show"); if(PLATE_TIMER){ clearInterval(PLATE_TIMER); PLATE_TIMER=null; } PLATE_PRINTER=null; }
+async function refreshPlate(){
+  if(PLATE_PRINTER===null) return;
+  let d;
+  try{ d=await (await fetch("/api/plate?printer="+PLATE_PRINTER)).json(); }catch(e){ return; }
+  if(d.error){ $("platewrap").innerHTML='<div class="platenote">'+esc(d.error)+'</div>'; return; }
+  const fp=FLEET.find(f=>f.id===PLATE_PRINTER);
+  const live=d.objects.length-(d.excluded||[]).length;
+  $("platetitle").textContent=(fp?fp.name:"Plate")+" — "+live+" of "+d.objects.length+" still printing";
+  $("platewrap").innerHTML=plateSVG(d);
+  $("platewrap").querySelectorAll("[data-obj]").forEach(el=>el.addEventListener("click",()=>skipObject(el.dataset.obj)));
+}
+function plateSVG(d){
+  const objs=(d.objects||[]).filter(o=>o.polygon&&o.polygon.length>2);
+  if(!objs.length) return '<div class="platenote">No objects reported for this print.</div>';
+  let minX=1e9,minY=1e9,maxX=-1e9,maxY=-1e9;
+  objs.forEach(o=>o.polygon.forEach(pt=>{ minX=Math.min(minX,pt[0]);minY=Math.min(minY,pt[1]);maxX=Math.max(maxX,pt[0]);maxY=Math.max(maxY,pt[1]); }));
+  const pad=8, W=maxX-minX, H=maxY-minY, exSet=new Set(d.excluded||[]);
+  const polys=objs.map(o=>{
+    const pts=o.polygon.map(pt=>pt[0].toFixed(1)+","+(minY+maxY-pt[1]).toFixed(1)).join(" "); // flip Y for front view
+    const isCur=o.name===d.current, isEx=exSet.has(o.name);
+    const cls=isEx?"po ex":(isCur?"po cur":"po");
+    return `<polygon class="${cls}" points="${pts}"${isEx?"":' data-obj="'+esc(o.name)+'"'}></polygon>`;
+  }).join("");
+  return `<svg viewBox="${(minX-pad).toFixed(1)} ${(minY-pad).toFixed(1)} ${(W+2*pad).toFixed(1)} ${(H+2*pad).toFixed(1)}" class="platesvg">${polys}</svg>`;
+}
+async function skipObject(name){
+  if(!confirm("Skip this object? It stops printing and can't be brought back — the rest of the plate keeps going.")) return;
+  try{
+    const r=await fetch("/api/exclude",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({printer:PLATE_PRINTER,name})});
+    const d=await r.json(); if(!r.ok||d.error) throw new Error(d.error||("HTTP "+r.status));
+    refreshPlate();
+  }catch(e){ alert("Couldn't skip: "+e.message); }
 }
 
 async function setBed(printer, off){
@@ -414,20 +548,6 @@ async function setBed(printer, off){
     const r=await fetch("/api/bedtemp",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({printer,temp})});
     const d=await r.json(); if(!r.ok||d.error) throw new Error(d.error||("HTTP "+r.status));
     if(st){ st.className="pstatus ok"; st.textContent=off?"Bed off":("Bed set to "+d.target+"°"); }
-    loadFleet();
-  }catch(e){ if(st){ st.className="pstatus err"; st.textContent=e.message; } }
-}
-
-async function pushTo(printer, start){
-  if(!SELECTED){ return; }
-  const map={};
-  document.querySelectorAll('.cmsel[data-card="'+printer+'"]').forEach(s=>{ map[s.dataset.pi]=parseInt(s.value,10); });
-  const mapped=Object.keys(map).length;
-  const st=$("pst-"+printer); if(st){ st.className="pstatus work"; st.textContent=(start?"Sending + starting…":"Uploading…"); }
-  try{
-    const r=await fetch("/api/print",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({file:SELECTED,printer,start,map})});
-    const d=await r.json(); if(!r.ok||d.error) throw new Error(d.error||("HTTP "+r.status));
-    if(st){ st.className="pstatus ok"; st.textContent=(start?"Printing on "+d.printer:"Uploaded to "+d.printer)+(mapped?" — heads mapped":""); }
     loadFleet();
   }catch(e){ if(st){ st.className="pstatus err"; st.textContent=e.message; } }
 }
