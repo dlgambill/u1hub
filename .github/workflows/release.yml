@@ -1,52 +1,77 @@
 name: release
 
 # Build the single-file executables for Windows, macOS (Intel + Apple Silicon),
-# and Linux whenever you push a version tag like v1.4.0, and attach them to a
-# GitHub Release automatically.
+# and Linux whenever a version tag like v1.5.1 is pushed, and attach them to a
+# GitHub Release.
 #
-#   git tag v1.4.0
-#   git push origin v1.4.0
+# Each OS is built on its OWN native runner (not cross-compiled on Linux). This
+# avoids the "base binary not in remote cache -> can't cross-build" failure, and
+# lets macOS ad-hoc code-signing happen on a real macOS machine.
+#
+#   git tag v1.5.1
+#   git push origin v1.5.1
 
 on:
   push:
     tags: ["v*"]
-  workflow_dispatch: {}   # also allow manual runs from the Actions tab
+  workflow_dispatch: {}
 
 permissions:
   contents: write
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    name: build ${{ matrix.out }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false      # one platform failing must not cancel the others
+      matrix:
+        include:
+          - { runner: ubuntu-latest,  target: node22-linux-x64,    out: U1-Print-Hub-Linux-x64 }
+          - { runner: windows-latest, target: node22-win-x64,      out: U1-Print-Hub-Windows-x64.exe }
+          - { runner: macos-13,       target: node22-macos-x64,    out: U1-Print-Hub-macOS-Intel }
+          - { runner: macos-14,       target: node22-macos-arm64,  out: U1-Print-Hub-macOS-AppleSilicon }
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
+
+      # Safety net: if a prebuilt Node base is ever missing and pkg has to build
+      # from source, Windows needs NASM. Linux/macOS runners already have toolchains.
+      - name: Install NASM (Windows source-build fallback)
+        if: runner.os == 'Windows'
+        run: choco install nasm -y
 
       - name: Install dependencies
         run: npm install
 
-      - name: Build executables (all platforms)
-        run: npx @yao-pkg/pkg . --targets node20-win-x64,node20-macos-x64,node20-macos-arm64,node20-linux-x64 --out-path dist
+      - name: Build executable
+        run: npx @yao-pkg/pkg . --targets ${{ matrix.target }} --output dist/${{ matrix.out }}
 
-      - name: Name the files clearly
-        run: |
-          cd dist
-          ls -la
-          # pkg names outputs after the package + target; normalize to friendly names.
-          for f in *; do
-            case "$f" in
-              *win*x64*|*win.exe|*-win*) mv -f "$f" "U1-Print-Hub-Windows-x64.exe" 2>/dev/null || true ;;
-              *macos*arm64*) mv -f "$f" "U1-Print-Hub-macOS-AppleSilicon" 2>/dev/null || true ;;
-              *macos*x64*)   mv -f "$f" "U1-Print-Hub-macOS-Intel" 2>/dev/null || true ;;
-              *linux*x64*|*-linux*) mv -f "$f" "U1-Print-Hub-Linux-x64" 2>/dev/null || true ;;
-            esac
-          done
-          ls -la
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.out }}
+          path: dist/${{ matrix.out }}
+          if-no-files-found: error
 
-      - name: Publish release
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Show what will be published
+        run: ls -la dist
+
+      - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
@@ -58,8 +83,8 @@ jobs:
             no Node.js needed. A browser opens to the dashboard; use **Settings**
             to add your printers.
 
-            **Windows:** Windows may warn "unknown publisher" (the app isn't code-signed).
-            Click **More info → Run anyway**.
-            **macOS:** right-click the file → **Open** the first time to get past Gatekeeper.
+            **First-launch security warning (the apps are unsigned):**
+            - **Windows:** SmartScreen may say "Windows protected your PC" → click **More info → Run anyway**.
+            - **macOS:** right-click the file → **Open** (or run `xattr -dr com.apple.quarantine <file>` once).
 
-            LAN-only and no login — keep it on your local network; do not expose it to the internet.
+            If something on the default port 4545 is already running, close it first — two copies can't share the port.

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- U1 Print Hub — index v1.5 -->
+<!-- U1 Print Hub — index v1.5.1 -->
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
@@ -110,6 +110,7 @@
   .platesvg .po:hover{fill:var(--bad); opacity:1;}
   .platesvg .po.cur{fill:var(--signal); stroke:#a87600;}
   .platesvg .po.ex{fill:#262a31; stroke:#363b44; opacity:.45; cursor:default;}
+  .platesvg .plate-front{fill:var(--ink-faint); letter-spacing:.5px; font-weight:600; text-transform:uppercase;}
   .platehint{font-size:11.5px; color:var(--ink-faint); margin-top:9px; text-align:center;}
   .platenote{color:var(--ink-dim); padding:26px; text-align:center; font-size:13px;}
   .pcard .matchline b{color:var(--signal);}
@@ -234,7 +235,7 @@
 
 <script>
 const $ = id => document.getElementById(id);
-const VERSION = "1.5";
+const VERSION = "1.5.1";
 let FILES = [], SELECTED = null, MAP = null, FLEET = [], MAPSEL = {};
 
 init();
@@ -527,7 +528,11 @@ function plateSVG(d){
     const cls=isEx?"po ex":(isCur?"po cur":"po");
     return `<polygon class="${cls}" points="${pts}"${isEx?"":' data-obj="'+esc(o.name)+'"'}></polygon>`;
   }).join("");
-  return `<svg viewBox="${(minX-pad).toFixed(1)} ${(minY-pad).toFixed(1)} ${(W+2*pad).toFixed(1)} ${(H+2*pad).toFixed(1)}" class="platesvg">${polys}</svg>`;
+  // Orientation marker — confirmed on hardware that the plate front maps to the
+  // bottom edge of this view (Y is flipped above).
+  const fs=Math.max(5, W*0.045);
+  const label=`<text x="${((minX+maxX)/2).toFixed(1)}" y="${(maxY+pad*0.75).toFixed(1)}" text-anchor="middle" class="plate-front" font-size="${fs.toFixed(1)}">▼ FRONT OF BED ▼</text>`;
+  return `<svg viewBox="${(minX-pad).toFixed(1)} ${(minY-pad).toFixed(1)} ${(W+2*pad).toFixed(1)} ${(H+2*pad+fs).toFixed(1)}" class="platesvg">${polys}${label}</svg>`;
 }
 async function skipObject(name){
   if(!confirm("Skip this object? It stops printing and can't be brought back — the rest of the plate keeps going.")) return;
