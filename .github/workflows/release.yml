@@ -1,15 +1,18 @@
 name: release
 
-# Build the single-file executables for Windows, macOS (Intel + Apple Silicon),
-# and Linux whenever a version tag like v1.5.1 is pushed, and attach them to a
-# GitHub Release.
+# Build single-file executables and attach them to a GitHub Release on a v* tag.
 #
-# Each OS is built on its OWN native runner (not cross-compiled on Linux). This
-# avoids the "base binary not in remote cache -> can't cross-build" failure, and
-# lets macOS ad-hoc code-signing happen on a real macOS machine.
+# Each OS builds on its own NATIVE runner (no cross-compiling), which avoids the
+# "base binary not in remote cache" failure and lets macOS ad-hoc signing happen
+# on real macOS.
 #
-#   git tag v1.5.1
-#   git push origin v1.5.1
+# The three reliable targets (Linux, Windows, Apple-Silicon mac) build and publish
+# the release promptly. Intel-Mac is a SEPARATE best-effort job: GitHub's free
+# macos-13 runners are often unavailable for a long time, so it must NOT block the
+# release. It attaches its binary to the already-published release if/when it runs;
+# if it never gets a runner, the release still ships with the other three.
+#
+#   git tag v1.5.2 && git push origin v1.5.2
 
 on:
   push:
@@ -23,33 +26,26 @@ jobs:
   build:
     name: build ${{ matrix.out }}
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
     strategy:
-      fail-fast: false      # one platform failing must not cancel the others
+      fail-fast: false
       matrix:
         include:
           - { runner: ubuntu-latest,  target: node22-linux-x64,    out: U1-Print-Hub-Linux-x64 }
           - { runner: windows-latest, target: node22-win-x64,      out: U1-Print-Hub-Windows-x64.exe }
-          - { runner: macos-13,       target: node22-macos-x64,    out: U1-Print-Hub-macOS-Intel }
           - { runner: macos-14,       target: node22-macos-arm64,  out: U1-Print-Hub-macOS-AppleSilicon }
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-
-      # Safety net: if a prebuilt Node base is ever missing and pkg has to build
-      # from source, Windows needs NASM. Linux/macOS runners already have toolchains.
       - name: Install NASM (Windows source-build fallback)
         if: runner.os == 'Windows'
         run: choco install nasm -y
-
       - name: Install dependencies
         run: npm install
-
       - name: Build executable
         run: npx @yao-pkg/pkg . --targets ${{ matrix.target }} --output dist/${{ matrix.out }}
-
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
@@ -67,10 +63,8 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-
       - name: Show what will be published
         run: ls -la dist
-
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -84,7 +78,32 @@ jobs:
             to add your printers.
 
             **First-launch security warning (the apps are unsigned):**
-            - **Windows:** SmartScreen may say "Windows protected your PC" → click **More info → Run anyway**.
-            - **macOS:** right-click the file → **Open** (or run `xattr -dr com.apple.quarantine <file>` once).
+            - **Windows:** SmartScreen may say "Windows protected your PC" -> **More info -> Run anyway**.
+            - **macOS:** right-click the file -> **Open** (or run `xattr -dr com.apple.quarantine <file>` once).
 
-            If something on the default port 4545 is already running, close it first — two copies can't share the port.
+            If something on the default port 4545 is already running, close it first.
+
+            _(Intel-Mac build is best-effort and may attach a few minutes after the rest.)_
+
+  # Best-effort Intel-Mac build. Runs after the release exists and appends its
+  # binary to it. continue-on-error so a stuck/unavailable macos-13 runner never
+  # fails the overall release.
+  build-intel:
+    name: build U1-Print-Hub-macOS-Intel (best effort)
+    needs: release
+    runs-on: macos-13
+    timeout-minutes: 60
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install dependencies
+        run: npm install
+      - name: Build executable
+        run: npx @yao-pkg/pkg . --targets node22-macos-x64 --output dist/U1-Print-Hub-macOS-Intel
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/U1-Print-Hub-macOS-Intel

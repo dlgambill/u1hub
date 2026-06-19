@@ -1,9 +1,9 @@
-// server.js — U1 Print Hub  ·  v1.5.1
+// server.js — U1 Print Hub  ·  v1.5.2
 // Watches a folder of sliced gcode, shows the toolhead/color map per file,
 // and pushes the chosen file to the chosen printer via Moonraker (server-side,
 // so no browser CORS headaches).
 
-const VERSION = "1.5.1";
+const VERSION = "1.5.2";
 
 const express = require("express");
 const fs = require("fs");
