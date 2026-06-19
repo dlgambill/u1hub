@@ -1,0 +1,31 @@
+# U1 Print Hub via Docker — for always-on hosts (Pi / NAS / homelab).
+#
+# Quick start:
+#   cp config.example.json config.json      # a writable config the hub persists to
+#   mkdir -p gcode                           # where your sliced .gcode lives
+#   docker compose up -d
+#   open http://<this-host-ip>:4545
+#
+# Auto-discovery scans your LAN, which only works with host networking (Linux
+# hosts). On Docker Desktop (macOS/Windows) host networking behaves differently —
+# use the "ports" block instead and just add printers by IP in Settings.
+
+services:
+  u1-print-hub:
+    # Build from this repo. (Once images are published you could instead use:
+    #   image: ghcr.io/dlgambill/u1hub:latest )
+    build: .
+    container_name: u1-print-hub
+    restart: unless-stopped
+
+    # --- Linux hosts: host networking enables LAN auto-discovery ---
+    network_mode: host
+
+    # --- Docker Desktop (macOS/Windows): comment out network_mode above and
+    #     uncomment this instead, then add printers by IP (discovery won't scan) ---
+    # ports:
+    #   - "4545:4545"
+
+    volumes:
+      - ./config.json:/app/config.json   # persists your printer list & settings
+      - ./gcode:/app/gcode               # your Orca output folder

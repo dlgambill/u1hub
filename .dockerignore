@@ -1,0 +1,10 @@
+node_modules
+dist
+.git
+*.log
+config.json
+gcode/*.gcode
+gcode/*.mapped.gcode
+.github
+capture-*.log
+package-lock.json
