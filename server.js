@@ -1,9 +1,9 @@
-// server.js — U1 Print Hub  ·  v1.5.2
+// server.js — U1 Print Hub  ·  v1.5.3
 // Watches a folder of sliced gcode, shows the toolhead/color map per file,
 // and pushes the chosen file to the chosen printer via Moonraker (server-side,
 // so no browser CORS headaches).
 
-const VERSION = "1.5.2";
+const VERSION = "1.5.3";
 
 const express = require("express");
 const fs = require("fs");
@@ -70,6 +70,38 @@ app.get("/api/files", (req, res) => {
   } catch (e) {
     res.status(500).json({ error: "Cannot read folder " + FOLDER + " — " + e.message });
   }
+});
+
+// Serve the embedded slicer thumbnail (PNG) from a file's HEAD. Picks the
+// largest PNG block; 404 if the file has none (or only non-PNG/QOI thumbnails).
+app.get("/api/thumb", (req, res) => {
+  const fp = safeFile(req.query.file);
+  if (!fp || !fs.existsSync(fp)) return res.status(404).end();
+  let head;
+  try {
+    const fd = fs.openSync(fp, "r");
+    try {
+      const buf = Buffer.alloc(262144);           // first 256 KB is plenty
+      const n = fs.readSync(fd, buf, 0, buf.length, 0);
+      head = buf.slice(0, n).toString("latin1");
+    } finally { fs.closeSync(fd); }
+  } catch { return res.status(404).end(); }
+
+  const re = /;\s*thumbnail(?:_PNG)? begin (\d+)x(\d+)[^\n]*\n([\s\S]*?);\s*thumbnail(?:_PNG)? end/g;
+  let m, best = null, bestArea = -1;
+  while ((m = re.exec(head))) {
+    const area = (+m[1]) * (+m[2]);
+    if (area > bestArea) { bestArea = area; best = m[3]; }
+  }
+  if (best == null) return res.status(404).end();
+
+  const b64 = best.replace(/^[ \t]*;[ \t]?/gm, "").replace(/\s+/g, "");
+  let png;
+  try { png = Buffer.from(b64, "base64"); } catch { return res.status(404).end(); }
+  if (png.length < 8 || png[0] !== 0x89 || png[1] !== 0x50) return res.status(404).end(); // PNG magic
+  res.set("Content-Type", "image/png");
+  res.set("Cache-Control", "max-age=300");
+  res.send(png);
 });
 
 app.get("/api/map", (req, res) => {

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- U1 Print Hub — index v1.5.2 -->
+<!-- U1 Print Hub — index v1.5.3 -->
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
@@ -30,6 +30,7 @@
   .filter{padding:11px 14px; border-bottom:1px solid var(--line-soft);}
   .filter input{width:100%; font:inherit; font-size:13px; color:var(--ink); background:var(--panel-2); border:1px solid var(--line); border-radius:7px; padding:8px 11px;}
   .filter input::placeholder{color:var(--ink-faint);}
+  .sortsel{width:100%; margin-top:8px; font:inherit; font-size:12.5px; color:var(--ink); background:var(--panel-2); border:1px solid var(--line); border-radius:7px; padding:7px 9px; cursor:pointer;}
   .list{flex:1; overflow:auto; padding:8px;}
   .job{display:block; width:100%; text-align:left; cursor:pointer; background:transparent; border:1px solid transparent; border-radius:8px; padding:11px 12px; margin-bottom:4px; color:var(--ink); font:inherit;}
   .job:hover{background:var(--panel); border-color:var(--line-soft);}
@@ -52,6 +53,9 @@
   .jobcard.show{display:block;}
   .jobcard .jt{font-size:15px; font-weight:700; word-break:break-all;}
   .jobcard .jmeta{font-family:var(--mono); font-size:11.5px; color:var(--ink-dim); margin-top:3px;}
+  .jthumb-wrap{display:none; margin:12px 0 4px; text-align:center;}
+  .jthumb-wrap.show{display:block;}
+  #jthumb{max-width:190px; max-height:190px; width:auto; border-radius:9px; background:#0f1115; border:1px solid var(--line); padding:5px;}
   .needstrip{display:flex; gap:14px; flex-wrap:wrap; margin-top:13px;}
   .need{display:flex; align-items:center; gap:8px; font-size:12.5px;}
   .need .sw{width:22px; height:22px; border-radius:5px; border:1px solid rgba(255,255,255,.18);}
@@ -172,7 +176,17 @@
   <aside class="side">
     <div class="head"><div class="mark"><span class="glyph">//</span><h1>U1 Hub</h1></div><button class="refresh" id="refresh">Refresh</button></div>
     <div class="folderline" id="folderline">…</div>
-    <div class="filter"><input id="filter" placeholder="Filter files…" /></div>
+    <div class="filter">
+      <input id="filter" placeholder="Filter files…" />
+      <select id="sort" class="sortsel" title="Sort files">
+        <option value="mtime_desc">Newest first</option>
+        <option value="mtime_asc">Oldest first</option>
+        <option value="name_asc">Name A→Z</option>
+        <option value="name_desc">Name Z→A</option>
+        <option value="size_desc">Largest first</option>
+        <option value="size_asc">Smallest first</option>
+      </select>
+    </div>
     <div class="list" id="list"></div>
   </aside>
   <main class="main">
@@ -206,6 +220,7 @@
     <div class="jobcard" id="jobcard">
       <div class="jt" id="jt"></div>
       <div class="jmeta" id="jmeta"></div>
+      <div class="jthumb-wrap" id="jthumbwrap"><img id="jthumb" alt="plate preview"></div>
       <div class="needstrip" id="needstrip"></div>
       <div class="nohint" id="nohint"></div>
       <div class="warn" id="warn"></div>
@@ -235,7 +250,7 @@
 
 <script>
 const $ = id => document.getElementById(id);
-const VERSION = "1.5.2";
+const VERSION = "1.5.3";
 let FILES = [], SELECTED = null, MAP = null, FLEET = [], MAPSEL = {};
 
 init();
@@ -258,6 +273,7 @@ async function checkVersion(){
 }
 $("refresh").addEventListener("click", ()=>{ loadFiles(); loadFleet(); });
 $("filter").addEventListener("input", renderList);
+$("sort").addEventListener("change", e=>{ SORT=e.target.value; renderList(); });
 
 async function loadFiles(){
   try{ const d = await (await fetch("/api/files")).json();
@@ -271,11 +287,23 @@ function fmtTime(ms){ const d=new Date(ms), df=(Date.now()-ms)/1000;
   return d.toLocaleDateString([],{month:"short",day:"numeric"})+" "+d.toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"}); }
 function esc(s){ return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 
+let SORT="mtime_desc";
+function sortFiles(arr){
+  const us=SORT.lastIndexOf("_"), key=SORT.slice(0,us), dir=SORT.slice(us+1);
+  arr.sort((a,b)=>{
+    const r = key==="name"
+      ? a.name.localeCompare(b.name, undefined, {numeric:true, sensitivity:"base"})
+      : (a[key]-b[key]);
+    return dir==="asc" ? r : -r;
+  });
+  return arr;
+}
 function renderList(){
   const q=$("filter").value.trim().toLowerCase(), list=$("list");
   if(!FILES.length){ list.innerHTML='<div class="empty-list">No <code>.gcode</code> files here yet.<br><br>Point <code>gcodeFolder</code> in <code>config.json</code> at your Orca output folder, then Refresh.</div>'; return; }
   const shown=FILES.filter(f=>!q||f.name.toLowerCase().includes(q));
   if(!shown.length){ list.innerHTML='<div class="empty-list">Nothing matches that filter.</div>'; return; }
+  sortFiles(shown);
   list.innerHTML="";
   shown.forEach(f=>{ const b=document.createElement("button"); b.className="job"+(SELECTED===f.name?" active":"");
     b.innerHTML=`<div class="jn">${esc(f.name)}</div><div class="jm">${fmtTime(f.mtime)} · ${fmtSize(f.size)}</div>`;
@@ -301,6 +329,13 @@ function renderJob(){
   $("jobcard").classList.add("show");
   $("jt").textContent=SELECTED;
   $("jmeta").textContent=(MAP.meta||[]).join("  ·  ");
+  // Slicer thumbnail — show if the file has one, hide silently if not.
+  const tw=$("jthumbwrap"), ti=$("jthumb");
+  tw.classList.remove("show");
+  const f=FILES.find(x=>x.name===SELECTED);
+  ti.onload=()=>tw.classList.add("show");
+  ti.onerror=()=>tw.classList.remove("show");
+  ti.src="/api/thumb?file="+encodeURIComponent(SELECTED)+(f?"&t="+f.mtime:"");
   const need=neededColors();
   $("needcount").textContent=need.length+(need.length===1?" color":" colors");
   const strip=$("needstrip"); strip.innerHTML="";
