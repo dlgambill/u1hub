@@ -65,6 +65,66 @@ function scanBody(text) {
   return { used, any, cmdHist };
 }
 
+// Full Spectrum detection. FS files blend/alternate PHYSICAL filaments to make
+// extra colors, so they can report more "used" logical colors than the 4 heads
+// — but that is NOT an error: the machine resolves them down to <=4 physical
+// heads. Detect by config-block fingerprint (verified against both forks):
+//   ratdoux FullSpectrum : non-empty `mixed_filament_definitions`
+//   Neotko feature pack  : reports as stock "Snapmaker Orca", so detect by its
+//                          pathblend_ / colorstitch / penultimate_multipass_ /
+//                          interlayer_colormix_ keys.
+function detectFS(cfg) {
+  const mixed = cfg["mixed_filament_definitions"];
+  const ratdoux = mixed != null && !/^(\s*|""|\[\]|nil|null|0)$/i.test(String(mixed).trim());
+  const neo = Object.keys(cfg).some(k =>
+    /^(pathblend_|colorstitch|penultimate_multipass_|interlayer_colormix_)/.test(k));
+  const fsFork = ratdoux ? "ratdoux" : (neo ? "neotko" : null);
+  return { isFS: !!fsFork, fsFork };
+}
+
+// Decode ratdoux FullSpectrum `mixed_filament_definitions` into displayable
+// recipes. Each ';'-separated entry encodes one virtual color; we read the
+// g<digits> token for the physical filaments blended (1-based, in order), the
+// w token for weights ('w' alone = even split, else 'w50/25/25'), and u<id> for
+// the virtual-color id. The swatch is a weighted linear-light blend of the
+// physical filament colours — an optical/layer-mix PREVIEW, not a spectral model.
+function blendHex(hexes, wts) {
+  if (!hexes.length) return "#888888";
+  const lin = c => { c /= 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); };
+  const srgb = c => { c = c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055; return Math.round(Math.max(0, Math.min(255, c * 255))); };
+  const W = wts.slice(0, hexes.length);
+  const tot = W.reduce((a, b) => a + (b || 0), 0) || 1;
+  let r = 0, g = 0, b = 0;
+  hexes.forEach((h, k) => {
+    const m = h.replace("#", ""); const w = (W[k] || 0) / tot;
+    r += lin(parseInt(m.slice(0, 2), 16)) * w;
+    g += lin(parseInt(m.slice(2, 4), 16)) * w;
+    b += lin(parseInt(m.slice(4, 6), 16)) * w;
+  });
+  return "#" + [srgb(r), srgb(g), srgb(b)].map(v => v.toString(16).padStart(2, "0")).join("");
+}
+function parseMixedDefs(cfg, physHex) {
+  const raw = cfg["mixed_filament_definitions"];
+  if (!raw || /^(\s*|""|\[\]|nil|null|0)$/i.test(String(raw).trim())) return [];
+  const out = [];
+  for (const entry of String(raw).split(";")) {
+    if (!entry.trim()) continue;
+    const f = entry.split(",").map(s => s.trim());
+    const gTok = f.find(x => /^g\d+$/.test(x));
+    const wTok = f.find(x => /^w/.test(x));
+    const uTok = f.find(x => /^u\d+$/.test(x));
+    if (!gTok || !uTok) continue;
+    const fil = gTok.slice(1).split("").map(d => parseInt(d, 10));
+    const wts = (wTok && wTok.length > 1 && wTok.indexOf("/") >= 0)
+      ? wTok.slice(1).split("/").map(Number)
+      : fil.map(() => Math.round(100 / fil.length));
+    const hexes = fil.map(i => physHex[i - 1]).filter(Boolean);
+    out.push({ id: parseInt(uTok.slice(1), 10), filaments: fil, weights: wts.slice(0, fil.length), hex: blendHex(hexes, wts) });
+  }
+  out.sort((a, b) => a.id - b.id);
+  return out;
+}
+
 function parseGcodeMap(text, opts = {}) {
   const { cfg, cfgLines } = parseConfig(text);
 
@@ -115,6 +175,8 @@ function parseGcodeMap(text, opts = {}) {
   return {
     palette, usedIdx, paletteCount,
     physicalHeads: 4,
+    ...detectFS(cfg),
+    mixed: parseMixedDefs(cfg, colours.map(normHex)),
     meta, anyTC: any, noColors: !colours.length,
     keys, allKeys: Object.keys(cfg)
   };

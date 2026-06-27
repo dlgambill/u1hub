@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- U1 Print Hub — index v1.5.3 -->
+<!-- U1 Print Hub — index v2.0.0 -->
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
@@ -19,7 +19,7 @@
   body{background:var(--chassis); color:var(--ink); font-family:var(--sans); -webkit-font-smoothing:antialiased; min-height:100vh;
     background-image:radial-gradient(60% 70% at 70% -10%, rgba(255,178,0,.05), transparent 60%);}
   .shell{display:grid; grid-template-columns:312px 1fr; min-height:100vh;}
-  .side{border-right:1px solid var(--line); display:flex; flex-direction:column; min-height:100vh;}
+  .side{border-right:1px solid var(--line); display:flex; flex-direction:column; height:100vh; position:sticky; top:0;}
   .side .head{display:flex; align-items:center; justify-content:space-between; padding:18px 18px 14px; border-bottom:1px solid var(--line);}
   .mark{display:flex; align-items:baseline; gap:10px;}
   .mark .glyph{font-family:var(--mono); font-size:12px; letter-spacing:.3em; color:var(--signal); font-weight:600;}
@@ -31,12 +31,13 @@
   .filter input{width:100%; font:inherit; font-size:13px; color:var(--ink); background:var(--panel-2); border:1px solid var(--line); border-radius:7px; padding:8px 11px;}
   .filter input::placeholder{color:var(--ink-faint);}
   .sortsel{width:100%; margin-top:8px; font:inherit; font-size:12.5px; color:var(--ink); background:var(--panel-2); border:1px solid var(--line); border-radius:7px; padding:7px 9px; cursor:pointer;}
-  .list{flex:1; overflow:auto; padding:8px;}
+  .list{flex:1; min-height:0; overflow:auto; padding:8px;}
   .job{display:block; width:100%; text-align:left; cursor:pointer; background:transparent; border:1px solid transparent; border-radius:8px; padding:11px 12px; margin-bottom:4px; color:var(--ink); font:inherit;}
   .job:hover{background:var(--panel); border-color:var(--line-soft);}
   .job.active{background:var(--panel); border-color:var(--signal);}
   .job .jn{font-size:13.5px; font-weight:600; word-break:break-all; line-height:1.3;}
   .job .jm{font-family:var(--mono); font-size:10.5px; color:var(--ink-faint); margin-top:4px; letter-spacing:.02em;}
+  .job .jprinted{color:var(--ok); margin-top:2px;}
   .empty-list{padding:26px 18px; color:var(--ink-dim); font-size:13px; line-height:1.55;}
   .empty-list code{font-family:var(--mono); font-size:12px; color:var(--ink);}
   .main{padding:24px 26px 70px; max-width:980px;}
@@ -61,6 +62,17 @@
   .need .sw{width:22px; height:22px; border-radius:5px; border:1px solid rgba(255,255,255,.18);}
   .need .nx{font-family:var(--mono); font-size:11px; color:var(--ink-faint);}
   .nohint{font-size:12px; color:var(--ink-faint); margin-top:11px; line-height:1.5;}
+  .fscolors{display:none; margin-top:14px; border-top:1px solid var(--line-soft); padding-top:13px;}
+  .fscolors.show{display:block;}
+  .fshead{font-family:var(--mono); font-size:10px; color:var(--signal); letter-spacing:.05em; text-transform:uppercase; margin-bottom:9px;}
+  .fsgrid{display:grid; grid-template-columns:repeat(auto-fill,minmax(108px,1fr)); gap:6px;}
+  .fscell{display:flex; align-items:center; gap:8px; background:var(--panel-2); border:1px solid var(--line-soft); border-radius:7px; padding:5px 7px;}
+  .fssw{width:28px; height:28px; border-radius:5px; flex:none; border:1px solid #ffffff1c;}
+  .fsmeta{display:flex; flex-direction:column; min-width:0; font-family:var(--mono); line-height:1.3;}
+  .fsmeta b{color:var(--ink); font-weight:600; font-size:11px;}
+  .fsrec{display:flex; align-items:center; gap:3px; color:var(--ink-faint); font-size:9.5px; margin-top:2px;}
+  .fsdot{width:8px; height:8px; border-radius:50%; display:inline-block; border:1px solid #ffffff26;}
+  .fsrat{margin-left:2px;}
 
   /* fleet */
   .fleet{display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:14px; margin-top:14px;}
@@ -165,7 +177,7 @@
 
   @media (max-width:880px){
     .shell{grid-template-columns:1fr;}
-    .side{min-height:auto; border-right:none; border-bottom:1px solid var(--line);}
+    .side{height:auto; position:static; min-height:auto; border-right:none; border-bottom:1px solid var(--line);}
     .list{max-height:34vh;}
     .fleet{grid-template-columns:1fr;}
   }
@@ -223,6 +235,7 @@
       <div class="jthumb-wrap" id="jthumbwrap"><img id="jthumb" alt="plate preview"></div>
       <div class="needstrip" id="needstrip"></div>
       <div class="nohint" id="nohint"></div>
+      <div class="fscolors" id="fscolors"></div>
       <div class="warn" id="warn"></div>
     </div>
     <p class="subnote" id="noselect">Pick a file from the queue to see the colors it needs, then push it to a machine below.</p>
@@ -250,7 +263,7 @@
 
 <script>
 const $ = id => document.getElementById(id);
-const VERSION = "1.5.3";
+const VERSION = "2.0.0";
 let FILES = [], SELECTED = null, MAP = null, FLEET = [], MAPSEL = {};
 
 init();
@@ -306,7 +319,8 @@ function renderList(){
   sortFiles(shown);
   list.innerHTML="";
   shown.forEach(f=>{ const b=document.createElement("button"); b.className="job"+(SELECTED===f.name?" active":"");
-    b.innerHTML=`<div class="jn">${esc(f.name)}</div><div class="jm">${fmtTime(f.mtime)} · ${fmtSize(f.size)}</div>`;
+    b.innerHTML=`<div class="jn">${esc(f.name)}</div><div class="jm">${fmtTime(f.mtime)} · ${fmtSize(f.size)}</div>`+
+      (f.lastPrinted?`<div class="jm jprinted">Printed ${fmtTime(f.lastPrinted)}</div>`:"");
     b.addEventListener("click",()=>selectFile(f.name)); list.appendChild(b); });
 }
 
@@ -340,12 +354,27 @@ function renderJob(){
   $("needcount").textContent=need.length+(need.length===1?" color":" colors");
   const strip=$("needstrip"); strip.innerHTML="";
   need.forEach(s=>{ const d=document.createElement("div"); d.className="need";
-    d.innerHTML=`<span class="sw" style="background:${s.hex||'#3a3f49'}"></span><span>${esc(s.type||'PLA')}</span><span class="nx">P${s.i+1} · ${s.hex||'—'}</span>`;
+    d.innerHTML=`<span class="sw" style="background:${s.hex||'#3a3f49'}"></span><span>${esc(s.type||'PLA')}</span><span class="nx">P${s.i+1} · ${s.hex||'—'}${s.wt? ' · '+s.wt+' g' : ''}</span>`;
     strip.appendChild(d); });
-  const over=need.length>(MAP.physicalHeads||4);
+  const over=need.length>(MAP.physicalHeads||4) && !MAP.isFS;
   $("nohint").innerHTML = `Uses <b style="color:var(--ink)">${need.length}</b> of ${MAP.paletteCount} palette colors. `+
-    (over?`<b style="color:var(--bad)">More than the U1's 4 toolheads</b> — needs a mid-print swap or a re-slice.`
+    (MAP.isFS
+        ? `<b style="color:var(--ink)">Full Spectrum</b> (${esc(MAP.fsFork||'mixed')}) — these blend across the 4 heads, no swap needed.`
+        : over?`<b style="color:var(--bad)">More than the U1's 4 toolheads</b> — needs a mid-print swap or a re-slice.`
         :`Load these into any heads; confirm head mapping on the machine's screen at start.`);
+  // Full Spectrum mixed-color preview — decode physical + virtual into one grid.
+  const fsw=$("fscolors");
+  if(MAP.isFS && MAP.mixed && MAP.mixed.length){
+    const phys=MAP.palette.map(p=>p.hex);
+    const physUsed=MAP.palette.filter(p=>p.hex);
+    fsw.innerHTML=`<div class="fshead">Full Spectrum · ${physUsed.length+MAP.mixed.length} colors from ${physUsed.length} filaments</div><div class="fsgrid">`+
+      physUsed.map(p=>`<div class="fscell"><span class="fssw" style="background:${p.hex}"></span><span class="fsmeta"><b>T${p.i+1}</b><span class="fsrec">${p.hex}</span></span></div>`).join("")+
+      MAP.mixed.map(m=>{
+        const dots=m.filaments.map((fi,k)=>`<span class="fsdot" style="background:${phys[fi-1]||'#555'}" title="T${fi} · ${m.weights[k]}%"></span>`).join("");
+        return `<div class="fscell"><span class="fssw" style="background:${m.hex}"></span><span class="fsmeta"><b>C${m.id}</b><span class="fsrec">${dots}<span class="fsrat">${m.weights.join("/")}</span></span></span></div>`;
+      }).join("")+`</div>`;
+    fsw.classList.add("show");
+  } else { fsw.classList.remove("show"); fsw.innerHTML=""; }
   const warn=$("warn");
   if(MAP.noColors){ warn.classList.add("show"); warn.textContent="No filament_colour in this file — showing material only."; } else warn.classList.remove("show");
   $("diagpre").textContent="Tool-changes in body: "+(MAP.anyTC?"yes":"no")+"\n\n"+((MAP.keys&&MAP.keys.length)?MAP.keys.join("\n"):(MAP.allKeys||[]).join("\n"));
@@ -385,6 +414,13 @@ function defaultMapping(need, heads){
   return map;
 }
 
+// "14h26m" / "9m" — compact remaining-time formatting for the fleet cards.
+function fmtDur(sec){
+  if(sec==null||!isFinite(sec)||sec<0) return "—";
+  sec=Math.round(sec); const h=Math.floor(sec/3600), m=Math.floor((sec%3600)/60);
+  return h?`${h}h${String(m).padStart(2,'0')}m`:`${m}m`;
+}
+
 function renderFleet(){
   const need=neededColors();
   const wrap=$("fleet"); wrap.innerHTML="";
@@ -396,7 +432,13 @@ function renderFleet(){
     // status pill
     let pillCls="off", pillTxt="Offline";
     if(p.online){
-      if(p.state==="printing"){ pillCls="busy"; pillTxt="Printing "+Math.round((p.progress||0)*100)+"%"; }
+      if(p.state==="printing"){ pillCls="busy";
+        // Self-correcting remaining time (Fluidd's fileLeft): scales actual
+        // elapsed by actual progress — no reliance on the slicer's estimate.
+        let rem="";
+        if(p.progress>0 && p.printDuration>0){ rem=" · ~"+fmtDur(p.printDuration/p.progress - p.printDuration)+" left"; }
+        pillTxt="Printing "+Math.round((p.progress||0)*100)+"%"+rem;
+      }
       else if(p.state==="paused"){ pillCls="busy"; pillTxt="Paused"; }
       else if(p.state==="error"){ pillCls="err"; pillTxt="Error"; }
       else { pillCls="idle"; pillTxt="Idle"; }
@@ -404,12 +446,12 @@ function renderFleet(){
     // heads
     const heads=(p.heads||[]);
     const headsHtml=heads.map((h,i)=>{
-      if(!h || !h.loaded) return `<div class="h empty"><div class="sw"></div><div class="lab"><div class="ht">T${i}</div><div class="hm">—</div></div></div>`;
+      if(!h || !h.loaded) return `<div class="h empty"><div class="sw"></div><div class="lab"><div class="ht">T${i+1}</div><div class="hm">—</div></div></div>`;
       // advisory match: is this head close to any needed color?
       let match=false;
       if(need.length){ for(const n of need){ if(n.hex && h.hex && colorDist(n.hex,h.hex)<MATCH_THRESHOLD){ match=true; break; } } }
       return `<div class="h${match?' match':''}"><div class="sw" style="background:${h.hex||'#3a3f49'}"></div>`+
-             `<div class="lab"><div class="ht">T${i}</div><div class="hm">${esc(h.material||'')}</div><div class="ht" style="margin-top:2px">${h.hex||""}</div></div></div>`;
+             `<div class="lab"><div class="ht">T${i+1}</div><div class="hm">${esc(h.material||'')}</div><div class="ht" style="margin-top:2px">${h.hex||""}</div></div></div>`;
     }).join("");
     // factual heads-loaded, plus a separate ADVISORY color-match note
     let matchHtml="";
@@ -437,7 +479,7 @@ function renderFleet(){
           const chosen=(saved!==undefined)?String(saved):String(dft[n.i] ?? "");
           const opts=loaded.map(({hi,h})=>{
             const sel=(chosen!=="" && chosen===String(hi))?" selected":"";
-            return `<option value="${hi}"${sel}>T${hi} · ${h.hex}${h.material?(" "+esc(h.material)):""}</option>`;
+            return `<option value="${hi}"${sel}>T${hi+1} · ${h.hex}${h.material?(" "+esc(h.material)):""}</option>`;
           }).join("");
           return `<div class="cmaprow"><span class="fsw" style="background:${n.hex||'#3a3f49'}"></span>`+
                  `<span class="flab">P${n.i+1} ${n.hex||''}</span><span class="arrow">→</span>`+

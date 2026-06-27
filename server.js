@@ -3,7 +3,7 @@
 // and pushes the chosen file to the chosen printer via Moonraker (server-side,
 // so no browser CORS headaches).
 
-const VERSION = "1.5.3";
+const VERSION = "2.0.0";
 
 const express = require("express");
 const fs = require("fs");
@@ -36,6 +36,48 @@ function loadConfig() {
 loadConfig();
 const PORT = CFG.port || 4545;
 
+// --- last-printed tracking --------------------------------------------------
+// Stamps printlog.json (basename -> epoch ms) when a printer transitions INTO
+// "printing". A 15s poll watches each printer's state; we only record a genuine
+// new start — skipping boot-mid-print (no prior state observed) and
+// resume-from-pause (paused -> printing is not a new print).
+const PRINTLOG_PATH = path.join(BASE_DIR, "printlog.json");
+function loadPrintLog() { try { return JSON.parse(fs.readFileSync(PRINTLOG_PATH, "utf8")); } catch { return {}; } }
+function savePrintLog() { try { fs.writeFileSync(PRINTLOG_PATH, JSON.stringify(PRINTLOG, null, 2)); } catch {} }
+let PRINTLOG = loadPrintLog();
+const LAST_STATE = {};   // printer index -> last observed state
+
+async function probeState(p) {
+  const base = String(p.url).replace(/\/+$/, "");
+  try {
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), 3000);
+    const r = await fetch(base + "/printer/objects/query?print_stats", { signal: ctrl.signal });
+    clearTimeout(to);
+    if (!r.ok) return null;
+    const j = await r.json();
+    const ps = (j.result && j.result.status && j.result.status.print_stats) || {};
+    return { state: ps.state || "unknown", filename: ps.filename || "" };
+  } catch { return null; }
+}
+
+async function pollPrintStarts() {
+  for (let i = 0; i < PRINTERS.length; i++) {
+    const s = await probeState(PRINTERS[i]);
+    if (!s) continue;                       // unreachable: leave LAST_STATE so recovery doesn't fake a transition
+    const prev = LAST_STATE[i];
+    // genuine new start: a prior state exists, it wasn't already printing, and
+    // it wasn't a pause. prev===undefined => first observation => boot-mid-print => skip.
+    if (s.state === "printing" && prev !== undefined && prev !== "printing" && prev !== "paused") {
+      const base = path.basename(s.filename || "");
+      if (base) { PRINTLOG[base] = Date.now(); savePrintLog(); }
+    }
+    LAST_STATE[i] = s.state;
+  }
+}
+setInterval(pollPrintStarts, 15000);
+pollPrintStarts();   // prime LAST_STATE at startup (won't stamp — prev is undefined)
+
 const app = express();
 app.use(express.json({ limit: "1mb" }));
 app.use(express.static(path.join(ASSET_DIR, "public")));
@@ -63,7 +105,7 @@ app.get("/api/files", (req, res) => {
       .filter(f => /\.(gcode|gco|g)$/i.test(f))
       .map(f => {
         const st = fs.statSync(path.join(FOLDER, f));
-        return { name: f, size: st.size, mtime: st.mtimeMs };
+        return { name: f, size: st.size, mtime: st.mtimeMs, lastPrinted: PRINTLOG[f] || null };
       })
       .sort((a, b) => b.mtime - a.mtime);
     res.json({ folder: FOLDER, files });
@@ -346,6 +388,7 @@ async function probe(p) {
       state: ps.state || "unknown",
       filename: ps.filename || "",
       progress: typeof ds.progress === "number" ? ds.progress : 0,
+      printDuration: typeof ps.print_duration === "number" ? ps.print_duration : 0,
       bed: (typeof hb.temperature === "number") ? { temp: hb.temperature, target: hb.target || 0 } : null,
       plate,
       heads, mapTable

@@ -17,6 +17,30 @@ It talks straight to each printer's built-in Moonraker API. Nothing leaves your 
 
 ---
 
+## New in 2.0 — Full Spectrum aware
+
+The U1's **Full Spectrum** workflow alternates a few physical filaments layer-by-layer to
+produce many more apparent colors. v2.0 makes the hub understand it:
+
+- **Detects Full Spectrum files** from either fork family — ratdoux FullSpectrum and the
+  Neotko feature pack — so it never mistakes a 16-color FS job for one that "needs more than
+  the U1's 4 heads." (The Neotko build reports as stock Snapmaker Orca, so detection is by
+  the file's config fingerprint, not the slicer name.)
+- **Visualizes the mixed colors.** Select an FS job and the hub decodes its color recipes,
+  showing every blended color with a preview swatch, the physical filaments it mixes, and the
+  ratio — so you can see what your loaded filaments will actually produce. (The swatches are
+  an on-screen approximation of the optical blend; the print is the final word.)
+
+Plus, across every job:
+
+- **Live time-remaining** on each printing card, self-correcting to the real print pace.
+- **Last-printed date** for every file in the browser.
+- **Per-color filament usage** (grams) on the selected job.
+- Cosmetic **T1–T4 head labels** and a **scrolling file list** that keeps the page tidy with
+  big folders.
+
+---
+
 ## Download (no Node.js needed)
 
 Grab the build for your OS from the **[Releases](../../releases)** page, put it in
@@ -95,9 +119,12 @@ Reopen Settings anytime with the gear button.
 
 ## Using it
 
-- **Pick a file** from the left to see the colors it needs.
-- **Each machine card** shows its four heads with the colors currently loaded, plus
-  status and bed temp. When a job is selected, you get a per-color **"Send each color
+- **Pick a file** from the left to see the colors it needs. Files show their **last-printed
+  date** once they've run, and the selected job lists **per-color gram usage**. If it's a
+  **Full Spectrum** job, a panel decodes and previews all its mixed colors and recipes.
+- **Each machine card** shows its four heads (**T1–T4**) with the colors currently loaded, plus
+  status and bed temp — and a **live time-remaining** estimate while printing. When a job is
+  selected, you get a per-color **"Send each color
   from"** picker (defaulted to the best match) and **Upload** / **Print** buttons.
 - **Press Print** to send to that machine; a progress bar tracks the upload, then the
   print starts with your color mapping already applied.
@@ -162,8 +189,8 @@ release, bump the version in `package.json` and the `VERSION` constants in `serv
 and `public/index.html`, then tag and push:
 
 ```
-git tag v1.5.2
-git push origin v1.5.2
+git tag v2.0.0
+git push origin v2.0.0
 ```
 
 `.github/workflows/release.yml` builds Linux, Windows, and Apple-Silicon macOS binaries
