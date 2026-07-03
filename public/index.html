@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- U1 Print Hub — index v2.0.0 -->
+<!-- U1 Print Hub — index v2.1.0 -->
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
@@ -95,6 +95,19 @@
   .h .ht{font-family:var(--mono); font-size:9px; color:var(--ink-faint); letter-spacing:.08em;}
   .h .hm{font-size:10px; color:var(--ink-dim); margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
   .pcard .foot{display:flex; align-items:center; gap:9px;}
+  .pcard .fname{font-family:var(--mono); font-size:11px; color:var(--ink-dim); margin-top:-7px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  /* per-card stats panel */
+  .pcard .statsbtn{font:inherit; font-family:var(--mono); font-size:10.5px; color:var(--ink-faint); background:transparent; border:1px solid var(--line); border-radius:6px; padding:3px 8px; cursor:pointer; letter-spacing:.04em;}
+  .pcard .statsbtn.on{color:var(--signal); border-color:var(--signal);}
+  .statspanel{border-top:1px solid var(--line-soft); padding-top:11px; display:flex; flex-direction:column; gap:9px;}
+  .statspanel .srow{display:flex; align-items:center; gap:9px;}
+  .statspanel .sname{font-family:var(--mono); font-size:10.5px; color:var(--ink-faint); width:62px; text-transform:uppercase; letter-spacing:.04em; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .statspanel .snow{font-family:var(--mono); font-size:11.5px; color:var(--ink); width:42px; text-align:right;}
+  .statspanel svg{flex:1; display:block;}
+  .statspanel .lifeline{font-family:var(--mono); font-size:11px; color:var(--ink-dim);}
+  .statspanel .jbars{display:flex; align-items:flex-end; gap:3px; height:34px;}
+  .statspanel .jbars i{flex:1; border-radius:2px 2px 0 0; min-height:2px;}
+  .statspanel .jcap{font-family:var(--mono); font-size:10px; color:var(--ink-faint);}
   .pcard .matchline{font-size:11.5px; color:var(--ink-dim); flex:1;}
   .pcard .matchline .approx{color:var(--ink-faint); font-style:italic;}
   .bedrow{display:flex; align-items:center; gap:8px; margin:11px 0 2px; font-size:12px;}
@@ -243,6 +256,10 @@
     <div class="sechead"><h2>Fleet</h2><span class="count" id="fleetcount"></span></div>
     <div class="fleet" id="fleet"></div>
 
+    <details class="diag" id="farmdiag"><summary>Farm stats — lifetime totals</summary>
+      <pre id="farmpre">Expand to load…</pre>
+    </details>
+
     <details class="diag"><summary>Network inventory — for DHCP reservations</summary>
       <div id="invwrap" style="margin-top:11px;font-size:12.5px;color:var(--ink-dim)">Expand to load…</div>
     </details>
@@ -263,7 +280,7 @@
 
 <script>
 const $ = id => document.getElementById(id);
-const VERSION = "2.0.0";
+const VERSION = "2.1.0";
 let FILES = [], SELECTED = null, MAP = null, FLEET = [], MAPSEL = {};
 
 init();
@@ -380,6 +397,67 @@ function renderJob(){
   $("diagpre").textContent="Tool-changes in body: "+(MAP.anyTC?"yes":"no")+"\n\n"+((MAP.keys&&MAP.keys.length)?MAP.keys.join("\n"):(MAP.allKeys||[]).join("\n"));
 }
 
+// ---- per-card stats panel ------------------------------------------------------
+// Open-state and data live in JS (not the DOM) because renderFleet() rebuilds all
+// cards every 5s. Sensors are whatever the printer's temperature_store reports —
+// nothing hardcoded, since only heater_bed is hardware-confirmed on the U1.
+const STATSOPEN=new Set(), STATSDATA={};
+function sparkSVG(vals, color){
+  if(!vals || vals.length<2) return '<svg viewBox="0 0 100 30" preserveAspectRatio="none" style="height:30px"></svg>';
+  let mn=Math.min(...vals), mx=Math.max(...vals);
+  if(mx-mn<2){ const m=(mx+mn)/2; mn=m-1; mx=m+1; }   // pad flat lines so they stay visible
+  const pts=vals.map((v,i)=>((i/(vals.length-1))*100).toFixed(2)+","+(28-((v-mn)/(mx-mn))*26+1).toFixed(2)).join(" ");
+  return '<svg viewBox="0 0 100 30" preserveAspectRatio="none" style="height:30px">'+
+         '<polyline points="'+pts+'" fill="none" stroke="'+color+'" stroke-width="1.4" vector-effect="non-scaling-stroke"/></svg>';
+}
+function sensorColor(name){ return /bed/i.test(name) ? "var(--busy)" : "var(--signal)"; }
+// Display-only renumbering to match the T1–T4 head labels used elsewhere in the
+// UI (Klipper names them extruder, extruder1..3 — internal logic stays 0-indexed).
+function prettySensor(name){
+  const m=name.match(/^extruder(\d*)$/);
+  if(m) return "T"+((m[1]===""?0:parseInt(m[1],10))+1);
+  return name.replace(/^temperature_sensor\s+/,"").replace(/^heater_/,"").replace(/_/g," ");
+}
+function statsPanelHtml(id){
+  const d=STATSDATA[id];
+  if(!d) return `<div class="statspanel" id="statspanel-${id}"><span class="jcap">Loading…</span></div>`;
+  if(d.error) return `<div class="statspanel" id="statspanel-${id}"><span class="jcap">Stats unavailable: ${esc(d.error)}</span></div>`;
+  let rows="";
+  for(const [name,s] of Object.entries(d.sensors||{})){
+    const now=s.temps.length?s.temps[s.temps.length-1]:null;
+    rows+=`<div class="srow"><span class="sname" title="${esc(name)}">${esc(prettySensor(name))}</span>${sparkSVG(s.temps,sensorColor(name))}<span class="snow">${now===null?"—":Math.round(now)+"°"}</span></div>`;
+  }
+  const mins=d.windowSec?Math.max(1,Math.round(d.windowSec/60)):20;
+  let life="";
+  if(d.life) life=`<div class="lifeline">${d.life.jobs} jobs · ${(d.life.printTime/3600).toFixed(1)} h printed · ${d.life.filamentMm>=1e6?(d.life.filamentMm/1e6).toFixed(2)+" km":Math.round(d.life.filamentMm/1000)+" m"} · longest ${(d.life.longestJob/3600).toFixed(1)} h</div>`;
+  let bars="";
+  if(d.life && d.life.recent && d.life.recent.length){
+    const rec=[...d.life.recent].reverse();   // oldest → newest, reads left to right
+    const mx=Math.max.apply(null, rec.map(j=>j.duration||0).concat([1]));
+    bars='<div class="jbars">'+rec.map(j=>{
+      const h=Math.max(6, Math.round((j.duration||0)/mx*100));
+      const c=j.status==="completed"?"var(--ok)":(j.status==="in_progress"?"var(--busy)":"var(--bad)");
+      return `<i style="height:${h}%;background:${c}" title="${esc(j.filename)} · ${((j.duration||0)/3600).toFixed(1)} h · ${esc(j.status)}"></i>`;
+    }).join("")+`</div><div class="jcap">last ${rec.length} jobs · bar height = duration · green done, blue running, red failed/cancelled</div>`;
+  }
+  return `<div class="statspanel" id="statspanel-${id}">${rows||'<span class="jcap">No temperature data reported.</span>'}<div class="jcap">temps · last ~${mins} min</div>${life}${bars}</div>`;
+}
+async function fetchCardStats(id){
+  try{
+    const [tr,st]=await Promise.all([
+      fetch("/api/ptrends?id="+id).then(r=>r.json()),
+      fetch("/api/pstats?id="+id).then(r=>r.json())
+    ]);
+    const first=Object.values(tr.sensors||{})[0];
+    STATSDATA[id]={ sensors:tr.sensors||{}, windowSec:first?first.samples:0, life:st&&!st.error?st:null, error:tr.error||null };
+  }catch(e){ STATSDATA[id]={error:String(e.message||e)}; }
+  const el=document.getElementById("statspanel-"+id);
+  if(el) el.outerHTML=statsPanelHtml(id);
+}
+// refresh open panels every 15s (temperature_store is ~110 KB on-printer; the
+// hub downsamples, but no need to hammer it on the 5s fleet cadence)
+setInterval(()=>{ STATSOPEN.forEach(id=>fetchCardStats(id)); }, 15000);
+
 async function loadFleet(){
   try{ FLEET=await (await fetch("/api/fleet")).json(); renderFleet(); }
   catch(e){ $("fleet").innerHTML='<p class="subnote">Fleet unreachable.</p>'; }
@@ -433,10 +511,13 @@ function renderFleet(){
     let pillCls="off", pillTxt="Offline";
     if(p.online){
       if(p.state==="printing"){ pillCls="busy";
-        // Self-correcting remaining time (Fluidd's fileLeft): scales actual
-        // elapsed by actual progress — no reliance on the slicer's estimate.
+        // Remaining time, matching the touchscreen: slicer estimate × remaining
+        // fraction (computed server-side as etaSec from header-corrected byte
+        // progress). Falls back to Fluidd's self-correcting formula if file
+        // metadata was unavailable.
         let rem="";
-        if(p.progress>0 && p.printDuration>0){ rem=" · ~"+fmtDur(p.printDuration/p.progress - p.printDuration)+" left"; }
+        if(typeof p.etaSec==="number"){ rem=" · ~"+fmtDur(p.etaSec)+" left"; }
+        else if(p.progress>0 && p.printDuration>0){ rem=" · ~"+fmtDur(p.printDuration/p.progress - p.printDuration)+" left"; }
         pillTxt="Printing "+Math.round((p.progress||0)*100)+"%"+rem;
       }
       else if(p.state==="paused"){ pillCls="busy"; pillTxt="Paused"; }
@@ -489,8 +570,9 @@ function renderFleet(){
       }
     }
     card.innerHTML=`
-      <div class="top"><span class="pn">${esc(p.name)}</span><span class="pill ${pillCls}"><span class="dot"></span>${pillTxt}</span></div>
+      <div class="top"><span class="pn">${esc(p.name)}</span><span style="display:flex;align-items:center;gap:7px">${p.online?`<button class="statsbtn${STATSOPEN.has(p.id)?' on':''}" data-statsbtn="${p.id}" title="Temps &amp; job stats">▁▂▅</button>`:""}<span class="pill ${pillCls}"><span class="dot"></span>${pillTxt}</span></span></div>
       ${p.state==="printing"?`<div class="progress"><i style="width:${Math.round((p.progress||0)*100)}%"></i></div>`:""}
+      ${(p.state==="printing"||p.state==="paused")&&p.filename?`<div class="fname" title="${esc(p.filename)}">${esc(p.filename.replace(/\.gcode$/i,""))}</div>`:""}
       <div class="heads">${headsHtml}</div>
       ${p.online?`<div class="bedrow"><span class="bedlabel">Bed</span><span class="bedtemp">${p.bed?Math.round(p.bed.temp)+'° / '+Math.round(p.bed.target)+'°':'—'}</span>`+
         `<input class="bedset" id="bedin-${p.id}" type="number" min="0" max="120" placeholder="°C"><button class="btn ghost bedbtn" data-bed="${p.id}">Set</button><button class="btn ghost bedbtn" data-bed="${p.id}" data-off="1">Off</button></div>`:""}
@@ -507,10 +589,19 @@ function renderFleet(){
             + `<button class="btn primary" ${canSend?"":"disabled"} data-id="${p.id}" data-start="1">Print</button>`
         }
       </div>
-      <div class="pstatus" id="pst-${p.id}"></div>`;
+      <div class="pstatus" id="pst-${p.id}"></div>
+      ${p.online&&STATSOPEN.has(p.id)?statsPanelHtml(p.id):""}`;
     wrap.appendChild(card);
   });
   $("fleetcount").textContent=online+"/"+FLEET.length+" online";
+  wrap.querySelectorAll("button[data-statsbtn]").forEach(b=>{
+    b.addEventListener("click",()=>{
+      const id=parseInt(b.dataset.statsbtn,10);
+      if(STATSOPEN.has(id)){ STATSOPEN.delete(id); }
+      else { STATSOPEN.add(id); fetchCardStats(id); }
+      renderFleet();
+    });
+  });
   wrap.querySelectorAll("button[data-id]").forEach(b=>{
     b.addEventListener("click",()=>pushTo(parseInt(b.dataset.id,10), b.dataset.start==="1"));
   });
@@ -638,6 +729,37 @@ async function setBed(printer, off){
 let invLoaded=false;
 document.querySelectorAll("details.diag").forEach(d=>{
   if(d.querySelector("#invwrap")) d.addEventListener("toggle",()=>{ if(d.open && !invLoaded){ invLoaded=true; loadInventory(); } });
+});
+
+// ---- farm stats (refresh on every expand) ----
+// Lifetime totals live in each printer's own Moonraker job history — the Hub
+// aggregates them on demand. Filament figures are LENGTH (Moonraker tracks
+// extruded mm), shown as m/km, never grams.
+function fmtHrs(s){ return (s/3600).toFixed(1)+" h"; }
+function fmtKm(mm){ return mm>=1e6 ? (mm/1e6).toFixed(2)+" km" : Math.round(mm/1000)+" m"; }
+$("farmdiag").addEventListener("toggle", async function(){
+  if(!this.open) return;
+  const pre=$("farmpre"); pre.textContent="Loading…";
+  try{
+    const [s,h]=await Promise.all([
+      fetch("/api/farm/stats").then(r=>r.json()),
+      fetch("/api/farm/history?limit=8").then(r=>r.json())
+    ]);
+    const lines=[];
+    lines.push(`FLEET  ·  ${s.fleet.online}/${s.fleet.total} online  ·  ${s.fleet.jobs} jobs  ·  ${fmtHrs(s.fleet.printTime)} printed  ·  ${fmtKm(s.fleet.filamentMm)} filament  ·  longest ${fmtHrs(s.fleet.longestJob)}`);
+    lines.push("");
+    s.printers.forEach(p=>{
+      lines.push(p.online
+        ? `${p.name.padEnd(14)} ${String(p.jobs).padStart(4)} jobs  ${fmtHrs(p.printTime).padStart(9)}  ${fmtKm(p.filamentMm).padStart(8)}`
+        : `${p.name.padEnd(14)} offline`);
+    });
+    lines.push(""); lines.push("RECENT JOBS");
+    h.forEach(j=>{
+      const d=new Date(j.start*1000);
+      lines.push(`${d.toLocaleDateString()} ${d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}  ${j.printer.padEnd(12)} ${j.status.padEnd(11)} ${fmtHrs(j.duration).padStart(7)}  ${j.filename}`);
+    });
+    pre.textContent=lines.join("\n");
+  }catch(e){ pre.textContent="Failed: "+e.message; }
 });
 async function loadInventory(){
   const wrap=$("invwrap"); wrap.textContent="Loading…";

@@ -3,7 +3,7 @@
 // and pushes the chosen file to the chosen printer via Moonraker (server-side,
 // so no browser CORS headaches).
 
-const VERSION = "2.0.0";
+const VERSION = "2.1.0";
 
 const express = require("express");
 const fs = require("fs");
@@ -361,9 +361,38 @@ function decodeHeads(ptc) {
   });
 }
 
+// ---- Per-file metadata cache -------------------------------------------------
+// The touchscreen computes progress from header-corrected byte position and its
+// countdown from the slicer's estimated_time. Both live in file metadata, which
+// only changes when the file changes — so fetch once per (printer, file) and
+// re-fetch if the file size stops matching (re-sliced under the same name).
+// Verified 2026-07-02: screen showed 1% / 16:03 while display_status said 3%;
+// header-corrected bytes × estimated_time reproduced the screen exactly.
+const META_CACHE = {};   // key: printer name -> { file, size, start, end, est }
+async function fileMeta(base, key, filename, fileSize) {
+  const c = META_CACHE[key];
+  if (c && c.file === filename && c.size === fileSize) return c;
+  try {
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), 3500);
+    const r = await fetch(base + "/server/files/metadata?filename=" + encodeURIComponent(filename), { signal: ctrl.signal });
+    clearTimeout(to);
+    if (!r.ok) return null;
+    const m = ((await r.json()).result) || {};
+    const rec = {
+      file: filename, size: fileSize,
+      start: m.gcode_start_byte || 0,
+      end: m.gcode_end_byte || 0,
+      est: m.estimated_time || 0
+    };
+    META_CACHE[key] = rec;
+    return rec;
+  } catch { return null; }
+}
+
 async function probe(p) {
   const base = String(p.url).replace(/\/+$/, "");
-  const url = base + "/printer/objects/query?print_task_config&print_stats&display_status&heater_bed&exclude_object";
+  const url = base + "/printer/objects/query?print_task_config&print_stats&display_status&virtual_sdcard&heater_bed&exclude_object";
   try {
     const ctrl = new AbortController();
     const to = setTimeout(() => ctrl.abort(), 3500);
@@ -376,6 +405,7 @@ async function probe(p) {
     const heads = decodeHeads(ptc);
     const ps = st.print_stats || {};
     const ds = st.display_status || {};
+    const vsd = st.virtual_sdcard || {};
     const hb = st.heater_bed || {};
     const eo = st.exclude_object || {};
     const plate = (eo.objects && eo.objects.length)
@@ -383,11 +413,29 @@ async function probe(p) {
       : null;
     // logical-filament -> physical-head map (first 4 entries of the table)
     const mapTable = Array.isArray(ptc.extruder_map_table) ? ptc.extruder_map_table.slice(0, 4) : null;
+    // Progress: header-corrected byte position through the gcode body — this is
+    // what the touchscreen shows. display_status.progress is the slicer's coarse
+    // integer M73 P value and runs ahead early in a print.
+    let progress = typeof ds.progress === "number" ? ds.progress : 0;
+    let etaSec = null;
+    if ((ps.state === "printing" || ps.state === "paused") && ps.filename) {
+      if (typeof vsd.progress === "number") progress = vsd.progress;
+      const meta = await fileMeta(base, p.name, ps.filename, vsd.file_size);
+      if (meta && typeof vsd.file_position === "number" && meta.end > meta.start) {
+        progress = Math.min(1, Math.max(0,
+          (vsd.file_position - meta.start) / (meta.end - meta.start)));
+      }
+      // Screen-matching countdown: slicer estimate scaled by remaining fraction.
+      // Deliberately mirrors the touchscreen (not self-correcting) so the Hub
+      // and the screen never disagree.
+      if (meta && meta.est > 0) etaSec = Math.max(0, meta.est * (1 - progress));
+    }
     return {
       name: p.name, online: true,
       state: ps.state || "unknown",
       filename: ps.filename || "",
-      progress: typeof ds.progress === "number" ? ds.progress : 0,
+      progress,
+      etaSec,
       printDuration: typeof ps.print_duration === "number" ? ps.print_duration : 0,
       bed: (typeof hb.temperature === "number") ? { temp: hb.temperature, target: hb.target || 0 } : null,
       plate,
@@ -401,6 +449,142 @@ async function probe(p) {
 app.get("/api/fleet", async (req, res) => {
   const out = await Promise.all(PRINTERS.map((p, i) => probe(p).then(r => ({ id: i, ...r }))));
   res.json(out);
+});
+
+// ---- Farm stats: lifetime totals from each printer's Moonraker job history ----
+// Moonraker keeps these on-printer (verified live on stock Snapmaker firmware);
+// the Hub just aggregates on request. total_filament_used is millimeters of
+// filament extruded — label it as length (m/km), never convert to grams.
+app.get("/api/farm/stats", async (req, res) => {
+  const per = await Promise.all(PRINTERS.map(async (p, i) => {
+    const base = String(p.url).replace(/\/+$/, "");
+    try {
+      const ctrl = new AbortController();
+      const to = setTimeout(() => ctrl.abort(), 3500);
+      const r = await fetch(base + "/server/history/totals", { signal: ctrl.signal });
+      clearTimeout(to);
+      if (!r.ok) return { id: i, name: p.name, online: false };
+      const t = (((await r.json()).result) || {}).job_totals || {};
+      return {
+        id: i, name: p.name, online: true,
+        jobs: t.total_jobs || 0,
+        printTime: t.total_print_time || 0,     // seconds, heaters-on print time
+        totalTime: t.total_time || 0,           // seconds, incl. pauses/heatup
+        filamentMm: t.total_filament_used || 0, // millimeters
+        longestJob: t.longest_job || 0          // seconds
+      };
+    } catch { return { id: i, name: p.name, online: false }; }
+  }));
+  const on = per.filter(x => x.online);
+  res.json({
+    printers: per,
+    fleet: {
+      online: on.length, total: PRINTERS.length,
+      jobs: on.reduce((a, x) => a + x.jobs, 0),
+      printTime: on.reduce((a, x) => a + x.printTime, 0),
+      filamentMm: on.reduce((a, x) => a + x.filamentMm, 0),
+      longestJob: on.reduce((a, x) => Math.max(a, x.longestJob), 0)
+    }
+  });
+});
+
+// ---- Farm history: recent jobs across all printers, newest first --------------
+app.get("/api/farm/history", async (req, res) => {
+  const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 10));
+  const per = await Promise.all(PRINTERS.map(async (p, i) => {
+    const base = String(p.url).replace(/\/+$/, "");
+    try {
+      const ctrl = new AbortController();
+      const to = setTimeout(() => ctrl.abort(), 3500);
+      const r = await fetch(base + "/server/history/list?limit=" + limit + "&order=desc", { signal: ctrl.signal });
+      clearTimeout(to);
+      if (!r.ok) return [];
+      const jobs = ((((await r.json()).result) || {}).jobs) || [];
+      return jobs.map(j => ({
+        printer: p.name, id: i,
+        filename: j.filename || "",
+        status: j.status || "",                 // completed | cancelled | error | in_progress
+        start: j.start_time || 0,               // epoch seconds
+        duration: j.print_duration || 0,        // seconds
+        filamentMm: j.filament_used || 0
+      }));
+    } catch { return []; }
+  }));
+  const all = per.flat().sort((a, b) => (b.start || 0) - (a.start || 0)).slice(0, limit);
+  res.json(all);
+});
+
+// ---- Per-printer temperature trends -------------------------------------------
+// Moonraker natively retains ~20 min of rolling temp history (verified live on
+// stock firmware, ~110 KB raw). The Hub downsamples to ≤120 points per sensor so
+// the panel stays phone-friendly. Sensor names are passed through as-is — only
+// heater_bed is hardware-confirmed on the U1 so far, so nothing is hardcoded.
+app.get("/api/ptrends", async (req, res) => {
+  const id = Number(req.query.id);
+  const p = PRINTERS[id];
+  if (!p) return res.status(400).json({ error: "bad id" });
+  const base = String(p.url).replace(/\/+$/, "");
+  try {
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), 4000);
+    const r = await fetch(base + "/server/temperature_store", { signal: ctrl.signal });
+    clearTimeout(to);
+    if (!r.ok) return res.status(502).json({ error: "printer replied " + r.status });
+    const result = ((await r.json()).result) || {};
+    const MAXPTS = 120;
+    const ds = arr => {
+      if (!Array.isArray(arr)) return [];
+      if (arr.length <= MAXPTS) return arr;
+      const step = arr.length / MAXPTS, out = [];
+      for (let i = 0; i < MAXPTS; i++) out.push(arr[Math.floor(i * step)]);
+      return out;
+    };
+    const sensors = {};
+    for (const [name, v] of Object.entries(result)) {
+      if (v && Array.isArray(v.temperatures)) {
+        sensors[name] = {
+          temps: ds(v.temperatures).map(x => Math.round(x * 10) / 10),
+          samples: v.temperatures.length   // Moonraker samples ~1/sec → seconds of history
+        };
+      }
+    }
+    res.json({ sensors });
+  } catch (e) { res.status(502).json({ error: String(e.message || e) }); }
+});
+
+// ---- Per-printer lifetime stats + recent jobs ----------------------------------
+app.get("/api/pstats", async (req, res) => {
+  const id = Number(req.query.id);
+  const p = PRINTERS[id];
+  if (!p) return res.status(400).json({ error: "bad id" });
+  const base = String(p.url).replace(/\/+$/, "");
+  const get = async path => {
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), 4000);
+    const r = await fetch(base + path, { signal: ctrl.signal });
+    clearTimeout(to);
+    if (!r.ok) throw new Error("printer replied " + r.status);
+    return (await r.json()).result || {};
+  };
+  try {
+    const [tot, hist] = await Promise.all([
+      get("/server/history/totals"),
+      get("/server/history/list?limit=10&order=desc")
+    ]);
+    const t = tot.job_totals || {};
+    res.json({
+      jobs: t.total_jobs || 0,
+      printTime: t.total_print_time || 0,      // seconds
+      filamentMm: t.total_filament_used || 0,  // millimeters (length, not grams)
+      longestJob: t.longest_job || 0,
+      recent: (hist.jobs || []).map(j => ({
+        filename: j.filename || "",
+        status: j.status || "",
+        start: j.start_time || 0,
+        duration: j.print_duration || 0
+      }))
+    });
+  } catch (e) { res.status(502).json({ error: String(e.message || e) }); }
 });
 
 // ---- Set bed temperature on a printer (M140 — standard, no wait) ----
