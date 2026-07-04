@@ -1,5 +1,7 @@
 # U1 Print Hub
 
+![U1 Print Hub dashboard — farm view with live prints and the filament color picker](docs/dashboard.png)
+
 A small local dashboard for a farm of **Snapmaker U1** printers. From your phone or
 any browser on the same network you can:
 
