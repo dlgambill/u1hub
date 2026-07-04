@@ -197,8 +197,7 @@ addresses never move and you won't have to touch anything.
 - **Realtime** uses one websocket per printer plus a server-sent-events stream to the
   browser; both fall back to plain HTTP polling automatically if anything is in the way.
 - **Treat the hub like the printers it controls.** As of this release there is no
-  built-in password: anyone who can reach the hub can push prints to real ~300 C
-  hardware. Keep it on your home/shop network — **don't expose it to the internet or
+  built-in password: anyone who can reach the hub can push prints. Keep it on your home/shop network — **don't expose it to the internet or
   forward a port to it** — and don't leave prints unattended. Built-in authentication
   and hub-managed secure remote access are the next two releases; until you're
   running a version with a login screen, LAN-only is the rule.
