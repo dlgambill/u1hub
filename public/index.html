@@ -1,9 +1,14 @@
 <!DOCTYPE html>
-<!-- U1 Print Hub — index v2.1.0 -->
+<!-- U1 Print Hub — index v2.5.0 -->
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#14161b">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>U1 Print Hub</title>
 <style>
   :root{
@@ -35,6 +40,9 @@
   .job{display:block; width:100%; text-align:left; cursor:pointer; background:transparent; border:1px solid transparent; border-radius:8px; padding:11px 12px; margin-bottom:4px; color:var(--ink); font:inherit;}
   .job:hover{background:var(--panel); border-color:var(--line-soft);}
   .job.active{background:var(--panel); border-color:var(--signal);}
+  .job{display:flex; align-items:center; gap:10px;}
+  .job .jtxt{min-width:0; flex:1;}
+  .job .jthumb{width:42px; height:42px; border-radius:6px; object-fit:cover; flex:none; background:#20242c; border:1px solid var(--line-soft);}
   .job .jn{font-size:13.5px; font-weight:600; word-break:break-all; line-height:1.3;}
   .job .jm{font-family:var(--mono); font-size:10.5px; color:var(--ink-faint); margin-top:4px; letter-spacing:.02em;}
   .job .jprinted{color:var(--ok); margin-top:2px;}
@@ -89,13 +97,32 @@
   .heads{display:grid; grid-template-columns:repeat(4,1fr); gap:9px;}
   .h{border:1px solid var(--line-soft); border-radius:8px; overflow:hidden; background:var(--panel-2);}
   .h.match{border-color:var(--signal); box-shadow:0 0 0 1px var(--signal);}
-  .h .sw{height:40px; border-bottom:1px solid rgba(0,0,0,.3);}
+  .h .sw{height:40px; border-bottom:1px solid rgba(0,0,0,.3); position:relative;}
+  .h.editable .sw{cursor:pointer;}
+  /* color picker popover */
+  .cpop{border:1px solid var(--line); border-radius:8px; background:var(--panel-2); padding:10px; display:flex; flex-direction:column; gap:9px;}
+  .cpop .cpophdr{font-family:var(--mono); font-size:10.5px; color:var(--ink-faint); letter-spacing:.04em;}
+  .cpop .cpgrid{display:grid; grid-template-columns:repeat(10,1fr); gap:6px;}
+  .cpop .cpsw{display:block; aspect-ratio:1; border-radius:5px; border:1px solid rgba(0,0,0,.35); cursor:pointer;}
+  .cpop .cpsw:hover{outline:2px solid var(--signal);}
+  .cpop .cprow{display:flex; align-items:center; gap:8px;}
+  .cpop .cpin{flex:1; min-width:0; font-family:var(--mono); font-size:12px; background:var(--panel); color:var(--ink); border:1px solid var(--line); border-radius:6px; padding:6px 8px;}
+  .cpop .cpprev{width:34px; height:28px; border-radius:6px; border:1px solid var(--line); flex:none; padding:0; background:transparent; cursor:pointer;}
+  .cpop .cpprev::-webkit-color-swatch-wrapper{padding:2px;}
+  .cpop .cpprev::-webkit-color-swatch{border:none; border-radius:4px;}
+  .cpop .cpprev::-moz-color-swatch{border:none; border-radius:4px;}
+  .cpop .cpprev.dim{opacity:.35;}
+  .h.editable .sw:hover::after{content:"\270E"; position:absolute; right:4px; bottom:2px; font-size:11px; color:rgba(255,255,255,.75); text-shadow:0 1px 2px rgba(0,0,0,.8); pointer-events:none;}
   .h.empty .sw{background:repeating-linear-gradient(135deg,#262a32,#262a32 6px,#222630 6px,#222630 12px); height:40px;}
   .h .lab{padding:5px 6px 7px; text-align:center;}
   .h .ht{font-family:var(--mono); font-size:9px; color:var(--ink-faint); letter-spacing:.08em;}
   .h .hm{font-size:10px; color:var(--ink-dim); margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
   .pcard .foot{display:flex; align-items:center; gap:9px;}
   .pcard .fname{font-family:var(--mono); font-size:11px; color:var(--ink-dim); margin-top:-7px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .pcard .fnamerow{display:flex; align-items:center; gap:8px; margin-top:-7px;}
+  .pcard .fnamerow .fname{margin-top:0; flex:1; min-width:0;}
+  .pcard .cthumb{width:44px; height:44px; border-radius:6px; object-fit:cover; flex:none; background:#20242c; border:1px solid var(--line-soft);}
+  .pcard .errline{font-family:var(--mono); font-size:11px; color:var(--bad); margin-top:-5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
   /* per-card stats panel */
   .pcard .statsbtn{font:inherit; font-family:var(--mono); font-size:10.5px; color:var(--ink-faint); background:transparent; border:1px solid var(--line); border-radius:6px; padding:3px 8px; cursor:pointer; letter-spacing:.04em;}
   .pcard .statsbtn.on{color:var(--signal); border-color:var(--signal);}
@@ -280,15 +307,19 @@
 
 <script>
 const $ = id => document.getElementById(id);
-const VERSION = "2.1.0";
+const VERSION = "2.5.0";
 let FILES = [], SELECTED = null, MAP = null, FLEET = [], MAPSEL = {};
 
 init();
-async function init(){ await checkVersion(); await loadConfigUI(); await loadFiles(); await loadFleet(); 
+// PWA: register the (deliberately cache-free) service worker so the Hub can
+// be installed to the phone home screen. No fetch handler = no stale-version
+// risk; the version banner stays the source of truth.
+if("serviceWorker" in navigator && location.protocol!=="file:"){ navigator.serviceWorker.register("/sw.js").catch(()=>{}); }
+async function init(){ await checkVersion(); await loadConfigUI(); await loadFiles(); await loadFleet(); startEvents(); 
   $("platex").addEventListener("click", closePlate);
   $("platemodal").addEventListener("click", e=>{ if(e.target===$("platemodal")) closePlate(); });
   setInterval(loadFiles, 15000);
-  setInterval(()=>{ if(PUSHES>0) return; const a=document.activeElement; if(a && a.closest && a.closest("#fleet") && (a.tagName==="SELECT"||a.tagName==="INPUT")) return; loadFleet(); }, 5000);
+  setInterval(()=>{ if(ES_OK) return; if(fleetRenderBlocked()) return; loadFleet(); }, 5000);
 }
 
 async function checkVersion(){
@@ -336,8 +367,11 @@ function renderList(){
   sortFiles(shown);
   list.innerHTML="";
   shown.forEach(f=>{ const b=document.createElement("button"); b.className="job"+(SELECTED===f.name?" active":"");
-    b.innerHTML=`<div class="jn">${esc(f.name)}</div><div class="jm">${fmtTime(f.mtime)} · ${fmtSize(f.size)}</div>`+
-      (f.lastPrinted?`<div class="jm jprinted">Printed ${fmtTime(f.lastPrinted)}</div>`:"");
+    // Thumbnail extracted from the gcode header (Snapmaker Orca embeds PNGs
+    // in the first 256 KB). Files without one just 404 and the img hides.
+    b.innerHTML=`<img class="jthumb" loading="lazy" src="/api/thumb?file=${encodeURIComponent(f.name)}&v=${f.mtime||0}" onerror="this.style.display='none'">`+
+      `<span class="jtxt"><div class="jn">${esc(f.name)}</div><div class="jm">${fmtTime(f.mtime)} · ${fmtSize(f.size)}</div>`+
+      (f.lastPrinted?`<div class="jm jprinted">Printed ${fmtTime(f.lastPrinted)}</div>`:"")+`</span>`;
     b.addEventListener("click",()=>selectFile(f.name)); list.appendChild(b); });
 }
 
@@ -416,7 +450,9 @@ function sensorColor(name){ return /bed/i.test(name) ? "var(--busy)" : "var(--si
 function prettySensor(name){
   const m=name.match(/^extruder(\d*)$/);
   if(m) return "T"+((m[1]===""?0:parseInt(m[1],10))+1);
-  return name.replace(/^temperature_sensor\s+/,"").replace(/^heater_/,"").replace(/_/g," ");
+  // Display-only: Snapmaker names the sensor "cavity" but the UI says
+  // "chamber" (the standard 3D-printing term). Hover title keeps the raw name.
+  return name.replace(/^temperature_sensor\s+/,"").replace(/^heater_/,"").replace(/_/g," ").replace(/\bcavity\b/gi,"chamber");
 }
 function statsPanelHtml(id){
   const d=STATSDATA[id];
@@ -461,6 +497,29 @@ setInterval(()=>{ STATSOPEN.forEach(id=>fetchCardStats(id)); }, 15000);
 async function loadFleet(){
   try{ FLEET=await (await fetch("/api/fleet")).json(); renderFleet(); }
   catch(e){ $("fleet").innerHTML='<p class="subnote">Fleet unreachable.</p>'; }
+}
+
+// ---- Realtime fleet stream (SSE) ----------------------------------------
+// The server pushes a fleet snapshot the moment a printer's websocket reports
+// a change, so cards update live instead of on the 5 s poll. If the stream
+// drops (server restart, proxy, old browser) ES_OK goes false and the classic
+// 5 s poll takes over automatically — worst case is exactly v2.3.0 behavior.
+let ES=null, ES_OK=false;
+function fleetRenderBlocked(){
+  if(PUSHES>0 || PICKOPEN) return true;
+  const a=document.activeElement;
+  return !!(a && a.closest && a.closest("#fleet") && (a.tagName==="SELECT"||a.tagName==="INPUT"));
+}
+function startEvents(){
+  if(!window.EventSource) return;
+  try{ ES=new EventSource("/api/events"); }catch{ return; }
+  ES.onmessage=e=>{
+    ES_OK=true;
+    let d; try{ d=JSON.parse(e.data); }catch{ return; }
+    FLEET=d;
+    if(!fleetRenderBlocked()) renderFleet();
+  };
+  ES.onerror=()=>{ ES_OK=false; };
 }
 
 // Advisory match only. "redmean" is a cheap perceptual distance — it treats
@@ -525,14 +584,23 @@ function renderFleet(){
       else { pillCls="idle"; pillTxt="Idle"; }
     }
     // heads
+    const busy = p.online && (p.state==="printing"||p.state==="paused");
     const heads=(p.heads||[]);
     const headsHtml=heads.map((h,i)=>{
       if(!h || !h.loaded) return `<div class="h empty"><div class="sw"></div><div class="lab"><div class="ht">T${i+1}</div><div class="hm">—</div></div></div>`;
       // advisory match: is this head close to any needed color?
       let match=false;
       if(need.length){ for(const n of need){ if(n.hex && h.hex && colorDist(n.hex,h.hex)<MATCH_THRESHOLD){ match=true; break; } } }
-      return `<div class="h${match?' match':''}"><div class="sw" style="background:${h.hex||'#3a3f49'}"></div>`+
-             `<div class="lab"><div class="ht">T${i+1}</div><div class="hm">${esc(h.material||'')}</div><div class="ht" style="margin-top:2px">${h.hex||""}</div></div></div>`;
+      // Multi-color spools (filament_color_multi, read path hardware-
+      // confirmed) render as a gradient; single colors as a flat swatch.
+      const bg = (h.colors&&h.colors.length>1) ? `linear-gradient(135deg, ${h.colors.join(", ")})` : (h.hex||'#3a3f49');
+      // Idle + loaded = editable: tapping the swatch opens the Hub color
+      // picker (common colors + hex / CSS-name input). Writes go through
+      // /api/setcolor (same gcode the touchscreen uses) and the swatch only
+      // updates after the printer confirms the change.
+      const editable = p.online && !busy;
+      return `<div class="h${match?' match':''}${editable?' editable':''}"><div class="sw" style="background:${bg}"${editable?` data-pickopen="${p.id}:${i}" title="Change T${i+1} color"`:""}></div>`+
+             `<div class="lab"><div class="ht">T${i+1}</div><div class="hm">${esc(h.material||'')}</div><div class="ht" style="margin-top:2px">${h.colors?h.colors.join(" "):(h.hex||"")}</div></div></div>`;
     }).join("");
     // factual heads-loaded, plus a separate ADVISORY color-match note
     let matchHtml="";
@@ -547,7 +615,6 @@ function renderFleet(){
         matchHtml=`<span class="matchline">${loadedCount}/4 heads loaded</span>`;
       }
     }
-    const busy = p.online && (p.state==="printing"||p.state==="paused");
     const canSend = p.online && SELECTED && !busy;
     // per-color head picker (default: greedy nearest distinct head)
     let mapHtml="";
@@ -570,10 +637,12 @@ function renderFleet(){
       }
     }
     card.innerHTML=`
-      <div class="top"><span class="pn">${esc(p.name)}</span><span style="display:flex;align-items:center;gap:7px">${p.online?`<button class="statsbtn${STATSOPEN.has(p.id)?' on':''}" data-statsbtn="${p.id}" title="Temps &amp; job stats">▁▂▅</button>`:""}<span class="pill ${pillCls}"><span class="dot"></span>${pillTxt}</span></span></div>
+      <div class="top"><span class="pn">${esc(p.name)}</span><span style="display:flex;align-items:center;gap:7px">${p.online?`<button class="statsbtn${STATSOPEN.has(p.id)?' on':''}" data-statsbtn="${p.id}" title="Temps &amp; job stats">▁▂▅</button>`:""}${diskChip(p)}<span class="pill ${pillCls}"><span class="dot"></span>${pillTxt}</span></span></div>
       ${p.state==="printing"?`<div class="progress"><i style="width:${Math.round((p.progress||0)*100)}%"></i></div>`:""}
-      ${(p.state==="printing"||p.state==="paused")&&p.filename?`<div class="fname" title="${esc(p.filename)}">${esc(p.filename.replace(/\.gcode$/i,""))}</div>`:""}
+      ${(p.state==="printing"||p.state==="paused")&&p.filename?`<div class="fnamerow"><img class="cthumb" loading="lazy" src="/api/pthumb?id=${p.id}&file=${encodeURIComponent(p.filename)}" onerror="this.style.display='none'"><div class="fname" title="${esc(p.filename)}">${esc(p.filename.replace(/\.gcode$/i,""))}${p.layer?` · L${p.layer.cur}/${p.layer.total}`:""}</div></div>`:""}
+      ${p.state==="error"&&p.message?`<div class="errline" title="${esc(p.message)}">${esc(p.message)}</div>`:""}
       <div class="heads">${headsHtml}</div>
+      ${PICKOPEN && PICKOPEN.id===p.id && !busy ? colorPopHtml(p) : ""}
       ${p.online?`<div class="bedrow"><span class="bedlabel">Bed</span><span class="bedtemp">${p.bed?Math.round(p.bed.temp)+'° / '+Math.round(p.bed.target)+'°':'—'}</span>`+
         `<input class="bedset" id="bedin-${p.id}" type="number" min="0" max="120" placeholder="°C"><button class="btn ghost bedbtn" data-bed="${p.id}">Set</button><button class="btn ghost bedbtn" data-bed="${p.id}" data-off="1">Off</button></div>`:""}
       ${mapHtml}
@@ -611,6 +680,15 @@ function renderFleet(){
   wrap.querySelectorAll("button[data-bed]").forEach(b=>{
     b.addEventListener("click",()=>setBed(parseInt(b.dataset.bed,10), b.dataset.off==="1"));
   });
+  wrap.querySelectorAll("[data-pickopen]").forEach(el=>{
+    el.addEventListener("click",()=>{
+      const [id,slot]=el.dataset.pickopen.split(":").map(Number);
+      PICKOPEN=(PICKOPEN&&PICKOPEN.id===id&&PICKOPEN.slot===slot)?null:{id,slot};
+      renderFleet();
+      const inp=document.getElementById("cpin"); if(inp){ inp.focus(); inp.select(); }
+    });
+  });
+  wirePickPopover(wrap);
   wrap.querySelectorAll("button[data-ctl]").forEach(b=>{
     b.addEventListener("click",()=>ctl(parseInt(b.dataset.ctl,10), b.dataset.act));
   });
@@ -655,6 +733,102 @@ async function pollJob(jobId, st, start, mapped){
       return;
     }
   }
+}
+
+// Low-disk warning chip: appears only when a printer reports under 2 GiB free
+// (disk_usage via /server/files/directory?extended=true — endpoint confirmed
+// live on stock firmware). Hover shows free / total.
+const DISK_WARN_BYTES = 2 * 1024 * 1024 * 1024;
+function diskChip(p){
+  if(!p.online || typeof p.diskFree !== "number" || p.diskFree >= DISK_WARN_BYTES) return "";
+  const gib = b => (b/1073741824).toFixed(1);
+  const tip = "Printer storage low: " + gib(p.diskFree) + " GB free" + (p.diskTotal ? " of " + gib(p.diskTotal) + " GB" : "");
+  return `<span class="pill err" title="${esc(tip)}"><span class="dot"></span>Disk ${gib(p.diskFree)} GB</span>`;
+}
+
+// ---- Hub color picker (popover) ----------------------------------------
+// Accepts #RRGGBB / RRGGBB / #RGB hex, or any CSS color name ("tan",
+// "salmon", ...). Names resolve via the canvas fillStyle normalizer — the
+// browser does name-to-hex natively, no lookup table needed. Two different
+// sentinel pre-fills distinguish "invalid input" from a real parse.
+let PICKOPEN=null; // {id, slot, val}
+const COMMON_COLORS=[["White","FFFFFF"],["Silver","C0C0C0"],["Gray","808080"],["Black","000000"],["Red","FF0000"],["Orange","FFA500"],["Gold","FFD700"],["Yellow","FFFF00"],["Tan","D2B48C"],["Brown","8B4513"],["Lime","00FF00"],["Green","008000"],["Teal","008080"],["Cyan","00FFFF"],["Blue","0000FF"],["Navy","000080"],["Purple","800080"],["Magenta","FF00FF"],["Pink","FFC0CB"],["Beige","F5F5DC"]];
+function resolveColor(str){
+  str=String(str||"").trim();
+  if(!str) return null;
+  let m=/^#?([0-9a-fA-F]{6})$/.exec(str);
+  if(m) return "#"+m[1].toUpperCase();
+  m=/^#?([0-9a-fA-F]{3})$/.exec(str);
+  if(m){ const h=m[1]; return ("#"+h[0]+h[0]+h[1]+h[1]+h[2]+h[2]).toUpperCase(); }
+  const ctx=resolveColor._c||(resolveColor._c=document.createElement("canvas").getContext("2d"));
+  ctx.fillStyle="#010203"; ctx.fillStyle=str; const a=ctx.fillStyle;
+  ctx.fillStyle="#040506"; ctx.fillStyle=str; const b=ctx.fillStyle;
+  if(a!==b) return null;                       // didn't parse — sentinels leaked through
+  if(/^#[0-9a-f]{6}$/i.test(a)) return a.toUpperCase();
+  return null;                                 // parsed to rgba() etc — no alpha here
+}
+function colorPopHtml(p){
+  const cur=(p.heads&&p.heads[PICKOPEN.slot]&&p.heads[PICKOPEN.slot].hex)||"";
+  const val=(PICKOPEN.val!==undefined)?PICKOPEN.val:cur;
+  const res=resolveColor(val);
+  const grid=COMMON_COLORS.map(([n,h])=>`<span class="cpsw" data-pickswatch="#${h}" title="${n}" style="background:#${h}"></span>`).join("");
+  return `<div class="cpop">
+    <div class="cpophdr">T${PICKOPEN.slot+1} color — tap one, or type a hex / name (e.g. tan)</div>
+    <div class="cpgrid">${grid}</div>
+    <div class="cprow">
+      <input class="cpin" id="cpin" value="${esc(val)}" placeholder="#RRGGBB or name" spellcheck="false" autocomplete="off">
+      <input type="color" class="cpprev${res?"":" dim"}" id="cpprev" value="${res||"#888888"}" title="Open full color picker">
+      <button class="btn primary" id="cpapply" ${res?"":"disabled"}>Apply</button>
+      <button class="btn ghost" id="cpcancel">Cancel</button>
+    </div>
+  </div>`;
+}
+function wirePickPopover(wrap){
+  const cpin=document.getElementById("cpin");
+  if(!cpin) return;
+  const prev=document.getElementById("cpprev"), apply=document.getElementById("cpapply");
+  cpin.addEventListener("input",()=>{
+    if(PICKOPEN) PICKOPEN.val=cpin.value;
+    const r=resolveColor(cpin.value);
+    if(prev){ if(r){ prev.value=r; prev.classList.remove("dim"); } else { prev.classList.add("dim"); } }
+    if(apply) apply.disabled=!r;
+  });
+  // The preview doubles as the full-spectrum droplet: picking there feeds the
+  // text field, so grid, names, hex, and droplet all land in the same place.
+  if(prev) prev.addEventListener("input",()=>{ cpin.value=prev.value.toUpperCase(); cpin.dispatchEvent(new Event("input")); });
+  cpin.addEventListener("keydown",e=>{
+    if(e.key==="Enter") commitPick();
+    else if(e.key==="Escape"){ PICKOPEN=null; renderFleet(); }
+  });
+  wrap.querySelectorAll("[data-pickswatch]").forEach(s=>{
+    s.addEventListener("click",()=>{ cpin.value=s.dataset.pickswatch; cpin.dispatchEvent(new Event("input")); cpin.focus(); });
+  });
+  if(apply) apply.addEventListener("click",commitPick);
+  const cancel=document.getElementById("cpcancel");
+  if(cancel) cancel.addEventListener("click",()=>{ PICKOPEN=null; renderFleet(); });
+}
+function commitPick(){
+  if(!PICKOPEN) return;
+  const inp=document.getElementById("cpin");
+  const hex=inp?resolveColor(inp.value):null;
+  if(!hex) return;
+  const {id,slot}=PICKOPEN;
+  PICKOPEN=null;
+  setColor(id,slot,hex);
+}
+
+// ---- Filament color: tap a swatch on an idle printer to change it ----
+// Server verifies the write against print_task_config before reporting ok,
+// so a green status here means the printer itself confirmed the new color.
+async function setColor(printer, slot, hex){
+  const st=$("pst-"+printer);
+  if(st){ st.className="pstatus work"; st.textContent="Setting T"+(slot+1)+" color…"; }
+  try{
+    const r=await fetch("/api/setcolor",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({printer,slot,hex})});
+    const d=await r.json(); if(!r.ok||d.error) throw new Error(d.error||("HTTP "+r.status));
+    if(st){ st.className="pstatus ok"; st.textContent="T"+(slot+1)+" set to "+d.hex+" — confirmed by printer"; }
+    loadFleet();
+  }catch(e){ if(st){ st.className="pstatus err"; st.textContent=e.message; } }
 }
 
 async function ctl(printer, act){

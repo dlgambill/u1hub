@@ -1,9 +1,9 @@
-// server.js — U1 Print Hub  ·  v1.5.3
+// server.js — U1 Print Hub  ·  v2.5.0
 // Watches a folder of sliced gcode, shows the toolhead/color map per file,
 // and pushes the chosen file to the chosen printer via Moonraker (server-side,
 // so no browser CORS headaches).
 
-const VERSION = "2.1.0";
+const VERSION = "2.5.0";
 
 const express = require("express");
 const fs = require("fs");
@@ -32,6 +32,9 @@ function loadConfig() {
   FOLDER = path.resolve(BASE_DIR, CFG.gcodeFolder || "./gcode");
   PRINTERS = Array.isArray(CFG.printers) ? CFG.printers : [];
   try { fs.mkdirSync(FOLDER, { recursive: true }); } catch {}
+  if (FARM_READY) farmWsRestart(); // reconnect sockets to the new printer list
+  // (FARM_READY is a hoisted var — falsy during the initial top-of-file
+  // loadConfig(), so sockets first connect once the farm section is defined)
 }
 loadConfig();
 const PORT = CFG.port || 4545;
@@ -344,6 +347,7 @@ function decodeHeads(ptc) {
   const typ  = ptc.filament_type || [];
   const sub  = ptc.filament_sub_type || [];
   const off  = ptc.filament_official || [];
+  const multi = ptc.filament_color_multi || [];
   return [0, 1, 2, 3].map(i => {
     const loaded = !!ex[i];
     let hex = null;
@@ -351,9 +355,24 @@ function decodeHeads(ptc) {
       const m = /^#?([0-9a-fA-F]{6})/.exec(rgba[i]);
       if (m) hex = "#" + m[1].toUpperCase();
     }
+    // Multi-color spools: filament_color_multi carries {nums, colors[], mode}.
+    // Hardware-confirmed as the READ path (single-color spools report nums:1);
+    // pass extra colors through so the UI can render gradient swatches. The
+    // WRITE path for multi-color is unknown (SET_PRINT_FILAMENT_CONFIG silently
+    // ignores unrecognized params, so it can't be probed) — display only.
+    let colors = null;
+    const mc = multi[i];
+    if (loaded && mc && mc.nums > 1 && Array.isArray(mc.colors) && mc.colors.length > 1) {
+      colors = mc.colors
+        .map(c => /^#?([0-9a-fA-F]{6})/.exec(String(c)))
+        .filter(Boolean)
+        .map(m2 => "#" + m2[1].toUpperCase());
+      if (colors.length < 2) colors = null;
+    }
     return {
       loaded,
       hex,
+      colors,
       material: loaded ? (typ[i] || null) : null,
       sub: (loaded && sub[i] && sub[i] !== "NONE") ? sub[i] : null,
       official: !!off[i]
@@ -379,28 +398,26 @@ async function fileMeta(base, key, filename, fileSize) {
     clearTimeout(to);
     if (!r.ok) return null;
     const m = ((await r.json()).result) || {};
+    let thumb = null;
+    if (Array.isArray(m.thumbnails) && m.thumbnails.length) {
+      const t = m.thumbnails.reduce((a, b) => ((b.width || 0) > (a.width || 0) ? b : a));
+      if (t && t.relative_path) thumb = String(t.relative_path);
+    }
     const rec = {
       file: filename, size: fileSize,
       start: m.gcode_start_byte || 0,
       end: m.gcode_end_byte || 0,
-      est: m.estimated_time || 0
+      est: m.estimated_time || 0,
+      thumb
     };
     META_CACHE[key] = rec;
     return rec;
   } catch { return null; }
 }
 
-async function probe(p) {
-  const base = String(p.url).replace(/\/+$/, "");
-  const url = base + "/printer/objects/query?print_task_config&print_stats&display_status&virtual_sdcard&heater_bed&exclude_object";
-  try {
-    const ctrl = new AbortController();
-    const to = setTimeout(() => ctrl.abort(), 3500);
-    const r = await fetch(url, { signal: ctrl.signal });
-    clearTimeout(to);
-    if (!r.ok) return { name: p.name, online: false, error: "HTTP " + r.status };
-    const j = await r.json();
-    const st = (j.result && j.result.status) || {};
+// Shape raw Klipper status objects into one fleet-card record. Used by both
+// the HTTP probe and the realtime websocket cache — same math either way.
+async function shapeStatus(p, st, base) {
     const ptc = st.print_task_config || {};
     const heads = decodeHeads(ptc);
     const ps = st.print_stats || {};
@@ -430,26 +447,222 @@ async function probe(p) {
       // and the screen never disagree.
       if (meta && meta.est > 0) etaSec = Math.max(0, meta.est * (1 - progress));
     }
+    // Layer counter — print_stats.info was confirmed live on real hardware
+    // (FIFA print reported current_layer 216 / total_layer 302 mid-print).
+    const info = ps.info || {};
+    const layer = (typeof info.current_layer === "number" && typeof info.total_layer === "number" && info.total_layer > 0)
+      ? { cur: info.current_layer, total: info.total_layer } : null;
     return {
       name: p.name, online: true,
       state: ps.state || "unknown",
+      // Firmware error text (print_stats.message) so failures say WHY on the card.
+      message: (ps.state === "error" && ps.message) ? String(ps.message).slice(0, 200) : "",
       filename: ps.filename || "",
       progress,
       etaSec,
+      layer,
       printDuration: typeof ps.print_duration === "number" ? ps.print_duration : 0,
       bed: (typeof hb.temperature === "number") ? { temp: hb.temperature, target: hb.target || 0 } : null,
       plate,
       heads, mapTable
     };
+}
+
+async function probe(p) {
+  const base = String(p.url).replace(/\/+$/, "");
+  const url = base + "/printer/objects/query?print_task_config&print_stats&display_status&virtual_sdcard&heater_bed&exclude_object";
+  try {
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), 3500);
+    const r = await fetch(url, { signal: ctrl.signal });
+    clearTimeout(to);
+    if (!r.ok) return { name: p.name, online: false, error: "HTTP " + r.status };
+    const j = await r.json();
+    const st = (j.result && j.result.status) || {};
+    return await shapeStatus(p, st, base);
   } catch (e) {
     return { name: p.name, online: false, error: e.name === "AbortError" ? "timeout" : e.message };
   }
 }
 
+// ---- Realtime farm state: websocket push with HTTP fallback -----------------
+// Verified on hardware 2026-07-03: stock Snapmaker firmware accepts websocket
+// connections and a printer.objects.subscribe pushes notify_status_update for
+// print_stats / display_status / virtual_sdcard etc. (126 events observed in a
+// 32 s mid-print capture). print_task_config was NOT observed broadcasting when
+// a color changed on the touchscreen, so colors are reconciled by a slow HTTP
+// re-query instead of trusting the socket for them.
+//
+// Uses Node's built-in browser-style WebSocket client (22.4+; pkg targets
+// node22, so identical in the packaged exe). Each printer gets one socket with
+// exponential-backoff reconnect. If a socket is down, the fleet path falls back
+// to the same HTTP probe the Hub has always used — worst case is v2.3.0
+// behavior, never worse.
+const FARM_SUB = { print_task_config: null, print_stats: null, display_status: null,
+                   virtual_sdcard: null, heater_bed: null, exclude_object: null };
+const FARMWS = new Map();   // idx -> { ws, status, raw, seenAt, backoff, timer, epoch }
+var FARM_READY = false;     // var (hoisted): loadConfig runs before this section
+let FARM_EPOCH = 0;         // bumped on restart so stale sockets ignore themselves
+const WS_FRESH_MS = 10000;  // socket data older than this -> fall back to HTTP
+
+function farmWsConnect(idx) {
+  const p = PRINTERS[idx];
+  if (!p || typeof WebSocket === "undefined") return;
+  const rec = FARMWS.get(idx) || { raw: {}, backoff: 0 };
+  rec.epoch = FARM_EPOCH;
+  rec.status = "connecting";
+  FARMWS.set(idx, rec);
+  const wsUrl = String(p.url).replace(/\/+$/, "").replace(/^http/, "ws") + "/websocket";
+  let ws;
+  try { ws = new WebSocket(wsUrl); } catch { return farmWsScheduleReconnect(idx); }
+  rec.ws = ws;
+  const myEpoch = rec.epoch;
+  ws.onopen = () => {
+    if (myEpoch !== FARM_EPOCH) { try { ws.close(); } catch {} return; }
+    rec.status = "open"; rec.backoff = 0;
+    try { ws.send(JSON.stringify({ jsonrpc: "2.0", method: "printer.objects.subscribe", params: { objects: FARM_SUB }, id: 1 })); } catch {}
+  };
+  ws.onmessage = (ev) => {
+    if (myEpoch !== FARM_EPOCH) return;
+    let j; try { j = JSON.parse(ev.data); } catch { return; }
+    // Subscribe response carries a full snapshot of every requested object.
+    if (j.id === 1 && j.result && j.result.status) {
+      rec.raw = j.result.status; rec.seenAt = Date.now(); farmMarkDirty(); return;
+    }
+    // Incremental updates: params[0] holds per-object partial field sets.
+    if (j.method === "notify_status_update" && Array.isArray(j.params) && j.params[0]) {
+      const part = j.params[0];
+      for (const k of Object.keys(part)) {
+        if (!(k in FARM_SUB)) continue;
+        rec.raw[k] = Object.assign({}, rec.raw[k], part[k]);
+      }
+      rec.seenAt = Date.now(); farmMarkDirty();
+    }
+  };
+  ws.onerror = () => {};
+  ws.onclose = () => {
+    if (myEpoch !== FARM_EPOCH) return;
+    rec.status = "closed";
+    farmWsScheduleReconnect(idx);
+  };
+}
+function farmWsScheduleReconnect(idx) {
+  const rec = FARMWS.get(idx);
+  if (!rec || rec.epoch !== FARM_EPOCH) return;
+  rec.backoff = Math.min(30000, (rec.backoff || 1000) * 2);
+  clearTimeout(rec.timer);
+  rec.timer = setTimeout(() => farmWsConnect(idx), rec.backoff);
+}
+function farmWsRestart() {
+  FARM_EPOCH++;
+  for (const [, rec] of FARMWS) { clearTimeout(rec.timer); try { rec.ws && rec.ws.close(); } catch {} }
+  FARMWS.clear();
+  (PRINTERS || []).forEach((_, i) => farmWsConnect(i));
+}
+FARM_READY = true;
+farmWsRestart();
+
+// Colors don't broadcast (hardware-observed), so re-query print_task_config
+// over HTTP every 20 s per connected printer and splice it into the socket
+// cache. Touchscreen color changes therefore appear within one reconcile tick.
+setInterval(() => {
+  for (const [idx, rec] of FARMWS) {
+    if (rec.status !== "open" || !rec.seenAt) continue;
+    const p = PRINTERS[idx]; if (!p) continue;
+    const base = String(p.url).replace(/\/+$/, "");
+    fetch(base + "/printer/objects/query?print_task_config")
+      .then(r => r.ok ? r.json() : null)
+      .then(j => {
+        const ptc = j && j.result && j.result.status && j.result.status.print_task_config;
+        if (ptc) {
+          const before = JSON.stringify(rec.raw.print_task_config || {});
+          rec.raw.print_task_config = ptc;
+          if (JSON.stringify(ptc) !== before) farmMarkDirty();
+        }
+      }).catch(() => {});
+  }
+}, 20000);
+
+// Disk usage per printer — /server/files/directory?extended=true returned 200
+// with disk totals on live hardware (probe session). Slow-moving: 60 s cadence.
+const DISK_CACHE = new Map(); // idx -> { free, total, at }
+async function diskPoll() {
+  for (let i = 0; i < (PRINTERS || []).length; i++) {
+    const p = PRINTERS[i];
+    const base = String(p.url).replace(/\/+$/, "");
+    try {
+      const ctrl = new AbortController();
+      const to = setTimeout(() => ctrl.abort(), 3500);
+      const r = await fetch(base + "/server/files/directory?extended=true", { signal: ctrl.signal });
+      clearTimeout(to);
+      if (!r.ok) continue;
+      const du = (((await r.json()).result) || {}).disk_usage || {};
+      const free = (typeof du.free === "number") ? du.free : (typeof du.available === "number" ? du.available : null);
+      const total = (typeof du.total === "number") ? du.total : null;
+      if (free !== null) DISK_CACHE.set(i, { free, total, at: Date.now() });
+    } catch {}
+  }
+}
+setInterval(diskPoll, 60000);
+setTimeout(diskPoll, 3000);
+
+// One fleet-card record per printer: fresh socket data shapes instantly with
+// zero HTTP; otherwise fall back to the classic HTTP probe with a short cache
+// so SSE broadcasts can't hammer offline printers with timeout storms.
+const PROBE_CACHE = new Map(); // idx -> { data, at }
+async function probeCached(p, idx) {
+  const rec = FARMWS.get(idx);
+  const base = String(p.url).replace(/\/+$/, "");
+  let data;
+  if (rec && rec.status === "open" && rec.seenAt && (Date.now() - rec.seenAt) < WS_FRESH_MS) {
+    data = await shapeStatus(p, rec.raw, base);
+  } else {
+    const c = PROBE_CACHE.get(idx);
+    if (c && (Date.now() - c.at) < 4000) { data = c.data; }
+    else { data = await probe(p); PROBE_CACHE.set(idx, { data, at: Date.now() }); }
+  }
+  const disk = DISK_CACHE.get(idx);
+  if (disk && data && data.online) { data.diskFree = disk.free; data.diskTotal = disk.total; }
+  return data;
+}
+async function fleetSnapshot() {
+  return Promise.all((PRINTERS || []).map((p, i) => probeCached(p, i).then(r => ({ id: i, ...r }))));
+}
+
 app.get("/api/fleet", async (req, res) => {
-  const out = await Promise.all(PRINTERS.map((p, i) => probe(p).then(r => ({ id: i, ...r }))));
-  res.json(out);
+  res.json(await fleetSnapshot());
 });
+
+// ---- Server-sent events: push fleet state to browsers the moment it changes.
+// The page falls back to its 5 s poll automatically if this stream drops.
+const SSE_CLIENTS = new Set();
+app.get("/api/events", (req, res) => {
+  res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no" });
+  res.write("retry: 4000\n\n");
+  SSE_CLIENTS.add(res);
+  req.on("close", () => SSE_CLIENTS.delete(res));
+});
+let SSE_LAST = "", SSE_TIMER = null, SSE_BUSY = false;
+function farmMarkDirty() {
+  if (SSE_TIMER) return;                    // debounce: batch bursts into one push
+  SSE_TIMER = setTimeout(sseBroadcast, 300);
+}
+async function sseBroadcast() {
+  SSE_TIMER = null;
+  if (SSE_BUSY || SSE_CLIENTS.size === 0) return;
+  SSE_BUSY = true;
+  try {
+    const snap = JSON.stringify(await fleetSnapshot());
+    if (snap !== SSE_LAST) {
+      SSE_LAST = snap;
+      for (const c of SSE_CLIENTS) { try { c.write("data: " + snap + "\n\n"); } catch {} }
+    }
+  } catch {} finally { SSE_BUSY = false; }
+}
+// Slow safety tick: catches drift the sockets don't broadcast (bed temp on
+// HTTP-only printers, disk, reconciled colors) and keeps streams warm.
+setInterval(() => { farmMarkDirty(); }, 5000);
+setInterval(() => { for (const c of SSE_CLIENTS) { try { c.write(": hb\n\n"); } catch {} } }, 20000);
 
 // ---- Farm stats: lifetime totals from each printer's Moonraker job history ----
 // Moonraker keeps these on-printer (verified live on stock Snapmaker firmware);
@@ -604,6 +817,131 @@ app.post("/api/bedtemp", async (req, res) => {
   }
 });
 
+// ---- Gcode thumbnails -------------------------------------------------------
+// Snapmaker Orca embeds base64 PNG previews (48x48 and 300x300) in gcode
+// header comments within the first 256 KB — confirmed on real sliced files.
+// /api/thumb extracts the largest one from a LOCAL file in the gcode folder.
+// /api/pthumb serves a thumbnail for a printer's ACTIVE file: it prefers the
+// local copy (same verified extraction) and falls back to Moonraker's
+// metadata thumbnails if the printer reports them (optional; a 404 just means
+// the UI shows no image).
+const THUMB_CACHE = new Map(); // key -> Buffer|null
+function thumbCachePut(key, val) {
+  THUMB_CACHE.set(key, val);
+  if (THUMB_CACHE.size > 300) THUMB_CACHE.delete(THUMB_CACHE.keys().next().value);
+}
+function extractThumb(buf) {
+  const head = buf.toString("latin1");
+  const re = /; thumbnail begin (\d+)[x ](\d+) \d+\r?\n([\s\S]*?); thumbnail end/g;
+  let best = null, m;
+  while ((m = re.exec(head))) {
+    const w = +m[1];
+    if (!best || w > best.w) best = { w, body: m[3] };
+  }
+  if (!best) return null;
+  const b64 = best.body.split(/\r?\n/).map(l => l.replace(/^;\s?/, "").trim()).join("");
+  try {
+    const png = Buffer.from(b64, "base64");
+    // PNG magic check — refuse to serve garbage if the header was mangled
+    return (png.length > 8 && png[0] === 0x89 && png[1] === 0x50) ? png : null;
+  } catch { return null; }
+}
+function localThumb(name) {
+  const full = path.join(FOLDER, path.basename(name));
+  let stat; try { stat = fs.statSync(full); } catch { return null; }
+  const key = "L:" + name + ":" + stat.mtimeMs;
+  if (THUMB_CACHE.has(key)) return THUMB_CACHE.get(key);
+  let png = null;
+  try {
+    const fd = fs.openSync(full, "r");
+    const buf = Buffer.alloc(Math.min(262144, stat.size));
+    fs.readSync(fd, buf, 0, buf.length, 0);
+    fs.closeSync(fd);
+    png = extractThumb(buf);
+  } catch {}
+  thumbCachePut(key, png);
+  return png;
+}
+app.get("/api/thumb", (req, res) => {
+  const name = path.basename(String(req.query.file || ""));
+  if (!/\.gcode$/i.test(name)) return res.status(400).end();
+  const png = localThumb(name);
+  if (!png) return res.status(404).end();
+  res.set("Cache-Control", "public, max-age=86400").type("png").send(png);
+});
+app.get("/api/pthumb", async (req, res) => {
+  const p = PRINTERS[+req.query.id];
+  const filename = String(req.query.file || "");
+  if (!p || !filename) return res.status(400).end();
+  // 1) local copy of the same file — verified extraction path
+  const local = localThumb(path.basename(filename));
+  if (local) return res.set("Cache-Control", "public, max-age=3600").type("png").send(local);
+  // 2) printer-side metadata thumbnail (optional Moonraker feature)
+  const base = String(p.url).replace(/\/+$/, "");
+  try {
+    const meta = await fileMeta(base, p.name, filename, undefined);
+    if (!meta || !meta.thumb) return res.status(404).end();
+    const dir = filename.includes("/") ? filename.slice(0, filename.lastIndexOf("/") + 1) : "";
+    const key = "P:" + p.name + ":" + filename;
+    if (THUMB_CACHE.has(key)) {
+      const c = THUMB_CACHE.get(key);
+      return c ? res.set("Cache-Control", "public, max-age=3600").type("png").send(c) : res.status(404).end();
+    }
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), 3500);
+    const r = await fetch(base + "/server/files/gcodes/" + dir + meta.thumb, { signal: ctrl.signal });
+    clearTimeout(to);
+    if (!r.ok) { thumbCachePut(key, null); return res.status(404).end(); }
+    const png = Buffer.from(await r.arrayBuffer());
+    thumbCachePut(key, png);
+    res.set("Cache-Control", "public, max-age=3600").type("png").send(png);
+  } catch { res.status(404).end(); }
+});
+
+// ---- Filament color: set a slot's color from the Hub -----------------------
+// Verified live 2026-07-03: the touchscreen itself issues this exact gcode
+// (captured in /server/gcode_store when a color was changed on-screen):
+//   SET_PRINT_FILAMENT_CONFIG CONFIG_EXTRUDER='3' FILAMENT_COLOR_RGBA='39FF14FF' SAVE='1'
+// The Hub replays it via /printer/gcode/script, then reads print_task_config
+// back and only reports success once the printer confirms the new color.
+// Guards match touchscreen behavior: idle printers only, loaded slots only.
+app.post("/api/setcolor", async (req, res) => {
+  const { printer, slot, hex } = req.body || {};
+  const p = PRINTERS[printer];
+  if (!p) return res.status(400).json({ error: "Unknown printer" });
+  const s = parseInt(slot, 10);
+  if (!(s >= 0 && s <= 3)) return res.status(400).json({ error: "Slot must be 0–3" });
+  const m = /^#?([0-9a-fA-F]{6})$/.exec(String(hex || ""));
+  if (!m) return res.status(400).json({ error: "Color must be RRGGBB hex" });
+  const rgba = m[1].toUpperCase() + "FF";
+  const base = String(p.url).replace(/\/+$/, "");
+  try {
+    let r = await fetch(base + "/printer/objects/query?print_stats&print_task_config");
+    if (!r.ok) return res.status(502).json({ error: "Moonraker " + r.status });
+    const st = (((await r.json()).result || {}).status) || {};
+    const state = (st.print_stats || {}).state || "unknown";
+    if (state === "printing" || state === "paused")
+      return res.status(409).json({ error: "Printer is " + state + " — colors can only be changed while idle" });
+    const exist = ((st.print_task_config || {}).filament_exist) || [];
+    if (!exist[s]) return res.status(409).json({ error: "No filament loaded in slot T" + (s + 1) });
+
+    const script = `SET_PRINT_FILAMENT_CONFIG CONFIG_EXTRUDER='${s}' FILAMENT_COLOR_RGBA='${rgba}' SAVE='1'`;
+    r = await fetch(base + "/printer/gcode/script?script=" + encodeURIComponent(script), { method: "POST" });
+    if (!r.ok) return res.status(502).json({ error: "Moonraker " + r.status + ": " + (await r.text()).slice(0, 160) });
+
+    // Read back — success means the printer itself reports the new color.
+    r = await fetch(base + "/printer/objects/query?print_task_config");
+    if (!r.ok) return res.status(502).json({ error: "Write sent but read-back failed: Moonraker " + r.status });
+    const ptc = ((((await r.json()).result || {}).status || {}).print_task_config) || {};
+    const got = (ptc.filament_color_rgba || [])[s];
+    if (String(got || "").toUpperCase() !== rgba)
+      return res.status(502).json({ error: "Write not confirmed — printer reports " + (got || "nothing") });
+    res.json({ ok: true, slot: s, hex: "#" + m[1].toUpperCase(), heads: decodeHeads(ptc) });
+  } catch (e) {
+    res.status(502).json({ error: "Could not reach " + p.name + ": " + e.message });
+  }
+});
+
 // ---- Network inventory: name / IP / MAC / serial, for DHCP reservations ----
 function pickIface(net) {
   let fallback = null;
@@ -705,6 +1043,113 @@ app.get("/api/discover", async (req, res) => {
     }
   }
   res.json({ subnets: localSubnets(), found });
+});
+
+// ---- DEBUG: hidden websocket listener (curl-driven, no UI) --------------
+// Purpose: observe every JSON-RPC notification Moonraker broadcasts so we can
+// diff "before vs after" a touchscreen action (e.g. a filament color change)
+// and learn whether that action crosses Moonraker at all.
+//
+// Uses Node's BUILT-IN browser-style WebSocket client (stable since 22.4).
+// pkg builds target node22-*, so this works identically in the packaged exe —
+// zero new dependencies. Note this is the browser API (onopen/onmessage/send),
+// NOT the `ws` npm package API.
+//
+// Usage:
+//   GET /api/debug/ws/start?id=0          open socket, list objects, subscribe to ALL
+//   GET /api/debug/ws/dump?id=0           read the ring buffer
+//   GET /api/debug/ws/dump?id=0&since=MS  only entries at/after epoch-ms (for diffing)
+//   GET /api/debug/ws/stop?id=0           close socket, free the buffer
+//
+// notify_proc_stat_update fires ~1/sec and would drown the buffer, so those
+// are counted but not stored (procStatSkipped in dump output).
+
+const WSDBG = new Map();          // printer idx -> session
+const WSDBG_MAX = 500;            // ring buffer cap per printer
+
+function wsdbgPush(s, entry) {
+  s.buf.push(entry);
+  if (s.buf.length > WSDBG_MAX) s.buf.splice(0, s.buf.length - WSDBG_MAX);
+}
+
+app.get("/api/debug/ws/start", (req, res) => {
+  const idx = +req.query.id;
+  const p = PRINTERS[idx];
+  if (!p) return res.status(400).json({ error: "Unknown printer" });
+  if (typeof WebSocket === "undefined")
+    return res.status(500).json({ error: "Built-in WebSocket client unavailable (needs Node 22.4+)" });
+
+  const old = WSDBG.get(idx);
+  if (old && old.ws && old.ws.readyState <= 1) // CONNECTING or OPEN
+    return res.json({ ok: true, already: true, status: old.status, buffered: old.buf.length });
+
+  const wsUrl = String(p.url).replace(/\/+$/, "").replace(/^http/, "ws") + "/websocket";
+  const s = { ws: null, buf: [], nextId: 1000, status: "connecting", startedAt: Date.now(), procStatSkipped: 0, listId: null };
+  WSDBG.set(idx, s);
+
+  let ws;
+  try { ws = new WebSocket(wsUrl); }
+  catch (e) { s.status = "error: " + e.message; return res.status(502).json({ error: e.message }); }
+  s.ws = ws;
+
+  const send = (method, params) => {
+    const id = s.nextId++;
+    const msg = { jsonrpc: "2.0", method, params: params || {}, id };
+    try { ws.send(JSON.stringify(msg)); wsdbgPush(s, { t: Date.now(), dir: "out", data: msg }); } catch {}
+    return id;
+  };
+
+  ws.onopen = () => {
+    s.status = "open";
+    wsdbgPush(s, { t: Date.now(), dir: "info", data: "connected " + wsUrl });
+    s.listId = send("printer.objects.list");
+  };
+
+  ws.onmessage = (ev) => {
+    let j; try { j = JSON.parse(ev.data); } catch { j = { raw: String(ev.data).slice(0, 500) }; }
+    if (j.method === "notify_proc_stat_update") { s.procStatSkipped++; return; } // ~1/sec noise
+    wsdbgPush(s, { t: Date.now(), dir: "in", data: j });
+    // Object list arrived → subscribe to EVERYTHING on it (null = all fields).
+    if (s.listId !== null && j.id === s.listId && j.result && Array.isArray(j.result.objects)) {
+      const objects = {};
+      for (const name of j.result.objects) objects[name] = null;
+      send("printer.objects.subscribe", { objects });
+    }
+  };
+
+  ws.onerror = () => { s.status = "error"; wsdbgPush(s, { t: Date.now(), dir: "info", data: "socket error" }); };
+  ws.onclose = (ev) => {
+    if (s.status !== "error") s.status = "closed";
+    wsdbgPush(s, { t: Date.now(), dir: "info", data: "closed code=" + (ev && ev.code) });
+  };
+
+  res.json({ ok: true, target: wsUrl, dump: "/api/debug/ws/dump?id=" + idx, note: "add &since=<epoch ms> to dump for diffing" });
+});
+
+app.get("/api/debug/ws/dump", (req, res) => {
+  const idx = +req.query.id;
+  const s = WSDBG.get(idx);
+  if (!s) return res.status(404).json({ error: "No listener for that printer — hit /api/debug/ws/start?id=" + (isNaN(idx) ? "N" : idx) + " first" });
+  const since = +req.query.since || 0;
+  const entries = s.buf.filter(e => e.t >= since);
+  res.json({
+    status: s.status,
+    startedAt: s.startedAt,
+    now: Date.now(),                 // pass this back as &since= on the next dump
+    procStatSkipped: s.procStatSkipped,
+    total: s.buf.length,
+    returned: entries.length,
+    entries
+  });
+});
+
+app.get("/api/debug/ws/stop", (req, res) => {
+  const idx = +req.query.id;
+  const s = WSDBG.get(idx);
+  if (!s) return res.status(404).json({ error: "No listener for that printer" });
+  try { if (s.ws) s.ws.close(); } catch {}
+  WSDBG.delete(idx);
+  res.json({ ok: true, buffered: s.buf.length, procStatSkipped: s.procStatSkipped });
 });
 
 app.listen(PORT, () => {
