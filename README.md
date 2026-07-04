@@ -3,24 +3,59 @@
 A small local dashboard for a farm of **Snapmaker U1** printers. From your phone or
 any browser on the same network you can:
 
-- Browse a folder of sliced G-code and see the **colors each job needs**.
-- See **every machine's loaded colors and live status** (idle / printing %) at a glance.
+- Browse a folder of sliced G-code — with **embedded model thumbnails** — and see the
+  **colors each job needs**.
+- See **every machine's loaded colors and live status** at a glance, updated **in
+  real time**: progress, screen-matching time remaining, and a **layer counter**
+  tick the moment the printer reports them, not on a polling delay.
+- **Change a loaded filament's color from the Hub** — tap a swatch on any idle machine
+  and pick from common colors, type a hex code or a color name ("tan"), or open the
+  full color picker. The touchscreen updates to match.
 - **Push a job to any machine** — and optionally pre-map each color to the head you
   want it to print from, so the machine's mapping screen comes up already correct.
 - Watch an **upload progress bar** while a file is sent, so a big push isn't a silent wait.
-- **Pause, resume, or cancel** a running print from any card.
+- **Pause, resume, or cancel** a running print from any card — and if a print errors,
+  the card shows the **firmware's actual error message**, not just a red dot.
 - **Skip a single object mid-print** from a tap-to-skip plate map — salvage the rest of a
   plate when one part fails instead of scrapping the whole bed.
-- **Set the bed temperature** per machine.
+- **Set the bed temperature** per machine, and get a warning chip when a printer's
+  **storage runs low**.
+- See **lifetime farm stats** (total jobs, print hours, filament used) and per-printer
+  **temperature sparklines and job history** in expandable panels.
 
 It talks straight to each printer's built-in Moonraker API. Nothing leaves your network.
 
 ---
 
-## New in 2.0 — Full Spectrum aware
+## New in 2.5 — the realtime release
+
+- **Live dashboard.** The Hub now holds a websocket open to every printer and streams
+  changes to your browser the moment they happen. Progress, ETA, layer counts, and
+  state changes appear in well under a second. If a socket or the stream drops, the
+  Hub falls back to classic polling automatically — it never gets worse, only faster.
+- **Screen-matching progress and time remaining.** The Hub computes progress exactly
+  the way the U1's touchscreen does (header-corrected byte progress), so the card and
+  the screen finally agree — verified to within 1% and one minute on live prints.
+- **Filament color control.** The Hub speaks the same firmware command the touchscreen
+  uses (`SET_PRINT_FILAMENT_CONFIG`), then re-reads the printer to confirm the change
+  landed before showing success. Guard rails match the touchscreen: idle printers and
+  loaded slots only.
+- **G-code thumbnails.** Snapmaker Orca embeds model previews in every sliced file;
+  the Hub extracts them for the file browser and shows the active job's preview on
+  each printing card.
+- **Phone home-screen app.** Add the Hub to your phone's home screen for one-tap
+  access. (Full standalone install activates automatically once the Hub is served
+  over HTTPS — planned alongside remote access.)
+- Quality of life: multi-color/gradient spool swatches (ready for RFID dual-color
+  filament), "chamber" labeling, farm + per-printer statistics panels, active
+  filename on cards, and a low-disk warning chip.
+
+---
+
+## Full Spectrum aware (since 2.0)
 
 The U1's **Full Spectrum** workflow alternates a few physical filaments layer-by-layer to
-produce many more apparent colors. v2.0 makes the hub understand it:
+produce many more apparent colors. The hub understands it:
 
 - **Detects Full Spectrum files** from either fork family — ratdoux FullSpectrum and the
   Neotko feature pack — so it never mistakes a 16-color FS job for one that "needs more than
@@ -31,13 +66,9 @@ produce many more apparent colors. v2.0 makes the hub understand it:
   ratio — so you can see what your loaded filaments will actually produce. (The swatches are
   an on-screen approximation of the optical blend; the print is the final word.)
 
-Plus, across every job:
-
-- **Live time-remaining** on each printing card, self-correcting to the real print pace.
-- **Last-printed date** for every file in the browser.
-- **Per-color filament usage** (grams) on the selected job.
-- Cosmetic **T1–T4 head labels** and a **scrolling file list** that keeps the page tidy with
-  big folders.
+Plus, across every job: **last-printed date** for every file, **per-color filament
+usage** (grams) on the selected job, cosmetic **T1–T4 head labels**, and a **scrolling
+file list** that keeps the page tidy with big folders.
 
 ---
 
@@ -89,8 +120,9 @@ Edit the `volumes` in `docker-compose.yml` to point at your real Orca output fol
 
 ### 1. Install
 
-You need **Node.js 18 or newer** — get the **LTS** build from https://nodejs.org and
-run the installer (defaults are fine). Then:
+You need **Node.js 22 or newer** (the realtime layer uses Node's built-in WebSocket
+client) — get the **LTS** build from https://nodejs.org and run the installer
+(defaults are fine). Then:
 
 1. Unzip this folder somewhere permanent, e.g. `C:\u1-print-hub`.
 2. Start it:
@@ -101,8 +133,9 @@ The first launch installs what it needs (takes a minute) and then opens
 **http://localhost:4545** in your browser.
 
 > **Use it from your phone:** find the IP of the computer running the hub and open
-> `http://THAT-IP:4545` on your phone — e.g. `http://192.168.1.20:4545`. Keep the hub
-> running on a computer that stays on (or set the launcher to run at startup).
+> `http://THAT-IP:4545` on your phone — e.g. `http://192.168.1.20:4545`. Then use your
+> browser's **Add to Home Screen** for a one-tap app icon. Keep the hub running on a
+> computer that stays on (or set the launcher to run at startup).
 
 ### 2. First-time setup (all in the browser)
 
@@ -119,19 +152,26 @@ Reopen Settings anytime with the gear button.
 
 ## Using it
 
-- **Pick a file** from the left to see the colors it needs. Files show their **last-printed
-  date** once they've run, and the selected job lists **per-color gram usage**. If it's a
-  **Full Spectrum** job, a panel decodes and previews all its mixed colors and recipes.
-- **Each machine card** shows its four heads (**T1–T4**) with the colors currently loaded, plus
-  status and bed temp — and a **live time-remaining** estimate while printing. When a job is
-  selected, you get a per-color **"Send each color
-  from"** picker (defaulted to the best match) and **Upload** / **Print** buttons.
+- **Pick a file** from the left to see the colors it needs. Files show a **thumbnail**
+  and their **last-printed date** once they've run, and the selected job lists
+  **per-color gram usage**. If it's a **Full Spectrum** job, a panel decodes and
+  previews all its mixed colors and recipes.
+- **Each machine card** shows its four heads (**T1–T4**) with the colors currently loaded,
+  plus status and bed temp — and, while printing, a **live progress bar, layer counter,
+  screen-matching time remaining, and the job's thumbnail**. When a job is selected, you
+  get a per-color **"Send each color from"** picker (defaulted to the best match) and
+  **Upload** / **Print** buttons.
+- **Tap a head's color swatch** on an idle machine to change that filament's recorded
+  color: pick from the grid, type a hex code or CSS color name, or open the full
+  picker. The Hub confirms the printer accepted the change before showing success.
 - **Press Print** to send to that machine; a progress bar tracks the upload, then the
   print starts with your color mapping already applied.
 - **While a machine is printing,** the card shows **Pause / Resume** and **Cancel**, plus
   a **Plate** button that opens a live map of the bed. Tap any object to **skip** it — the
   rest of the plate keeps printing. (Skipping is irreversible.) The map's bottom edge is
   the **front** of the bed.
+- The **▁▂▅ button** on each card opens live temperature sparklines, lifetime totals,
+  and the last ten jobs. **Farm stats** at the bottom aggregates the whole fleet.
 
 ### Keep your printer IPs from changing
 
@@ -146,11 +186,22 @@ addresses never move and you won't have to touch anything.
 - **Toolhead mapping** is set the same way Snapmaker Orca does it: the hub uploads the
   file, sends the `SET_PRINT_EXTRUDER_MAP` macros for your chosen head assignment, then
   starts the print. The dropdowns pick which physical head prints each color.
-- **Per-head colors** are read from Moonraker's `print_task_config` object; the live
-  plate map and skip feature use the standard Klipper `exclude_object` module.
-- **LAN only, no password.** Anyone who can reach the hub can push prints — and it controls
-  real ~300 C hardware. Keep it on your home/shop network; **don't expose it to the
-  internet or forward a port to it**, and don't leave prints unattended.
+- **Per-head colors** are read from Moonraker's `print_task_config` object and written
+  with the firmware's own `SET_PRINT_FILAMENT_CONFIG` command — the same one the
+  touchscreen issues. The live plate map and skip feature use the standard Klipper
+  `exclude_object` module.
+- **Progress and time remaining** use the touchscreen's own formula: header-corrected
+  byte progress from `virtual_sdcard` plus the slicer's estimated time, so the Hub and
+  the machine's screen agree. Falls back to a self-correcting estimate when file
+  metadata isn't available.
+- **Realtime** uses one websocket per printer plus a server-sent-events stream to the
+  browser; both fall back to plain HTTP polling automatically if anything is in the way.
+- **Treat the hub like the printers it controls.** As of this release there is no
+  built-in password: anyone who can reach the hub can push prints to real ~300 C
+  hardware. Keep it on your home/shop network — **don't expose it to the internet or
+  forward a port to it** — and don't leave prints unattended. Built-in authentication
+  and hub-managed secure remote access are the next two releases; until you're
+  running a version with a login screen, LAN-only is the rule.
 
 ---
 
@@ -189,8 +240,8 @@ release, bump the version in `package.json` and the `VERSION` constants in `serv
 and `public/index.html`, then tag and push:
 
 ```
-git tag v2.0.0
-git push origin v2.0.0
+git tag v2.5.0
+git push origin v2.5.0
 ```
 
 `.github/workflows/release.yml` builds Linux, Windows, and Apple-Silicon macOS binaries
