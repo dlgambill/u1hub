@@ -1,19 +1,33 @@
 {
   "name": "u1-print-hub",
-  "version": "2.0.0",
+  "version": "2.6.0",
   "private": true,
   "type": "commonjs",
   "bin": "server.js",
-  "engines": { "node": ">=18" },
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "start": "node server.js",
     "build": "pkg . --targets node22-win-x64,node22-macos-x64,node22-macos-arm64,node22-linux-x64 --out-path dist"
   },
-  "dependencies": { "express": "^4.19.2" },
-  "devDependencies": { "@yao-pkg/pkg": "^6.3.0" },
+  "dependencies": {
+    "express": "^4.19.2"
+  },
+  "devDependencies": {
+    "@yao-pkg/pkg": "^6.3.0"
+  },
   "pkg": {
-    "assets": [ "public/**/*", "parser.js" ],
-    "targets": [ "node22-win-x64", "node22-macos-x64", "node22-macos-arm64", "node22-linux-x64" ],
+    "assets": [
+      "public/**/*",
+      "parser.js"
+    ],
+    "targets": [
+      "node22-win-x64",
+      "node22-macos-x64",
+      "node22-macos-arm64",
+      "node22-linux-x64"
+    ],
     "outputPath": "dist"
   }
 }
