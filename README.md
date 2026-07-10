@@ -38,9 +38,17 @@ It talks straight to each printer's built-in Moonraker API. Nothing leaves your 
 
 ## New in 2.6 — the access & mixing release
 
-- **Print queue.** An **Up next** list lives above the file browser: tap **+ Add to
-  queue** on any selected job, reorder or remove entries with a tap, and the queue
-  persists through Hub restarts (`queue.json`).
+- **Print queue.** The Hub now answers "what prints next?" for the whole farm. An
+  **Up next** list sits above the file browser: tap **+ Add to queue** on any job to
+  line it up, bump entries up or down with the arrows as priorities change, and
+  remove them with a tap. When a machine frees up, the next job is one tap from printing — no scrolling
+  a big folder trying to remember what you promised whom. The queue lives on the Hub,
+  so it's shared by everyone: line up tomorrow's work from the couch tonight and it's
+  waiting on the shop computer in the morning, and it **survives Hub restarts**
+  (`queue.json`). Starting a queued job checks it off the list automatically.
+
+![Print queue — the Up next list beside a selected job with Add to queue](docs/queue.png)
+
 - **FS Mix Planner** (🎨 in the top bar). Drop any multi-color 3MF — Bambu Studio and
   Orca-family projects both work — and the Hub extracts its palette, ranks colors by how
   many parts use them, and solves each one into the closest achievable blend of the
@@ -198,6 +206,10 @@ Reopen Settings anytime with the gear button.
   and their **last-printed date** once they've run, and the selected job lists
   **per-color gram usage**. If it's a **Full Spectrum** job, a panel decodes and
   previews all its mixed colors and recipes.
+- **Queue work with "Up next."** Tap **+ Add to queue** on a selected job to line it
+  up. The queue sits above the file list; use the arrows to reprioritize and **✕** to
+  remove. Starting a queued file (from any machine) clears it from the list — so the
+  queue always shows what's actually left to run.
 - **Each machine card** shows its four heads (**T1–T4**) with the colors currently loaded,
   plus status and bed temp — and, while printing, a **live progress bar, layer counter,
   screen-matching time remaining, and the job's thumbnail**. When a job is selected, you
