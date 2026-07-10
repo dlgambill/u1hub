@@ -48,6 +48,22 @@ const PRINTLOG_PATH = path.join(BASE_DIR, "printlog.json");
 function loadPrintLog() { try { return JSON.parse(fs.readFileSync(PRINTLOG_PATH, "utf8")); } catch { return {}; } }
 function savePrintLog() { try { fs.writeFileSync(PRINTLOG_PATH, JSON.stringify(PRINTLOG, null, 2)); } catch {} }
 let PRINTLOG = loadPrintLog();
+
+// --- print queue --------------------------------------------------------------
+// A single shared "up next" list (queue.json, array of {id, file, added}).
+// Reference-only by design: the Hub never auto-starts queued jobs — the U1
+// needs its plate cleared between prints, so starting is always a human tap.
+// When a print is STARTED for a file that's in the queue, the first matching
+// entry is removed automatically (upload-without-start leaves the queue alone).
+const QUEUE_PATH = path.join(BASE_DIR, "queue.json");
+function loadQueue() { try { const q = JSON.parse(fs.readFileSync(QUEUE_PATH, "utf8")); return Array.isArray(q) ? q : []; } catch { return []; } }
+function saveQueue() { try { fs.writeFileSync(QUEUE_PATH, JSON.stringify(QUEUE, null, 2)); } catch {} }
+let QUEUE = loadQueue();
+function dequeueFile(name) {
+  const i = QUEUE.findIndex(e => e.file === name);
+  if (i !== -1) { QUEUE.splice(i, 1); saveQueue(); }
+}
+
 const LAST_STATE = {};   // printer index -> last observed state
 
 async function probeState(p) {
@@ -83,6 +99,9 @@ pollPrintStarts();   // prime LAST_STATE at startup (won't stamp — prev is und
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
+// Access gate — fronts everything below (static included). Modes and the
+// off-switch live in auth.json; see auth.js for the design notes.
+require("./auth.js")(app, express, BASE_DIR, ASSET_DIR);
 app.use(express.static(path.join(ASSET_DIR, "public")));
 // Explicit index route so the UI is served even when running from a packaged
 // binary (where express.static from the snapshot can be unreliable).
@@ -90,6 +109,13 @@ app.get("/", (req, res) => {
   try { res.type("html").send(fs.readFileSync(path.join(ASSET_DIR, "public", "index.html"), "utf8")); }
   catch (e) { res.status(500).send("index.html not found"); }
 });
+// FS mix planner: same explicit-route treatment for the packaged binary, then
+// the module mounts /api/fs-colors/analyze and /api/fs-colors/solve.
+app.get("/fs-colors.html", (req, res) => {
+  try { res.type("html").send(fs.readFileSync(path.join(ASSET_DIR, "public", "fs-colors.html"), "utf8")); }
+  catch (e) { res.status(500).send("fs-colors.html not found"); }
+});
+require("./fs-colors.js")(app, express);
 
 // Resolve a requested filename safely INSIDE the watched folder (no traversal).
 function safeFile(name) {
@@ -115,6 +141,34 @@ app.get("/api/files", (req, res) => {
   } catch (e) {
     res.status(500).json({ error: "Cannot read folder " + FOLDER + " — " + e.message });
   }
+});
+
+// --- queue routes -------------------------------------------------------------
+app.get("/api/queue", (req, res) => res.json({ queue: QUEUE }));
+
+app.post("/api/queue", (req, res) => {
+  const fp = safeFile((req.body || {}).file);
+  if (!fp || !fs.existsSync(fp)) return res.status(404).json({ error: "File not found" });
+  QUEUE.push({ id: Math.random().toString(36).slice(2, 10), file: path.basename(fp), added: Date.now() });
+  saveQueue();
+  res.json({ ok: true, queue: QUEUE });
+});
+
+app.post("/api/queue/remove", (req, res) => {
+  const i = QUEUE.findIndex(e => e.id === (req.body || {}).id);
+  if (i === -1) return res.status(404).json({ error: "Not in queue" });
+  QUEUE.splice(i, 1); saveQueue();
+  res.json({ ok: true, queue: QUEUE });
+});
+
+app.post("/api/queue/reorder", (req, res) => {
+  const { ids } = req.body || {};
+  if (!Array.isArray(ids)) return res.status(400).json({ error: "ids must be an array" });
+  const byId = new Map(QUEUE.map(e => [e.id, e]));
+  const next = ids.map(id => byId.get(id)).filter(Boolean);
+  QUEUE.forEach(e => { if (!next.includes(e)) next.push(e); }); // never drop entries the client didn't know about
+  QUEUE = next; saveQueue();
+  res.json({ ok: true, queue: QUEUE });
 });
 
 // Serve the embedded slicer thumbnail (PNG) from a file's HEAD. Picks the
@@ -268,7 +322,7 @@ app.post("/api/print", (req, res) => {
         lines.push("SET_PRINT_PREFERENCES BED_LEVEL=0 FLOW_CALIBRATE=0 TIME_LAPSE_CAMERA=0");
         await gcode(lines.join("\n"));
       }
-      if (start) { job.phase = "starting"; await gcode(`SDCARD_PRINT_FILE FILENAME="${name}"`); }
+      if (start) { job.phase = "starting"; await gcode(`SDCARD_PRINT_FILE FILENAME="${name}"`); dequeueFile(name); }
       job.result = { printer: p.name, started: !!start, mapped: tools.length };
       job.phase = "done"; job.done = true;
     } catch (e) {
@@ -924,6 +978,13 @@ app.post("/api/setcolor", async (req, res) => {
       return res.status(409).json({ error: "Printer is " + state + " — colors can only be changed while idle" });
     const exist = ((st.print_task_config || {}).filament_exist) || [];
     if (!exist[s]) return res.status(409).json({ error: "No filament loaded in slot T" + (s + 1) });
+    // Official RFID spools are color-locked: firmware rejects the write with
+    // "official filament, not configurable!" (hardware-confirmed 2026-07-09).
+    // filament_edit is the authoritative writability flag — fail friendly here
+    // instead of surfacing a Moonraker traceback.
+    const editArr = ((st.print_task_config || {}).filament_edit) || [];
+    if (editArr[s] === false)
+      return res.status(409).json({ error: "T" + (s + 1) + " is an official Snapmaker RFID spool — its color comes from the tag and can't be changed" });
 
     const script = `SET_PRINT_FILAMENT_CONFIG CONFIG_EXTRUDER='${s}' FILAMENT_COLOR_RGBA='${rgba}' SAVE='1'`;
     r = await fetch(base + "/printer/gcode/script?script=" + encodeURIComponent(script), { method: "POST" });

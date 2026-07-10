@@ -22,10 +22,50 @@ any browser on the same network you can:
   plate when one part fails instead of scrapping the whole bed.
 - **Set the bed temperature** per machine, and get a warning chip when a printer's
   **storage runs low**.
+- **Queue jobs "up next"** — build a shared print queue that survives Hub restarts,
+  and reorder or remove entries with a tap.
+- **Plan Full Spectrum mixes from any 3MF** — drop a multi-color project on the FS Mix
+  Planner and get the exact filament blend recipes to print it on 4 toolheads, solved
+  against the colors actually loaded on your machine.
+- **Protect the Hub with a password** — optional single shared password with 30-day
+  sessions, or hand auth to your reverse proxy (Authelia/Authentik supported).
 - See **lifetime farm stats** (total jobs, print hours, filament used) and per-printer
   **temperature sparklines and job history** in expandable panels.
 
 It talks straight to each printer's built-in Moonraker API. Nothing leaves your network.
+
+---
+
+## New in 2.6 — the access & mixing release
+
+- **Print queue.** An **Up next** list lives above the file browser: tap **+ Add to
+  queue** on any selected job, reorder or remove entries with a tap, and the queue
+  persists through Hub restarts (`queue.json`).
+- **FS Mix Planner** (🎨 in the top bar). Drop any multi-color 3MF — Bambu Studio and
+  Orca-family projects both work — and the Hub extracts its palette, ranks colors by how
+  many parts use them, and solves each one into the closest achievable blend of the
+  filaments loaded on your printer. Every recipe comes with a ΔE quality grade, and
+  colors that physically can't be mixed from your spools (true black, deep saturated
+  tones) are **flagged as out of gamut instead of silently printing wrong** — the
+  closest reachable match is shown so you know the tradeoff before wasting a print.
+  Recipes are entered in your FS fork's Edit Mix dialog; the raw definition string is
+  included for reference. The blend math was verified against the slicer's own Mix
+  Effect preview.
+- **Password protection.** The Hub now has an optional access gate: set a single shared
+  password from ⚙ Settings → Manage access (or `/auth.html`) and every page and API
+  call requires login, with sessions that last 30 days per device. Five wrong guesses
+  locks the door for 15 minutes. Nothing changes until you opt in — existing installs
+  stay open.
+- **Reverse-proxy friendly.** Already running auth in front of the Hub? **Proxy mode**
+  turns the built-in gate off on purpose, and **forward-auth mode** trusts the identity
+  header your Authelia/Authentik setup injects — no double login.
+- **Official spools handled honestly.** Snapmaker's RFID spools carry their color on
+  the tag, and firmware refuses to override it — so the Hub no longer offers the color
+  picker on official spools (hover the swatch to see why), and explains the lock in
+  plain language instead of surfacing a firmware error.
+- Quality of life: the browser tab finally has a favicon.
+
+![FS Mix Planner — spool colors, 3MF palette extraction, and blend recipes](docs/fs-mixer.png)
 
 ---
 
@@ -198,11 +238,13 @@ addresses never move and you won't have to touch anything.
   metadata isn't available.
 - **Realtime** uses one websocket per printer plus a server-sent-events stream to the
   browser; both fall back to plain HTTP polling automatically if anything is in the way.
-- **Treat the hub like the printers it controls.** As of this release there is no
-  built-in password: anyone who can reach the hub can push prints. Keep it on your home/shop network — **don't expose it to the internet or
-  forward a port to it** — and don't leave prints unattended. Built-in authentication
-  and hub-managed secure remote access are the next two releases; until you're
-  running a version with a login screen, LAN-only is the rule.
+- **Treat the hub like the printers it controls.** The Hub now ships with an optional
+  password gate (⚙ Settings → Manage access) — turn it on if anyone you don't fully
+  trust can reach your network. One honest limit remains: the Hub still serves plain
+  HTTP, so **don't expose it to the internet or forward a port to it** — a password
+  sent over unencrypted HTTP is only as private as the network it crosses. LAN use
+  with the gate on is the sweet spot today; hub-managed secure remote access (HTTPS
+  via tunnel) is the next release, and it's what will make remote use safe.
 
 ---
 
@@ -241,8 +283,8 @@ release, bump the version in `package.json` and the `VERSION` constants in `serv
 and `public/index.html`, then tag and push:
 
 ```
-git tag v2.5.0
-git push origin v2.5.0
+git tag v2.6.0
+git push origin v2.6.0
 ```
 
 `.github/workflows/release.yml` builds Linux, Windows, and Apple-Silicon macOS binaries

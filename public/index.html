@@ -6,6 +6,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <link rel="manifest" href="/manifest.json">
 <meta name="theme-color" content="#14161b">
+<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
 <link rel="apple-touch-icon" href="/icon-192.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -48,6 +49,22 @@
   .job .jprinted{color:var(--ok); margin-top:2px;}
   .empty-list{padding:26px 18px; color:var(--ink-dim); font-size:13px; line-height:1.55;}
   .empty-list code{font-family:var(--mono); font-size:12px; color:var(--ink);}
+  /* "Up next" queue panel */
+  .qwrap{border-bottom:1px solid var(--line-soft);}
+  .qhead{display:flex; align-items:center; gap:7px; width:100%; font:inherit; font-family:var(--mono); font-size:10.5px; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-faint); background:transparent; border:0; padding:10px 18px; cursor:pointer; text-align:left;}
+  .qhead:hover{color:var(--ink-dim);}
+  .qhead .qcount{color:var(--signal);}
+  .qlist{padding:0 8px 8px;}
+  .qitem{display:flex; align-items:center; gap:8px; padding:5px 8px; border-radius:7px;}
+  .qitem:hover{background:var(--panel-2);}
+  .qpos{font-family:var(--mono); font-size:10px; color:var(--ink-faint); width:14px; text-align:right; flex:none;}
+  .qthumb{width:28px; height:28px; border-radius:5px; object-fit:cover; flex:none; background:#20242c; border:1px solid var(--line-soft);}
+  .qname{flex:1; min-width:0; font-size:12px; color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; cursor:pointer;}
+  .qname.qmiss{color:var(--bad); cursor:default;}
+  .qbtn{font:inherit; font-size:12px; line-height:1; color:var(--ink-faint); background:transparent; border:1px solid var(--line); border-radius:6px; padding:4px 7px; cursor:pointer; flex:none;}
+  .qbtn:hover:not(:disabled){color:var(--ink); border-color:var(--ink-faint);}
+  .qbtn:disabled{opacity:.3; cursor:default;}
+  .qbtn.qx:hover{color:var(--bad); border-color:var(--bad);}
   .main{padding:24px 26px 70px; max-width:980px;}
 
   .sechead{display:flex; align-items:center; gap:12px; margin:22px 0 2px;}
@@ -189,6 +206,7 @@
   .vbadge{font-family:var(--mono); font-size:10.5px; letter-spacing:.04em; color:var(--ink-faint);}
   .vbadge.bad{color:var(--bad); font-weight:700;}
   .gear{font:inherit; font-size:12px; color:var(--ink-dim); background:transparent; border:1px solid var(--line); border-radius:7px; padding:7px 12px; cursor:pointer;}
+  a.gear{text-decoration:none; display:inline-block;}
   .gear:hover{color:var(--ink); border-color:var(--ink-faint);}
   .setup{display:none; margin-bottom:18px;}
   .setup.show{display:block;}
@@ -239,11 +257,16 @@
         <option value="size_asc">Smallest first</option>
       </select>
     </div>
+    <div class="qwrap" id="qwrap" style="display:none">
+      <button class="qhead" id="qhead"><span id="qarrow">▾</span> Up next <span class="qcount" id="qcount"></span></button>
+      <div class="qlist" id="qlist"></div>
+    </div>
     <div class="list" id="list"></div>
   </aside>
   <main class="main">
     <div class="topbar">
       <span class="vbadge" id="vbadge"></span>
+      <a class="gear" href="/fs-colors.html" title="Full Spectrum mix planner">🎨 FS Mixer</a>
       <button class="gear" id="gear" title="Settings">⚙ Settings</button>
     </div>
     <div class="setup" id="setup">
@@ -264,6 +287,11 @@
           <button class="btn primary" id="saveCfg">Save</button>
           <span class="pstatus" id="cfgStatus"></span>
         </div>
+
+        <label class="fl" style="margin-top:18px">Access <span class="hint" id="authHint">checking…</span></label>
+        <div class="row" style="margin-top:6px">
+          <button class="btn ghost" id="manageAuth">Manage access</button>
+        </div>
       </div>
     </div>
 
@@ -272,6 +300,7 @@
     <div class="jobcard" id="jobcard">
       <div class="jt" id="jt"></div>
       <div class="jmeta" id="jmeta"></div>
+      <div style="margin:2px 0 4px"><button class="btn ghost" id="qadd" style="font-size:12px; padding:5px 11px">＋ Add to queue</button></div>
       <div class="jthumb-wrap" id="jthumbwrap"><img id="jthumb" alt="plate preview"></div>
       <div class="needstrip" id="needstrip"></div>
       <div class="nohint" id="nohint"></div>
@@ -309,16 +338,20 @@
 const $ = id => document.getElementById(id);
 const VERSION = "2.5.0";
 let FILES = [], SELECTED = null, MAP = null, FLEET = [], MAPSEL = {};
+let QUEUE = [], QOPEN = true;   // shared "up next" list (state lives in JS, not DOM)
 
 init();
 // PWA: register the (deliberately cache-free) service worker so the Hub can
 // be installed to the phone home screen. No fetch handler = no stale-version
 // risk; the version banner stays the source of truth.
 if("serviceWorker" in navigator && location.protocol!=="file:"){ navigator.serviceWorker.register("/sw.js").catch(()=>{}); }
-async function init(){ await checkVersion(); await loadConfigUI(); await loadFiles(); await loadFleet(); startEvents(); 
+async function init(){ await checkVersion(); await loadConfigUI(); await loadFiles(); await loadQueue(); await loadFleet(); startEvents(); 
   $("platex").addEventListener("click", closePlate);
   $("platemodal").addEventListener("click", e=>{ if(e.target===$("platemodal")) closePlate(); });
+  $("qhead").addEventListener("click", ()=>{ QOPEN=!QOPEN; renderQueue(); });
+  $("qadd").addEventListener("click", ()=>{ if(SELECTED) addQueue(SELECTED); });
   setInterval(loadFiles, 15000);
+  setInterval(loadQueue, 15000);
   setInterval(()=>{ if(ES_OK) return; if(fleetRenderBlocked()) return; loadFleet(); }, 5000);
 }
 
@@ -373,6 +406,64 @@ function renderList(){
       `<span class="jtxt"><div class="jn">${esc(f.name)}</div><div class="jm">${fmtTime(f.mtime)} · ${fmtSize(f.size)}</div>`+
       (f.lastPrinted?`<div class="jm jprinted">Printed ${fmtTime(f.lastPrinted)}</div>`:"")+`</span>`;
     b.addEventListener("click",()=>selectFile(f.name)); list.appendChild(b); });
+}
+
+// --- "Up next" queue ---------------------------------------------------------
+// Reference list only — nothing auto-starts. Server removes an entry when its
+// file is actually started; the panel refreshes on the same 15 s cadence as
+// the file list, plus immediately after any queue action or print start.
+async function loadQueue(){
+  try{ const d=await (await fetch("/api/queue")).json(); QUEUE=d.queue||[]; renderQueue(); }catch(e){}
+}
+function renderQueue(){
+  const wrap=$("qwrap");
+  if(!QUEUE.length){ wrap.style.display="none"; return; }
+  wrap.style.display="";
+  $("qcount").textContent=QUEUE.length;
+  $("qarrow").textContent=QOPEN?"▾":"▸";
+  const list=$("qlist");
+  list.style.display=QOPEN?"":"none";
+  if(!QOPEN) return;
+  list.innerHTML="";
+  QUEUE.forEach((e,i)=>{
+    const f=FILES.find(x=>x.name===e.file);
+    const row=document.createElement("div"); row.className="qitem";
+    row.innerHTML=`<span class="qpos">${i+1}</span>`+
+      `<img class="qthumb" loading="lazy" src="/api/thumb?file=${encodeURIComponent(e.file)}${f?"&v="+(f.mtime||0):""}" onerror="this.style.visibility='hidden'">`+
+      `<span class="qname${f?"":" qmiss"}" title="${esc(e.file)}">${esc(e.file)}${f?"":" — missing"}</span>`+
+      `<button class="qbtn" data-mv="-1" title="Move up" ${i===0?"disabled":""}>↑</button>`+
+      `<button class="qbtn" data-mv="1" title="Move down" ${i===QUEUE.length-1?"disabled":""}>↓</button>`+
+      `<button class="qbtn qx" data-x="1" title="Remove from queue">✕</button>`;
+    if(f) row.querySelector(".qname").addEventListener("click",()=>selectFile(e.file));
+    row.querySelectorAll("[data-mv]").forEach(b=>b.addEventListener("click",()=>moveQueue(e.id,parseInt(b.dataset.mv,10))));
+    row.querySelector("[data-x]").addEventListener("click",()=>removeQueue(e.id));
+    list.appendChild(row);
+  });
+}
+async function addQueue(name){
+  const btn=$("qadd"), old=btn.textContent;
+  try{
+    const r=await fetch("/api/queue",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({file:name})});
+    const d=await r.json();
+    if(!r.ok||d.error) throw new Error(d.error||("HTTP "+r.status));
+    QUEUE=d.queue; renderQueue();
+    btn.textContent="Queued ✓"; setTimeout(()=>{ btn.textContent=old; },1200);
+  }catch(e){ btn.textContent=e.message; setTimeout(()=>{ btn.textContent=old; },2000); }
+}
+async function removeQueue(id){
+  try{
+    const r=await fetch("/api/queue/remove",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id})});
+    const d=await r.json(); if(d.queue){ QUEUE=d.queue; renderQueue(); }
+  }catch(e){}
+}
+async function moveQueue(id,delta){
+  const i=QUEUE.findIndex(e=>e.id===id), j=i+delta;
+  if(i<0||j<0||j>=QUEUE.length) return;
+  const ids=QUEUE.map(e=>e.id); [ids[i],ids[j]]=[ids[j],ids[i]];
+  try{
+    const r=await fetch("/api/queue/reorder",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ids})});
+    const d=await r.json(); if(d.queue){ QUEUE=d.queue; renderQueue(); }
+  }catch(e){}
 }
 
 async function selectFile(name){
@@ -598,8 +689,11 @@ function renderFleet(){
       // picker (common colors + hex / CSS-name input). Writes go through
       // /api/setcolor (same gcode the touchscreen uses) and the swatch only
       // updates after the printer confirms the change.
-      const editable = p.online && !busy;
-      return `<div class="h${match?' match':''}${editable?' editable':''}"><div class="sw" style="background:${bg}"${editable?` data-pickopen="${p.id}:${i}" title="Change T${i+1} color"`:""}></div>`+
+      // Official RFID spools are color-locked in firmware (write rejected with
+      // "official filament, not configurable!") — don't offer the picker on them.
+      const editable = p.online && !busy && !h.official;
+      const lockTitle = h.official ? ` title="Official Snapmaker RFID spool — color comes from the tag"` : "";
+      return `<div class="h${match?' match':''}${editable?' editable':''}"><div class="sw" style="background:${bg}"${editable?` data-pickopen="${p.id}:${i}" title="Change T${i+1} color"`:lockTitle}></div>`+
              `<div class="lab"><div class="ht">T${i+1}</div><div class="hm">${esc(h.material||'')}</div><div class="ht" style="margin-top:2px">${h.colors?h.colors.join(" "):(h.hex||"")}</div></div></div>`;
     }).join("");
     // factual heads-loaded, plus a separate ADVISORY color-match note
@@ -712,7 +806,7 @@ async function pushTo(printer, start){
     await pollJob(d.jobId, st, start, mapped);
   }catch(e){ if(st){ st.className="pstatus err"; st.textContent=e.message; } }
   finally{ PUSHES=Math.max(0,PUSHES-1); }
-  loadFleet();
+  loadFleet(); loadQueue();
 }
 function pushBar(pct, label){
   return `<div class="pushbar"><div class="pushlabel">${esc(label)}</div><div class="pbar"><i style="width:${pct}%"></i></div></div>`;
@@ -954,7 +1048,18 @@ async function loadInventory(){
 }
 
 // ---- settings / discovery / tip ----
-$("gear").addEventListener("click",()=>$("setup").classList.toggle("show"));
+$("gear").addEventListener("click",()=>{ $("setup").classList.toggle("show"); refreshAuthLine(); });
+$("manageAuth").addEventListener("click",()=>{ location.href="/auth.html"; });
+async function refreshAuthLine(){
+  try{
+    const a = await (await fetch("/api/auth/status")).json();
+    $("authHint").textContent =
+      a.mode === "password" ? "password-protected · sessions last 30 days" :
+      a.mode === "proxy"    ? "proxy mode — gate off, your reverse proxy handles auth" :
+      a.mode === "forward"  ? "forward-auth — identity comes from your proxy" :
+                              "open — anyone who can reach this Hub can use it";
+  }catch{ $("authHint").textContent = ""; }
+}
 $("addPrinter").addEventListener("click",()=>addPrinterRow("",""));
 $("discover").addEventListener("click",runDiscover);
 $("saveCfg").addEventListener("click",saveConfig);

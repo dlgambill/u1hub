@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#1A1C22">
+<title>Access — U1 Print Hub</title>
+<link rel="icon" href="/icon-192.png">
+<style>
+  :root{
+    --chassis:#1A1C22; --panel:#23262E; --panel-2:#2B2F38;
+    --line:#353A45; --line-soft:#2E323B;
+    --ink:#ECEEF2; --ink-dim:#9AA0AC; --ink-faint:#6A7180;
+    --signal:#FFB200; --ok:#46C18C; --bad:#E06A5C;
+    --mono: ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+    --sans: ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;min-height:100%;}
+  body{background:var(--chassis); color:var(--ink); font-family:var(--sans); -webkit-font-smoothing:antialiased;
+    display:flex; align-items:center; justify-content:center; min-height:100vh; padding:20px;
+    background-image:radial-gradient(60% 70% at 70% -10%, rgba(255,178,0,.05), transparent 60%);}
+  .box{width:100%; max-width:380px;}
+  .mark{display:flex; align-items:baseline; gap:10px; justify-content:center; margin-bottom:18px;}
+  .mark .glyph{font-family:var(--mono); font-size:12px; letter-spacing:.3em; color:var(--signal); font-weight:600;}
+  .mark h1{font-size:13px; letter-spacing:.34em; text-transform:uppercase; font-weight:700; margin:0;}
+  .card{background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:20px;}
+  .card h2{font-size:12px; letter-spacing:.18em; text-transform:uppercase; color:var(--ink-dim); margin:0 0 14px; font-weight:600;}
+  input[type=password], input[type=text]{width:100%; font:inherit; font-size:14px; color:var(--ink);
+    background:var(--panel-2); border:1px solid var(--line); border-radius:7px; padding:11px 12px; margin-bottom:10px;}
+  input::placeholder{color:var(--ink-faint);}
+  button{width:100%; font:inherit; font-size:13.5px; font-weight:700; letter-spacing:.04em; color:#1A1C22;
+    background:var(--signal); border:1px solid var(--signal); border-radius:7px; padding:12px; cursor:pointer;}
+  button:hover{filter:brightness(1.07);}
+  button.ghost{background:transparent; border-color:var(--line); color:var(--ink-dim); font-weight:400; margin-top:8px;}
+  button.ghost:hover{color:var(--ink); border-color:var(--ink-faint);}
+  .msg{font-size:12.5px; min-height:18px; margin-top:10px; color:var(--ink-dim); text-align:center;}
+  .msg.err{color:var(--bad);}
+  .msg.ok{color:var(--ok);}
+  .hint{font-size:11.5px; color:var(--ink-faint); line-height:1.6; margin-top:12px;}
+  details{margin-top:14px;}
+  summary{font-size:11.5px; color:var(--ink-faint); cursor:pointer; user-select:none;}
+  details .hint{margin-top:8px;}
+  .hidden{display:none;}
+</style>
+</head>
+<body>
+<div class="box">
+  <div class="mark"><span class="glyph">///</span><h1>U1 Print Hub</h1></div>
+
+  <div class="card hidden" id="setup">
+    <h2>Set a password</h2>
+    <input type="password" id="suPw" placeholder="Password" autocomplete="new-password">
+    <input type="password" id="suPw2" placeholder="Confirm password" autocomplete="new-password">
+    <button id="suBtn">Protect this Hub</button>
+    <button class="ghost" id="suSkip">Keep it open (no password)</button>
+    <div class="msg" id="suMsg"></div>
+    <details>
+      <summary>running behind a reverse proxy?</summary>
+      <p class="hint">If your proxy already handles authentication, you can turn the Hub's gate off
+        (<b>proxy mode</b>) or trust a forward-auth identity header from Authelia/Authentik
+        (<b>forward mode</b>).</p>
+      <button class="ghost" id="suProxy">Use proxy mode (gate off)</button>
+      <input type="text" id="suHeader" placeholder="Identity header (Remote-User)" style="margin-top:8px">
+      <button class="ghost" id="suForward">Use forward-auth mode</button>
+    </details>
+  </div>
+
+  <div class="card hidden" id="login">
+    <h2>Password required</h2>
+    <input type="password" id="liPw" placeholder="Password" autocomplete="current-password">
+    <button id="liBtn">Unlock</button>
+    <div class="msg" id="liMsg"></div>
+  </div>
+
+  <div class="card hidden" id="authed">
+    <h2>Unlocked</h2>
+    <p class="hint" id="modeLine"></p>
+    <button id="goBtn">Open dashboard →</button>
+    <details>
+      <summary>change access settings</summary>
+      <input type="password" id="chPw" placeholder="New password" style="margin-top:10px" autocomplete="new-password">
+      <button class="ghost" id="chBtn">Change password</button>
+      <button class="ghost" id="offBtn">Turn the gate off</button>
+      <button class="ghost" id="outBtn">Log out</button>
+      <div class="msg" id="chMsg"></div>
+    </details>
+  </div>
+</div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const show = id => { for (const s of ["setup","login","authed"]) $(s).classList.toggle("hidden", s !== id); };
+
+async function api(url, body){
+  const r = await fetch(url, body ? { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify(body) } : undefined);
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+  return j;
+}
+
+async function refresh(){
+  const s = await api("/api/auth/status");
+  if (s.mode === "open") show("setup");
+  else if (s.authed) {
+    $("modeLine").textContent = s.mode === "password" ? "This Hub is password-protected. Sessions last 30 days."
+      : s.mode === "proxy" ? "Gate is off — proxy mode (your reverse proxy handles auth)."
+      : "Forward-auth mode — identity comes from your proxy's header.";
+    show("authed");
+  }
+  else show("login");
+}
+
+function msg(id, text, cls){ const m = $(id); m.textContent = text || ""; m.className = "msg" + (cls ? " " + cls : ""); }
+
+$("suBtn").onclick = async () => {
+  const pw = $("suPw").value, pw2 = $("suPw2").value;
+  if (pw !== pw2) return msg("suMsg", "Passwords don't match", "err");
+  try { await api("/api/auth/setup", { mode:"password", password: pw }); location.href = "/"; }
+  catch (e) { msg("suMsg", e.message, "err"); }
+};
+$("suSkip").onclick = () => { location.href = "/"; };
+$("suProxy").onclick = async () => {
+  try { await api("/api/auth/setup", { mode:"proxy" }); msg("suMsg", "Proxy mode set — gate is off", "ok"); setTimeout(()=>location.href="/", 900); }
+  catch (e) { msg("suMsg", e.message, "err"); }
+};
+$("suForward").onclick = async () => {
+  try { await api("/api/auth/setup", { mode:"forward", header: $("suHeader").value.trim() || "Remote-User" });
+    msg("suMsg", "Forward-auth mode set", "ok"); setTimeout(()=>location.href="/", 900); }
+  catch (e) { msg("suMsg", e.message, "err"); }
+};
+
+$("liBtn").onclick = async () => {
+  try { await api("/api/auth/login", { password: $("liPw").value }); location.href = "/"; }
+  catch (e) { msg("liMsg", e.message, "err"); }
+};
+$("liPw").addEventListener("keydown", e => { if (e.key === "Enter") $("liBtn").click(); });
+
+$("goBtn").onclick = () => { location.href = "/"; };
+$("chBtn").onclick = async () => {
+  try { await api("/api/auth/setup", { mode:"password", password: $("chPw").value }); msg("chMsg", "Password changed", "ok"); $("chPw").value=""; }
+  catch (e) { msg("chMsg", e.message, "err"); }
+};
+$("offBtn").onclick = async () => {
+  try { await api("/api/auth/setup", { mode:"open" }); msg("chMsg", "Gate is off", "ok"); setTimeout(refresh, 700); }
+  catch (e) { msg("chMsg", e.message, "err"); }
+};
+$("outBtn").onclick = async () => {
+  try { await api("/api/auth/logout"); location.reload(); } catch (e) { msg("chMsg", e.message, "err"); }
+};
+
+refresh().catch(e => { show("login"); msg("liMsg", e.message, "err"); });
+</script>
+</body>
+</html>

@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#1A1C22">
+<title>FS Mix Planner — U1 Print Hub</title>
+<link rel="icon" href="/icon-192.png">
+<style>
+  :root{
+    --chassis:#1A1C22; --panel:#23262E; --panel-2:#2B2F38;
+    --line:#353A45; --line-soft:#2E323B;
+    --ink:#ECEEF2; --ink-dim:#9AA0AC; --ink-faint:#6A7180;
+    --signal:#FFB200; --ok:#46C18C; --idle:#545B69; --bad:#E06A5C; --busy:#5B9BF0;
+    --mono: ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+    --sans: ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{background:var(--chassis); color:var(--ink); font-family:var(--sans); -webkit-font-smoothing:antialiased;
+    background-image:radial-gradient(60% 70% at 70% -10%, rgba(255,178,0,.05), transparent 60%);}
+  .wrap{max-width:760px; margin:0 auto; padding:18px 16px 60px;}
+  header{display:flex; align-items:baseline; gap:12px; padding:6px 0 16px;}
+  header a{color:var(--ink-dim); text-decoration:none; font-size:12px; letter-spacing:.06em;}
+  header a:hover{color:var(--ink);}
+  header h1{font-size:14px; letter-spacing:.3em; text-transform:uppercase; margin:0; font-weight:700;}
+  header .glyph{font-family:var(--mono); font-size:12px; letter-spacing:.3em; color:var(--signal); font-weight:600;}
+  .card{background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:14px;}
+  .card h2{font-size:12px; letter-spacing:.18em; text-transform:uppercase; color:var(--ink-dim); margin:0 0 12px; font-weight:600;}
+  .hint{font-size:12px; color:var(--ink-faint); margin:8px 0 0; line-height:1.5;}
+  .spools{display:grid; grid-template-columns:repeat(4,1fr); gap:10px;}
+  @media(max-width:520px){.spools{grid-template-columns:repeat(2,1fr);}}
+  .spool{background:var(--panel-2); border:1px solid var(--line-soft); border-radius:8px; padding:10px; text-align:center;}
+  .spool label{display:block; font-family:var(--mono); font-size:11px; color:var(--ink-dim); margin-bottom:7px; letter-spacing:.1em;}
+  .spool input[type=color]{width:100%; height:44px; border:1px solid var(--line); border-radius:6px; background:none; padding:2px; cursor:pointer;}
+  .spool input[type=text]{width:100%; margin-top:7px; font-family:var(--mono); font-size:12px; text-align:center; color:var(--ink);
+    background:var(--chassis); border:1px solid var(--line); border-radius:6px; padding:6px 4px;}
+  .spool .off{margin-top:7px; font-size:10.5px; color:var(--ink-faint); cursor:pointer; user-select:none;}
+  .spool.unloaded input{opacity:.25; pointer-events:none;}
+  .rowbtns{display:flex; gap:8px; flex-wrap:wrap; margin-top:12px;}
+  button{font:inherit; font-size:12.5px; letter-spacing:.04em; color:var(--ink); background:var(--panel-2); border:1px solid var(--line);
+    border-radius:7px; padding:9px 14px; cursor:pointer;}
+  button:hover{border-color:var(--ink-faint);}
+  button.primary{background:var(--signal); border-color:var(--signal); color:#1A1C22; font-weight:700;}
+  button.primary:hover{filter:brightness(1.07);}
+  button:disabled{opacity:.4; cursor:default;}
+  select{font:inherit; font-size:12.5px; color:var(--ink); background:var(--panel-2); border:1px solid var(--line); border-radius:7px; padding:9px 10px; cursor:pointer;}
+  .drop{border:1.5px dashed var(--line); border-radius:9px; padding:26px 14px; text-align:center; color:var(--ink-dim); font-size:13px; cursor:pointer;}
+  .drop.hot{border-color:var(--signal); color:var(--ink);}
+  .drop input{display:none;}
+  .targets{display:flex; flex-wrap:wrap; gap:8px; margin-top:12px;}
+  .tchip{display:flex; align-items:center; gap:8px; background:var(--panel-2); border:1px solid var(--line-soft); border-radius:7px; padding:6px 9px;}
+  .tchip .sw{width:22px; height:22px; border-radius:5px; border:1px solid var(--line); flex:none;}
+  .tchip .hx{font-family:var(--mono); font-size:11.5px;}
+  .tchip .parts{font-size:10.5px; color:var(--ink-faint);}
+  .tchip .x{color:var(--ink-faint); cursor:pointer; font-size:14px; padding:0 2px;}
+  .tchip .x:hover{color:var(--bad);}
+  .tchip.excluded{opacity:.35;}
+  .addrow{display:flex; gap:8px; margin-top:12px; align-items:center;}
+  .addrow input[type=color]{width:44px; height:36px; border:1px solid var(--line); border-radius:6px; background:none; padding:2px; cursor:pointer;}
+  .addrow input[type=text]{font-family:var(--mono); font-size:12.5px; color:var(--ink); background:var(--chassis); border:1px solid var(--line); border-radius:6px; padding:8px 10px; width:110px;}
+  .recipe{background:var(--panel-2); border:1px solid var(--line-soft); border-radius:9px; padding:13px; margin-bottom:10px;}
+  .recipe .top{display:flex; align-items:center; gap:11px;}
+  .recipe .sw{width:44px; height:44px; border-radius:8px; border:1px solid var(--line); flex:none;}
+  .recipe .arrow{color:var(--ink-faint); flex:none;}
+  .recipe .mix{flex:1; min-width:0;}
+  .recipe .label{font-size:14px; font-weight:600;}
+  .recipe .sub{font-family:var(--mono); font-size:11px; color:var(--ink-dim); margin-top:3px;}
+  .badge{font-family:var(--mono); font-size:10.5px; padding:3px 8px; border-radius:20px; letter-spacing:.04em; flex:none;}
+  .badge.exact{background:rgba(70,193,140,.15); color:var(--ok); border:1px solid rgba(70,193,140,.4);}
+  .badge.close{background:rgba(91,155,240,.13); color:var(--busy); border:1px solid rgba(91,155,240,.4);}
+  .badge.approximate{background:rgba(255,178,0,.12); color:var(--signal); border:1px solid rgba(255,178,0,.4);}
+  .badge.oog{background:rgba(224,106,92,.13); color:var(--bad); border:1px solid rgba(224,106,92,.4);}
+  .warn{display:flex; gap:8px; margin-top:10px; font-size:12px; color:var(--bad); line-height:1.5;}
+  .defrow{display:flex; gap:8px; margin-top:10px; align-items:center;}
+  .defrow code{flex:1; min-width:0; font-family:var(--mono); font-size:10.5px; color:var(--ink-dim); background:var(--chassis);
+    border:1px solid var(--line-soft); border-radius:6px; padding:7px 9px; overflow-x:auto; white-space:nowrap;}
+  .defrow button{padding:6px 10px; font-size:11px; flex:none;}
+  details{margin-top:9px;}
+  summary{font-size:11.5px; color:var(--ink-faint); cursor:pointer; user-select:none;}
+  .alt{display:flex; align-items:center; gap:9px; margin-top:8px; font-size:12.5px;}
+  .alt .sw{width:24px; height:24px; border-radius:5px; border:1px solid var(--line); flex:none;}
+  .alt .de{font-family:var(--mono); font-size:10.5px; color:var(--ink-faint); margin-left:auto;}
+  .status{font-size:12.5px; color:var(--ink-dim); margin-top:10px; min-height:16px;}
+  .status.err{color:var(--bad);}
+  .foot{font-size:11px; color:var(--ink-faint); line-height:1.6; margin-top:22px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <span class="glyph">///</span>
+    <h1>FS Mix Planner</h1>
+    <a href="/" style="margin-left:auto">← dashboard</a>
+  </header>
+
+  <div class="card">
+    <h2>Loaded spools</h2>
+    <div class="spools" id="spools"></div>
+    <div class="rowbtns">
+      <select id="printerSel" style="display:none"></select>
+      <button id="loadBtn">Load from printer</button>
+      <button id="cmywBtn">Reset to ideal CMYW</button>
+    </div>
+    <p class="hint">These are the four physical filaments the mixes are solved against. Loading from the printer uses the colors actually assigned to each toolhead — recipes will match what's really on the machine.</p>
+  </div>
+
+  <div class="card">
+    <h2>Target colors</h2>
+    <label class="drop" id="drop">
+      Drop a .3mf project here (or tap to browse) — the palette is extracted automatically
+      <input type="file" id="file" accept=".3mf">
+    </label>
+    <div class="targets" id="targets"></div>
+    <div class="addrow">
+      <input type="color" id="addColor" value="#3A7D44">
+      <input type="text" id="addHex" value="#3A7D44" maxlength="7" spellcheck="false">
+      <button id="addBtn">Add color</button>
+    </div>
+    <div class="status" id="fileStatus"></div>
+  </div>
+
+  <div class="rowbtns" style="margin-bottom:14px">
+    <button class="primary" id="solveBtn" style="flex:1; padding:13px">Compute mixes</button>
+  </div>
+
+  <div id="results"></div>
+
+  <p class="foot">Blends are estimated with the same color model the slicer's Mix Effect preview uses (verified against it). Printed results depend on real pigments and will drift from any preview — treat ΔE as a ranking, not a promise, and expect dark and fully saturated targets to be flagged: interleaved bright filaments cannot mix into true black. Enter each recipe in the fork's Edit Mix dialog (Ratio tab); the raw definition string is shown for reference.</p>
+</div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const IDEAL = ["#FF00FF", "#00FFFF", "#FFFF00", "#FFFFFF"];
+let spools = IDEAL.slice();          // hex or null per slot (F1..F4)
+let targets = [];                    // {hex, parts|null, excluded}
+
+// ---- spools UI ----
+function renderSpools(){
+  const host = $("spools"); host.innerHTML = "";
+  spools.forEach((hex, i) => {
+    const d = document.createElement("div");
+    d.className = "spool" + (hex ? "" : " unloaded");
+    d.innerHTML = `<label>F${i+1}</label>
+      <input type="color" value="${hex || "#000000"}">
+      <input type="text" value="${hex || ""}" maxlength="7" spellcheck="false">
+      <div class="off">${hex ? "mark unloaded" : "unloaded — tap to enable"}</div>`;
+    const [col, txt] = d.querySelectorAll("input");
+    col.oninput = () => { spools[i] = col.value.toUpperCase(); txt.value = spools[i]; };
+    txt.onchange = () => {
+      const m = /^#?([0-9a-fA-F]{6})$/.exec(txt.value.trim());
+      if (m) { spools[i] = "#" + m[1].toUpperCase(); renderSpools(); }
+      else txt.value = spools[i] || "";
+    };
+    d.querySelector(".off").onclick = () => { spools[i] = spools[i] ? null : IDEAL[i]; renderSpools(); };
+    host.appendChild(d);
+  });
+}
+
+$("cmywBtn").onclick = () => { spools = IDEAL.slice(); renderSpools(); };
+
+$("loadBtn").onclick = async () => {
+  const btn = $("loadBtn"); btn.disabled = true; btn.textContent = "Loading…";
+  try {
+    const fleet = await (await fetch("/api/fleet")).json();
+    const online = fleet.filter(p => p.online && p.heads);
+    if (!online.length) throw new Error("No online printers");
+    let pick = online[0];
+    if (online.length > 1) {
+      const sel = $("printerSel");
+      if (sel.style.display === "none") {  // first press: show chooser, wire it
+        sel.innerHTML = online.map((p,i)=>`<option value="${i}">${p.name}</option>`).join("");
+        sel.style.display = "";
+        btn.textContent = "Load from printer"; btn.disabled = false;
+        return;
+      }
+      pick = online[parseInt(sel.value,10)] || online[0];
+    }
+    spools = pick.heads.map(h => (h.loaded && h.hex) ? h.hex : null);
+    renderSpools();
+  } catch (e) { alert("Couldn't read spool colors: " + e.message); }
+  btn.textContent = "Load from printer"; btn.disabled = false;
+};
+
+// ---- targets UI ----
+function renderTargets(){
+  const host = $("targets"); host.innerHTML = "";
+  targets.forEach((t, i) => {
+    const d = document.createElement("div");
+    d.className = "tchip" + (t.excluded ? " excluded" : "");
+    d.innerHTML = `<span class="sw" style="background:${t.hex}"></span>
+      <span class="hx">${t.hex}</span>
+      ${t.parts != null ? `<span class="parts">${t.parts}×</span>` : ""}
+      <span class="x" title="remove">✕</span>`;
+    d.querySelector(".sw").onclick = () => { t.excluded = !t.excluded; renderTargets(); };
+    d.querySelector(".x").onclick = () => { targets.splice(i,1); renderTargets(); };
+    host.appendChild(d);
+  });
+}
+
+$("addColor").oninput = () => { $("addHex").value = $("addColor").value.toUpperCase(); };
+$("addBtn").onclick = () => {
+  const m = /^#?([0-9a-fA-F]{6})$/.exec($("addHex").value.trim());
+  if (!m) return;
+  const hex = "#" + m[1].toUpperCase();
+  if (!targets.some(t => t.hex === hex)) targets.push({ hex, parts: null, excluded: false });
+  renderTargets();
+};
+
+// ---- 3MF upload ----
+const drop = $("drop");
+["dragover","dragenter"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("hot"); }));
+["dragleave","drop"].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove("hot"); }));
+drop.addEventListener("drop", e => { const f = e.dataTransfer.files[0]; if (f) analyzeFile(f); });
+$("file").onchange = () => { const f = $("file").files[0]; if (f) analyzeFile(f); };
+
+async function analyzeFile(f){
+  const st = $("fileStatus"); st.className = "status"; st.textContent = "Reading " + f.name + "…";
+  try {
+    const r = await fetch("/api/fs-colors/analyze", { method:"POST", body: f });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+    targets = j.colors.map(c => ({ hex: c.hex, parts: j.hasUsage ? c.parts : null,
+      excluded: j.hasUsage && c.parts === 0 }));
+    renderTargets();
+    st.textContent = `${f.name}: ${j.filamentCount} filaments found` +
+      (j.hasUsage ? " (ranked by part count — tap a swatch to include/exclude)" : "");
+  } catch (e) { st.className = "status err"; st.textContent = e.message; }
+}
+
+// ---- solve ----
+$("solveBtn").onclick = async () => {
+  const live = targets.filter(t => !t.excluded).map(t => t.hex);
+  const host = $("results"); host.innerHTML = "";
+  if (!live.length) { host.innerHTML = `<div class="card"><p class="hint">Add at least one target color.</p></div>`; return; }
+  const btn = $("solveBtn"); btn.disabled = true; btn.textContent = "Computing…";
+  try {
+    const r = await fetch("/api/fs-colors/solve", {
+      method:"POST", headers:{ "Content-Type":"application/json" },
+      body: JSON.stringify({ spools, targets: live })
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+    renderResults(j.results);
+  } catch (e) {
+    host.innerHTML = `<div class="card"><p class="hint" style="color:var(--bad)">${e.message}</p></div>`;
+  }
+  btn.disabled = false; btn.textContent = "Compute mixes";
+};
+
+function badge(grade, dE){
+  const cls = grade === "out-of-gamut" ? "oog" : grade;
+  const txt = grade === "out-of-gamut" ? "out of gamut" : grade;
+  return `<span class="badge ${cls}">ΔE ${dE} · ${txt}</span>`;
+}
+
+function renderResults(results){
+  const host = $("results");
+  const card = document.createElement("div");
+  card.className = "card";
+  card.innerHTML = "<h2>Mix recipes</h2>";
+  results.forEach(r => {
+    const d = document.createElement("div");
+    d.className = "recipe";
+    if (r.error) { d.innerHTML = `<div class="warn">⚠ ${r.error}</div>`; card.appendChild(d); return; }
+    const single = r.best.components.length === 1;
+    d.innerHTML = `
+      <div class="top">
+        <span class="sw" style="background:${r.target}" title="target ${r.target}"></span>
+        <span class="arrow">→</span>
+        <span class="sw" style="background:${r.best.hex}" title="mix ${r.best.hex}"></span>
+        <div class="mix">
+          <div class="label">${single ? r.best.label + " (use directly, no mix)" : r.best.label}</div>
+          <div class="sub">${r.target} → ${r.best.hex}</div>
+        </div>
+        ${badge(r.grade, r.dE)}
+      </div>
+      ${!r.inGamut ? `<div class="warn">⚠ This color isn't reachable with the loaded spools — interleaved filaments can't mix darker or more saturated than their components. The recipe shown is the closest match; expect a visible difference.</div>` : ""}
+      ${r.def ? `<div class="defrow"><code>${r.def}</code><button data-def="${r.def}">copy</button></div>` : ""}
+      ${r.alternates && r.alternates.length ? `<details><summary>alternates</summary>${
+        r.alternates.map(a => `<div class="alt"><span class="sw" style="background:${a.hex}"></span>${a.label}<span class="de">ΔE ${a.dE}</span></div>`).join("")
+      }</details>` : ""}`;
+    const cp = d.querySelector("button[data-def]");
+    if (cp) cp.onclick = () => { navigator.clipboard.writeText(cp.dataset.def); cp.textContent = "copied"; setTimeout(()=>cp.textContent="copy", 1200); };
+    card.appendChild(d);
+  });
+  host.appendChild(card);
+}
+
+renderSpools();
+renderTargets();
+</script>
+</body>
+</html>
