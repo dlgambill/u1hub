@@ -8,3 +8,8 @@ gcode/*.mapped.gcode
 # local runtime state — never commit
 config.json
 printlog.json
+queue.json
+auth.json
+tunnel.json
+cloudflared
+cloudflared.exe
