@@ -3,10 +3,14 @@
 ![U1 Print Hub dashboard — farm view with live prints and the filament color picker](docs/dashboard.png)
 
 A small local dashboard for a farm of **Snapmaker U1** printers. From your phone or
-any browser on the same network you can:
+any browser — on your network, or **securely from anywhere** — you can:
 
-- Browse a folder of sliced G-code — with **embedded model thumbnails** — and see the
-  **colors each job needs**.
+- Browse **every G-code file you have, wherever it lives** — the Hub's own library and
+  each printer's onboard storage, merged into **one list** with badges showing which
+  machines hold a copy, **embedded model thumbnails**, and the **colors each job needs**.
+- **Manage files where they sit**: rename or delete in the Hub library or on any
+  printer's storage, and **copy files printer-to-printer** with live progress and a
+  size-verified result — no re-slicing, no USB sticks.
 - See **every machine's loaded colors and live status** at a glance, updated **in
   real time**: progress, screen-matching time remaining, and a **layer counter**
   tick the moment the printer reports them, not on a polling delay.
@@ -29,10 +33,70 @@ any browser on the same network you can:
   against the colors actually loaded on your machine.
 - **Protect the Hub with a password** — optional single shared password with 30-day
   sessions, or hand auth to your reverse proxy (Authelia/Authentik supported).
+- **Reach it from outside your network** — the Hub can run a Cloudflare tunnel for you:
+  HTTPS end to end, no port forwarding, no router changes, and it **refuses to go
+  public until the password gate is on**.
 - See **lifetime farm stats** (total jobs, print hours, filament used) and per-printer
   **temperature sparklines and job history** in expandable panels.
 
-It talks straight to each printer's built-in Moonraker API. Nothing leaves your network.
+It talks straight to each printer's built-in Moonraker API. Nothing is installed on the
+printers, and nothing leaves your network unless you turn remote access on.
+
+---
+
+## New in 2.7 — the remote & files release
+
+- **Secure remote access, managed by the Hub.** Open ⚙ Settings → Remote access and
+  the Hub does the rest: it downloads the official Cloudflare `cloudflared` binary,
+  runs it, watches its status, and shows your public HTTPS URL — **no port
+  forwarding, no router configuration, no exposed ports** (the tunnel dials *out*).
+  Two modes:
+  - **Quick tunnel** — zero accounts. One click gets a random
+    `https://….trycloudflare.com` URL that lives as long as the Hub does. Perfect
+    for checking on a long print from anywhere.
+  - **Named tunnel** — bring a free Cloudflare account and a domain, and the Hub runs
+    a tunnel with a **stable hostname** you can bookmark and install as an app.
+
+  **Security is not optional here:** the Hub flat-out refuses to start a tunnel until
+  the password gate is enabled. (Proxy and forward-auth modes are refused too — a
+  tunnel points straight at the Hub and would bypass your reverse proxy's login.)
+  Secure first, public second.
+
+![Remote access — Hub-managed Cloudflare tunnel status in Settings](docs/tunnel.png)
+![The dashboard on a phone, over HTTPS, from anywhere](docs/remote-phone.png)
+
+- **A real phone app, finally.** Served over the tunnel's HTTPS, your phone's
+  **Add to Home Screen** now produces a true standalone install — full screen, own
+  icon, no browser chrome.
+- **One file explorer for the whole farm.** The file list now shows the Hub's library
+  *and* every printer's onboard storage together. Badges on each row show exactly
+  which machines hold a copy; files that exist only on a printer appear with a dashed
+  edge and their own thumbnails (pulled from the printer's metadata). **Source filter
+  pills** — Hub, U1, U2, … — let you scope the list to any machine with a tap, and
+  they stack with the text filter.
+
+![Unified file explorer — one list, badges for every copy, source filter pills](docs/explorer.png)
+
+- **Manage files where they live.** Hover a library row for **rename / delete**;
+  tap any printer badge to manage **that machine's copy**. Renaming a library file
+  carries its queue entries and print history along with it. The guards are strict
+  and loud: the Hub **never touches a file that is actively printing**, never
+  silently overwrites, honors the printer's own read-only flags, and won't delete a
+  file that's still in the print queue — every refusal tells you exactly why.
+
+![Per-copy file actions — rename, delete, and send from any printer badge](docs/file-actions.png)
+
+- **Copy files printer to printer.** Tap a badge → **Send to…** → pick a machine.
+  The Hub streams the file from one printer straight to the other (a 400 MB file
+  never touches RAM or your disk), shows live progress in place, then **re-reads the
+  destination and verifies the byte count** before calling it done. If the name
+  already exists on the target, the Hub refuses rather than overwrite — delete or
+  rename the old copy first.
+
+![Cross-printer transfer — done, size verified](docs/transfer.png)
+
+- Fixed along the way: G-code thumbnails are now served from the cached path they
+  were always meant to use (a leftover duplicate route was shadowing it).
 
 ---
 
@@ -94,8 +158,8 @@ It talks straight to each printer's built-in Moonraker API. Nothing leaves your 
   the Hub extracts them for the file browser and shows the active job's preview on
   each printing card.
 - **Phone home-screen app.** Add the Hub to your phone's home screen for one-tap
-  access. (Full standalone install activates automatically once the Hub is served
-  over HTTPS — planned alongside remote access.)
+  access. (As of 2.7, serving over the tunnel's HTTPS upgrades this to a full
+  standalone install.)
 - Quality of life: multi-color/gradient spool swatches (ready for RFID dual-color
   filament), "chamber" labeling, farm + per-printer statistics panels, active
   filename on cards, and a low-disk warning chip.
@@ -185,7 +249,8 @@ The first launch installs what it needs (takes a minute) and then opens
 > **Use it from your phone:** find the IP of the computer running the hub and open
 > `http://THAT-IP:4545` on your phone — e.g. `http://192.168.1.20:4545`. Then use your
 > browser's **Add to Home Screen** for a one-tap app icon. Keep the hub running on a
-> computer that stays on (or set the launcher to run at startup).
+> computer that stays on (or set the launcher to run at startup). Away from home,
+> turn on **Remote access** (below) and use the tunnel URL instead.
 
 ### 2. First-time setup (all in the browser)
 
@@ -198,6 +263,18 @@ The **Settings** panel opens automatically the first time. Three steps:
 
 Reopen Settings anytime with the gear button.
 
+### 3. Optional: remote access
+
+1. **Set a password first** — ⚙ Settings → Manage access. The tunnel will not start
+   without it, on purpose.
+2. Open ⚙ Settings → **Remote access**, click **Download cloudflared** (one time),
+   pick **Quick tunnel**, and hit **Start**. Your public HTTPS URL appears when the
+   tunnel connects — open it from anywhere, log in, and you're on your dashboard.
+3. Want a **permanent address**? Create a (free) Cloudflare account, add a domain,
+   create a tunnel in the Zero Trust dashboard pointing at
+   `http://localhost:4545`, and paste its token into **Named tunnel** mode. Your
+   hostname now survives Hub restarts — bookmark it, install it, print from the beach.
+
 ---
 
 ## Using it
@@ -206,6 +283,16 @@ Reopen Settings anytime with the gear button.
   and their **last-printed date** once they've run, and the selected job lists
   **per-color gram usage**. If it's a **Full Spectrum** job, a panel decodes and
   previews all its mixed colors and recipes.
+- **The list is the whole farm.** Badges under a file show every machine that has a
+  copy; dashed rows live only on a printer. The **source pills** under the sort menu
+  scope the list — untick **Hub** to see only printer storage, or tick a single
+  machine to audit exactly what's on it. The text filter stacks on top.
+- **Manage any copy.** Hover a library row for **✎ rename** and **🗑 delete** (rename
+  keeps its queue spot and print history). Tap a **printer badge** to open that
+  copy's actions: rename, delete, or **→ Send to…** another machine — with live
+  progress and a size-verified finish. Every destructive action asks first and names
+  exactly which copy it will touch; every refusal (file is printing, name exists,
+  file is queued) says so in plain words.
 - **Queue work with "Up next."** Tap **+ Add to queue** on a selected job to line it
   up. The queue sits above the file list; use the arrows to reprioritize and **✕** to
   remove. Starting a queued file (from any machine) clears it from the list — so the
@@ -244,19 +331,23 @@ addresses never move and you won't have to touch anything.
   with the firmware's own `SET_PRINT_FILAMENT_CONFIG` command — the same one the
   touchscreen issues. The live plate map and skip feature use the standard Klipper
   `exclude_object` module.
+- **File management and transfers** use Moonraker's standard file API (`upload`,
+  `move`, `delete`) — verified against real U1 firmware before shipping. Transfers
+  stream through the Hub with backpressure, so file size is limited by the printers'
+  storage, not the Hub's memory.
 - **Progress and time remaining** use the touchscreen's own formula: header-corrected
   byte progress from `virtual_sdcard` plus the slicer's estimated time, so the Hub and
   the machine's screen agree. Falls back to a self-correcting estimate when file
   metadata isn't available.
 - **Realtime** uses one websocket per printer plus a server-sent-events stream to the
   browser; both fall back to plain HTTP polling automatically if anything is in the way.
-- **Treat the hub like the printers it controls.** The Hub now ships with an optional
-  password gate (⚙ Settings → Manage access) — turn it on if anyone you don't fully
-  trust can reach your network. One honest limit remains: the Hub still serves plain
-  HTTP, so **don't expose it to the internet or forward a port to it** — a password
-  sent over unencrypted HTTP is only as private as the network it crosses. LAN use
-  with the gate on is the sweet spot today; hub-managed secure remote access (HTTPS
-  via tunnel) is the next release, and it's what will make remote use safe.
+- **Treat the hub like the printers it controls.** Turn on the password gate
+  (⚙ Settings → Manage access) if anyone you don't fully trust can reach your network.
+  For access from outside, **use the built-in tunnel and nothing else** — it's HTTPS
+  end to end and it requires the password gate before it will start. **Never forward a
+  router port to the Hub**: on the LAN it still speaks plain HTTP, and a password sent
+  over unencrypted HTTP is only as private as the network it crosses. The tunnel
+  exists precisely so you never have to do that.
 
 ---
 
@@ -295,8 +386,8 @@ release, bump the version in `package.json` and the `VERSION` constants in `serv
 and `public/index.html`, then tag and push:
 
 ```
-git tag v2.6.0
-git push origin v2.6.0
+git tag v2.7.0
+git push origin v2.7.0
 ```
 
 `.github/workflows/release.yml` builds Linux, Windows, and Apple-Silicon macOS binaries
