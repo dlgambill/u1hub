@@ -102,6 +102,9 @@ app.use(express.json({ limit: "1mb" }));
 // Access gate — fronts everything below (static included). Modes and the
 // off-switch live in auth.json; see auth.js for the design notes.
 require("./auth.js")(app, express, BASE_DIR, ASSET_DIR);
+// Remote access — Hub-managed Cloudflare tunnel (see tunnel.js design notes).
+// Mounted after the gate so every /api/tunnel/* route requires login.
+require("./tunnel.js")(app, express, BASE_DIR, PORT);
 app.use(express.static(path.join(ASSET_DIR, "public")));
 // Explicit index route so the UI is served even when running from a packaged
 // binary (where express.static from the snapshot can be unreliable).
@@ -143,6 +146,280 @@ app.get("/api/files", (req, res) => {
   }
 });
 
+// --- onboard printer files (read-only) ----------------------------------------
+// Lists gcode stored ON a printer via Moonraker GET /server/files/list?root=gcodes.
+// Response shape hardware-verified 2026-07-19 on 192.168.12.88 (73 files):
+//   { result: [ { path, modified (epoch seconds, float), size, permissions } ] }
+// `modified` is converted to ms (mtime) to match /api/files, so the unified
+// library view can sort both sources with a single comparator. Strictly
+// read-only: management ops (move/delete/rename — endpoints verified same day:
+// upload 201 / move 200 / delete 200) come in a later slice and will honor
+// each file's `permissions` flag rather than assuming everything is writable.
+async function listOnboard(p) {
+  const base = String(p.url).replace(/\/+$/, "");
+  const ctrl = new AbortController();
+  const to = setTimeout(() => ctrl.abort(), 5000);
+  try {
+    const r = await fetch(base + "/server/files/list?root=gcodes", { signal: ctrl.signal });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const arr = ((await r.json()).result) || [];
+    return arr
+      .filter(f => /\.(gcode|gco|g)$/i.test(f.path || ""))
+      .map(f => ({
+        name: f.path,                       // may include subfolder, e.g. "sub/x.gcode"
+        size: f.size || 0,
+        mtime: (f.modified || 0) * 1000,    // ms, same unit as /api/files
+        permissions: f.permissions || ""
+      }))
+      .sort((a, b) => b.mtime - a.mtime);
+  } finally { clearTimeout(to); }
+}
+
+// GET /api/printer-files            -> all printers, queried in parallel
+// GET /api/printer-files?printer=N  -> just printer N (same id as /api/printers)
+// A printer that can't be reached reports online:false + error instead of
+// failing the whole response — offline machines must not blank the fleet view.
+app.get("/api/printer-files", async (req, res) => {
+  const want = req.query.printer;
+  const targets = (want === undefined)
+    ? PRINTERS.map((p, i) => ({ p, i }))
+    : (PRINTERS[want] ? [{ p: PRINTERS[want], i: Number(want) }] : null);
+  if (!targets) return res.status(400).json({ error: "Unknown printer " + want });
+  const out = await Promise.all(targets.map(async ({ p, i }) => {
+    try { return { id: i, name: p.name, online: true, files: await listOnboard(p) }; }
+    catch (e) { return { id: i, name: p.name, online: false, error: String(e.message || e), files: [] }; }
+  }));
+  res.json({ printers: out });
+});
+
+// --- library file management (local FOLDER only) -------------------------------
+// Delete / rename for the Hub's server library. Strictly local fs — nothing in
+// this block talks to a printer. Guards:
+//   * safeFile() on every name (basenames only, no traversal)
+//   * DELETE refuses while the file is queued (queue.json would point at nothing)
+//   * both refuse while an active push job is streaming the file to a printer
+//     (jobs carry their filename for exactly this check)
+//   * rename never silently overwrites an existing target
+// Rename MIGRATES queue entries and printlog history so "up next" and "last
+// printed" follow the file to its new name; delete removes the printlog entry
+// so a future file reusing the name doesn't inherit stale history.
+function activePushOf(name) {
+  for (const j of JOBS.values()) if (!j.done && j.file === name) return true;
+  return false;
+}
+
+app.post("/api/files/delete", (req, res) => {
+  const name = path.basename(String((req.body || {}).name || ""));
+  const fp = safeFile(name);
+  if (!fp || !fs.existsSync(fp)) return res.status(404).json({ error: "File not found: " + name });
+  if (QUEUE.some(q => q.file === name))
+    return res.status(409).json({ error: "'" + name + "' is in the print queue — remove it from the queue first." });
+  if (activePushOf(name))
+    return res.status(409).json({ error: "'" + name + "' is being sent to a printer right now — wait for the upload to finish." });
+  try { fs.unlinkSync(fp); }
+  catch (e) { return res.status(500).json({ error: "Delete failed: " + e.message }); }
+  if (PRINTLOG[name] !== undefined) { delete PRINTLOG[name]; savePrintLog(); }
+  res.json({ ok: true, deleted: name });
+});
+
+app.post("/api/files/rename", (req, res) => {
+  const name = path.basename(String((req.body || {}).name || ""));
+  let newName = path.basename(String((req.body || {}).newName || "").trim());
+  const fp = safeFile(name);
+  if (!fp || !fs.existsSync(fp)) return res.status(404).json({ error: "File not found: " + name });
+  if (!newName) return res.status(400).json({ error: "New name is empty" });
+  if (!/\.(gcode|gco|g)$/i.test(newName)) newName += ".gcode"; // bare name -> .gcode
+  const np = safeFile(newName);
+  if (!np) return res.status(400).json({ error: "Bad new name" });
+  if (np === fp) return res.json({ ok: true, renamed: name, to: newName }); // exact no-op
+  // Case-only renames (foo -> Foo) are legal on Windows even though
+  // existsSync(target) reports true on its case-insensitive filesystem.
+  const caseOnly = np.toLowerCase() === fp.toLowerCase();
+  if (!caseOnly && fs.existsSync(np))
+    return res.status(409).json({ error: "'" + newName + "' already exists — pick a different name." });
+  if (activePushOf(name))
+    return res.status(409).json({ error: "'" + name + "' is being sent to a printer right now — wait for the upload to finish." });
+  try { fs.renameSync(fp, np); }
+  catch (e) { return res.status(500).json({ error: "Rename failed: " + e.message }); }
+  let queueTouched = false;
+  for (const q of QUEUE) if (q.file === name) { q.file = newName; queueTouched = true; }
+  if (queueTouched) saveQueue();
+  if (PRINTLOG[name] !== undefined) { PRINTLOG[newName] = PRINTLOG[name]; delete PRINTLOG[name]; savePrintLog(); }
+  res.json({ ok: true, renamed: name, to: newName, queueUpdated: queueTouched });
+});
+
+// --- printer-side file management ----------------------------------------------
+// Delete / rename for files stored ON a printer, via the Moonraker endpoints
+// hardware-verified 2026-07-19 on 192.168.12.88 (upload 201 / move 200 /
+// delete 200). Guards, in order:
+//   * ACTIVE-PRINT HARD BLOCK — a live print_stats query per operation; if the
+//     target is the file being printed (or paused mid-print), refuse. Never
+//     from cache: staleness here could kill a running print's file.
+//   * permissions — the printer's own listing says whether a file is writable;
+//     anything without "w" is refused before we ever hit the endpoint.
+//   * rename never overwrites an existing target (Moonraker's behavior on a
+//     dest collision is NOT hardware-verified, so the Hub refuses on its own).
+//   * paths are relative to the gcodes root; ".." and absolute paths rejected;
+//     each segment URL-encoded (fleet filenames contain spaces + Unicode).
+function cleanRel(name) {
+  const s = String(name || "").replace(/\\/g, "/").trim();
+  if (!s || s.startsWith("/") || s.split("/").some(seg => seg === ".." || seg === "." || seg === "")) return null;
+  return s;
+}
+function encPath(rel) { return rel.split("/").map(encodeURIComponent).join("/"); }
+async function queryPrintStats(base) {
+  const ctrl = new AbortController();
+  const to = setTimeout(() => ctrl.abort(), 4000);
+  try {
+    const r = await fetch(base + "/printer/objects/query?print_stats", { signal: ctrl.signal });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const ps = ((((await r.json()).result) || {}).status || {}).print_stats || {};
+    return { state: ps.state || "unknown", filename: ps.filename || "" };
+  } finally { clearTimeout(to); }
+}
+// Shared preamble for both ops: resolves printer, sanitizes the name, runs the
+// active-print block, and confirms existence + writability from a fresh listing.
+// Returns { p, base, name, files } or replies with the error itself and returns null.
+async function printerFileOpGuard(req, res) {
+  const p = PRINTERS[(req.body || {}).printer];
+  if (!p) { res.status(400).json({ error: "Unknown printer" }); return null; }
+  const name = cleanRel((req.body || {}).name);
+  if (!name) { res.status(400).json({ error: "Bad file name" }); return null; }
+  const base = String(p.url).replace(/\/+$/, "");
+  const ps = await queryPrintStats(base);
+  if ((ps.state === "printing" || ps.state === "paused") && ps.filename === name) {
+    res.status(409).json({ error: "REFUSED: '" + name + "' is the ACTIVE print on " + p.name + " (state: " + ps.state + "). The Hub will not touch a file that is printing." });
+    return null;
+  }
+  const files = await listOnboard(p);
+  const f = files.find(x => x.name === name);
+  if (!f) { res.status(404).json({ error: "'" + name + "' not found on " + p.name }); return null; }
+  if (f.permissions && !f.permissions.includes("w")) {
+    res.status(403).json({ error: "'" + name + "' is read-only on " + p.name + " (permissions: '" + f.permissions + "')" });
+    return null;
+  }
+  return { p, base, name, files };
+}
+
+app.post("/api/printer-files/delete", async (req, res) => {
+  try {
+    const g = await printerFileOpGuard(req, res);
+    if (!g) return;
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), 10000);
+    const r = await fetch(g.base + "/server/files/gcodes/" + encPath(g.name), { method: "DELETE", signal: ctrl.signal });
+    clearTimeout(to);
+    if (!r.ok) return res.status(502).json({ error: g.p.name + " refused delete: HTTP " + r.status + " " + (await r.text()).slice(0, 160) });
+    res.json({ ok: true, printer: g.p.name, deleted: g.name });
+  } catch (e) {
+    res.status(502).json({ error: "Printer unreachable or errored: " + String(e.message || e) });
+  }
+});
+
+app.post("/api/printer-files/rename", async (req, res) => {
+  try {
+    const g = await printerFileOpGuard(req, res);
+    if (!g) return;
+    let newName = cleanRel((req.body || {}).newName);
+    if (!newName) return res.status(400).json({ error: "Bad new name" });
+    if (!/\.(gcode|gco|g)$/i.test(newName)) newName += ".gcode";
+    if (newName === g.name) return res.json({ ok: true, printer: g.p.name, renamed: g.name, to: newName });
+    if (g.files.some(x => x.name === newName))
+      return res.status(409).json({ error: "'" + newName + "' already exists on " + g.p.name + " — pick a different name." });
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), 10000);
+    const r = await fetch(g.base + "/server/files/move?source=" + encodeURIComponent("gcodes/" + g.name) + "&dest=" + encodeURIComponent("gcodes/" + newName), { method: "POST", signal: ctrl.signal });
+    clearTimeout(to);
+    if (!r.ok) return res.status(502).json({ error: g.p.name + " refused rename: HTTP " + r.status + " " + (await r.text()).slice(0, 160) });
+    res.json({ ok: true, printer: g.p.name, renamed: g.name, to: newName });
+  } catch (e) {
+    res.status(502).json({ error: "Printer unreachable or errored: " + String(e.message || e) });
+  }
+});
+
+// --- cross-printer transfer -----------------------------------------------------
+// Hub-brokered copy: download from the source printer, stream straight into a
+// multipart upload to the destination (no buffering — files run 200-400 MB and
+// the packaged Hub must not hold them in RAM). Progress rides the existing
+// JOBS map, so the UI polls /api/print-status exactly like a print push.
+//   * No silent overwrite: Moonraker's upload replaces an existing name without
+//     complaint (which could clobber a file the destination is PRINTING), so
+//     the Hub refuses if the name exists on the destination at all.
+//   * Write-then-verify: after the 201, the destination is re-listed and the
+//     new file must appear at the source's exact byte size.
+//   * Content-Length is promised from the source listing; if the file changes
+//     mid-transfer the stream length won't match and the upload fails loudly.
+function streamTransfer(srcBase, dstBase, name, size, job) {
+  return new Promise((resolve, reject) => {
+    const boundary = "----u1hub" + Math.random().toString(16).slice(2);
+    const pre = Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${name}"\r\nContent-Type: application/octet-stream\r\n\r\n`);
+    const post = Buffer.from(`\r\n--${boundary}--\r\n`);
+    job.total = pre.length + size + post.length;
+    job.sent = 0;
+    const u = new URL(dstBase + "/server/files/upload");
+    const up = http.request({
+      protocol: u.protocol, hostname: u.hostname, port: u.port || 80, path: u.pathname, method: "POST",
+      headers: { "Content-Type": "multipart/form-data; boundary=" + boundary, "Content-Length": job.total }
+    }, res => {
+      let b = ""; res.setEncoding("utf8"); res.on("data", d => b += d);
+      res.on("end", () => (res.statusCode < 300 ? resolve(b) : reject(new Error("Upload " + res.statusCode + ": " + b.slice(0, 160)))));
+    });
+    up.on("error", reject);
+    http.get(srcBase + "/server/files/gcodes/" + encPath(name), dl => {
+      if (dl.statusCode !== 200) {
+        dl.resume(); up.destroy();
+        return reject(new Error("Download from source failed: HTTP " + dl.statusCode));
+      }
+      up.write(pre); job.sent += pre.length;
+      dl.on("data", chunk => {
+        job.sent += chunk.length;
+        if (!up.write(chunk)) { dl.pause(); up.once("drain", () => dl.resume()); }
+      });
+      dl.on("end", () => { up.write(post); job.sent += post.length; up.end(); });
+      dl.on("error", reject);
+    }).on("error", reject);
+  });
+}
+
+// Body: { from: printerIdx, name, to: printerIdx } -> { jobId } (poll /api/print-status)
+app.post("/api/printer-files/transfer", async (req, res) => {
+  const { from, to } = req.body || {};
+  const src = PRINTERS[from], dst = PRINTERS[to];
+  if (!src || !dst) return res.status(400).json({ error: "Unknown printer" });
+  if (src === dst) return res.status(400).json({ error: "Source and destination are the same printer" });
+  const name = cleanRel((req.body || {}).name);
+  if (!name) return res.status(400).json({ error: "Bad file name" });
+  if (name.includes("/")) return res.status(400).json({ error: "Files in subfolders can't be transferred yet" });
+  const srcBase = String(src.url).replace(/\/+$/, "");
+  const dstBase = String(dst.url).replace(/\/+$/, "");
+  try {
+    const [srcFiles, dstFiles] = await Promise.all([listOnboard(src), listOnboard(dst)]);
+    const f = srcFiles.find(x => x.name === name);
+    if (!f) return res.status(404).json({ error: "'" + name + "' not found on " + src.name });
+    if (dstFiles.some(x => x.name === name))
+      return res.status(409).json({ error: "'" + name + "' already exists on " + dst.name + " — delete or rename it there first (the Hub never overwrites)." });
+    const jobId = newJobId();
+    const job = { file: name, phase: "transfer", sent: 0, total: 0, done: false, error: null, result: null, ts: Date.now() };
+    JOBS.set(jobId, job);
+    res.json({ jobId });
+    (async () => {
+      try {
+        await streamTransfer(srcBase, dstBase, name, f.size, job);
+        job.phase = "verify";
+        const after = await listOnboard(dst);
+        const got = after.find(x => x.name === name);
+        if (!got) throw new Error("Upload reported success but '" + name + "' is missing from " + dst.name + "'s listing");
+        job.result = { from: src.name, to: dst.name, size: got.size, sizeVerified: got.size === f.size };
+        job.phase = "done"; job.done = true;
+      } catch (e) {
+        job.error = String(e.message || e); job.done = true; job.phase = "error";
+      }
+    })();
+  } catch (e) {
+    res.status(502).json({ error: "Printer unreachable: " + String(e.message || e) });
+  }
+});
+
 // --- queue routes -------------------------------------------------------------
 app.get("/api/queue", (req, res) => res.json({ queue: QUEUE }));
 
@@ -171,37 +448,9 @@ app.post("/api/queue/reorder", (req, res) => {
   res.json({ ok: true, queue: QUEUE });
 });
 
-// Serve the embedded slicer thumbnail (PNG) from a file's HEAD. Picks the
-// largest PNG block; 404 if the file has none (or only non-PNG/QOI thumbnails).
-app.get("/api/thumb", (req, res) => {
-  const fp = safeFile(req.query.file);
-  if (!fp || !fs.existsSync(fp)) return res.status(404).end();
-  let head;
-  try {
-    const fd = fs.openSync(fp, "r");
-    try {
-      const buf = Buffer.alloc(262144);           // first 256 KB is plenty
-      const n = fs.readSync(fd, buf, 0, buf.length, 0);
-      head = buf.slice(0, n).toString("latin1");
-    } finally { fs.closeSync(fd); }
-  } catch { return res.status(404).end(); }
-
-  const re = /;\s*thumbnail(?:_PNG)? begin (\d+)x(\d+)[^\n]*\n([\s\S]*?);\s*thumbnail(?:_PNG)? end/g;
-  let m, best = null, bestArea = -1;
-  while ((m = re.exec(head))) {
-    const area = (+m[1]) * (+m[2]);
-    if (area > bestArea) { bestArea = area; best = m[3]; }
-  }
-  if (best == null) return res.status(404).end();
-
-  const b64 = best.replace(/^[ \t]*;[ \t]?/gm, "").replace(/\s+/g, "");
-  let png;
-  try { png = Buffer.from(b64, "base64"); } catch { return res.status(404).end(); }
-  if (png.length < 8 || png[0] !== 0x89 || png[1] !== 0x50) return res.status(404).end(); // PNG magic
-  res.set("Content-Type", "image/png");
-  res.set("Cache-Control", "max-age=300");
-  res.send(png);
-});
+// (The former inline /api/thumb route lived here; it shadowed the newer
+// cached implementation further down. Removed 2026-07-19 — the cached route
+// with thumbCache + long Cache-Control now actually serves.)
 
 app.get("/api/map", (req, res) => {
   const fp = safeFile(req.query.file);
@@ -308,7 +557,7 @@ app.post("/api/print", (req, res) => {
 
   // Kick the work off in the background and hand the client a job id to poll.
   const jobId = newJobId();
-  const job = { phase: "upload", sent: 0, total: 0, done: false, error: null, result: null, ts: Date.now() };
+  const job = { file: name, phase: "upload", sent: 0, total: 0, done: false, error: null, result: null, ts: Date.now() };
   JOBS.set(jobId, job);
   res.json({ jobId });
 

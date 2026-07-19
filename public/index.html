@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- U1 Print Hub — index v2.5.0 -->
+<!-- U1 Print Hub — index v2.6.0 -->
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
@@ -37,6 +37,13 @@
   .filter input{width:100%; font:inherit; font-size:13px; color:var(--ink); background:var(--panel-2); border:1px solid var(--line); border-radius:7px; padding:8px 11px;}
   .filter input::placeholder{color:var(--ink-faint);}
   .sortsel{width:100%; margin-top:8px; font:inherit; font-size:12.5px; color:var(--ink); background:var(--panel-2); border:1px solid var(--line); border-radius:7px; padding:7px 9px; cursor:pointer;}
+  /* Source filter: which storage locations feed the unified list */
+  .srcbar{display:flex; flex-wrap:wrap; gap:4px; margin-top:8px;}
+  .srcbar label{font-family:var(--mono); font-size:9.5px; letter-spacing:.03em; color:var(--ink-dim); border:1px solid var(--line-soft); border-radius:99px; padding:2px 8px; cursor:pointer; display:flex; align-items:center; gap:4px; user-select:none;}
+  .srcbar label:hover{border-color:var(--signal);}
+  .srcbar label.on{color:var(--ink); border-color:var(--line);}
+  .srcbar label.off{opacity:.45;}
+  .srcbar input{display:none;}
   .list{flex:1; min-height:0; overflow:auto; padding:8px;}
   .job{display:block; width:100%; text-align:left; cursor:pointer; background:transparent; border:1px solid transparent; border-radius:8px; padding:11px 12px; margin-bottom:4px; color:var(--ink); font:inherit;}
   .job:hover{background:var(--panel); border-color:var(--line-soft);}
@@ -47,6 +54,20 @@
   .job .jn{font-size:13.5px; font-weight:600; word-break:break-all; line-height:1.3;}
   .job .jm{font-family:var(--mono); font-size:10.5px; color:var(--ink-faint); margin-top:4px; letter-spacing:.02em;}
   .job .jprinted{color:var(--ok); margin-top:2px;}
+  /* Unified library view: source chips, printer-only rows, row actions */
+  .chiprow{margin-top:5px; display:flex; flex-wrap:wrap; gap:4px;}
+  .chip{font-family:var(--mono); font-size:9.5px; letter-spacing:.03em; color:var(--ink-dim); border:1px solid var(--line-soft); border-radius:99px; padding:1px 7px; background:transparent;}
+  .chip.act{cursor:pointer;}
+  .chip.act:hover{color:var(--ink); border-color:var(--signal);}
+  .chip.srconly{color:var(--ink-faint); border-style:dashed;}
+  .job.onboard{border-left:2px dashed var(--line-soft);}
+  .jact{display:none; flex:none; gap:4px; align-items:center;}
+  .job:hover .jact{display:flex;}
+  .jact .ab{cursor:pointer; border:1px solid var(--line-soft); border-radius:6px; padding:3px 7px; font-size:12px; color:var(--ink-dim);}
+  .jact .ab:hover{color:var(--ink); border-color:var(--signal);}
+  .actstrip{display:flex; align-items:center; gap:8px; margin:-2px 0 6px 52px; font-size:12px; color:var(--ink-dim);}
+  .actstrip .sb{cursor:pointer; border:1px solid var(--line-soft); border-radius:6px; padding:3px 9px; font-size:11.5px; color:var(--ink);}
+  .actstrip .sb:hover{border-color:var(--signal);}
   .empty-list{padding:26px 18px; color:var(--ink-dim); font-size:13px; line-height:1.55;}
   .empty-list code{font-family:var(--mono); font-size:12px; color:var(--ink);}
   /* "Up next" queue panel */
@@ -256,6 +277,7 @@
         <option value="size_desc">Largest first</option>
         <option value="size_asc">Smallest first</option>
       </select>
+      <div class="srcbar" id="srcbar" title="Show files stored on…"></div>
     </div>
     <div class="qwrap" id="qwrap" style="display:none">
       <button class="qhead" id="qhead"><span id="qarrow">▾</span> Up next <span class="qcount" id="qcount"></span></button>
@@ -292,6 +314,26 @@
         <div class="row" style="margin-top:6px">
           <button class="btn ghost" id="manageAuth">Manage access</button>
         </div>
+
+        <label class="fl" style="margin-top:18px">Remote access <span class="hint" id="tunHint">checking…</span></label>
+        <div class="row" id="tunUrlRow" style="margin-top:6px; display:none">
+          <code id="tunUrl" style="font-family:var(--mono); font-size:12px; color:var(--signal); word-break:break-all"></code>
+          <button class="btn ghost" id="tunCopy" style="font-size:12px; padding:4px 10px">Copy</button>
+        </div>
+        <div class="row" style="margin-top:6px">
+          <select class="field" id="tunMode" style="width:auto; flex:0 0 auto">
+            <option value="quick">Quick tunnel — no account, URL changes each start</option>
+            <option value="token">Named tunnel — stable URL, Cloudflare token</option>
+          </select>
+          <button class="btn ghost" id="tunGo">…</button>
+          <label class="hint" style="display:flex; align-items:center; gap:5px; cursor:pointer">
+            <input type="checkbox" id="tunAuto"> start with Hub</label>
+        </div>
+        <div id="tunTokenRow" style="display:none; margin-top:8px">
+          <input class="field" id="tunToken" type="password" placeholder="tunnel token from Cloudflare Zero Trust (eyJ…)" />
+          <input class="field" id="tunHost" style="margin-top:6px" placeholder="public hostname, e.g. hub.example.com" />
+        </div>
+        <div class="pstatus" id="tunMsg" style="margin-top:6px"></div>
       </div>
     </div>
 
@@ -338,6 +380,8 @@
 const $ = id => document.getElementById(id);
 const VERSION = "2.6.0";
 let FILES = [], SELECTED = null, MAP = null, FLEET = [], MAPSEL = {};
+let ONBOARD = [], ACT = null; // onboard = /api/printer-files cache; ACT = open per-printer action strip {name,pid}
+let SRCSEL = { hub:true, p:{} }; // source-filter checkboxes; p[pid]=false hides that printer (default: everything on)
 let QUEUE = [], QOPEN = true;   // shared "up next" list (state lives in JS, not DOM)
 
 init();
@@ -345,12 +389,13 @@ init();
 // be installed to the phone home screen. No fetch handler = no stale-version
 // risk; the version banner stays the source of truth.
 if("serviceWorker" in navigator && location.protocol!=="file:"){ navigator.serviceWorker.register("/sw.js").catch(()=>{}); }
-async function init(){ await checkVersion(); await loadConfigUI(); await loadFiles(); await loadQueue(); await loadFleet(); startEvents(); 
+async function init(){ await checkVersion(); await loadConfigUI(); await loadFiles(); await loadQueue(); await loadFleet(); loadPrinterFiles(); startEvents(); 
   $("platex").addEventListener("click", closePlate);
   $("platemodal").addEventListener("click", e=>{ if(e.target===$("platemodal")) closePlate(); });
   $("qhead").addEventListener("click", ()=>{ QOPEN=!QOPEN; renderQueue(); });
   $("qadd").addEventListener("click", ()=>{ if(SELECTED) addQueue(SELECTED); });
   setInterval(loadFiles, 15000);
+  setInterval(loadPrinterFiles, 15000);
   setInterval(loadQueue, 15000);
   setInterval(()=>{ if(ES_OK) return; if(fleetRenderBlocked()) return; loadFleet(); }, 5000);
 }
@@ -365,7 +410,7 @@ async function checkVersion(){
     b.className="vbadge bad"; b.textContent="page v"+VERSION+" · server has no version — update & restart server.js";
   }
 }
-$("refresh").addEventListener("click", ()=>{ loadFiles(); loadFleet(); });
+$("refresh").addEventListener("click", ()=>{ loadFiles(); loadFleet(); loadPrinterFiles(); });
 $("filter").addEventListener("input", renderList);
 $("sort").addEventListener("change", e=>{ SORT=e.target.value; renderList(); });
 
@@ -374,6 +419,38 @@ async function loadFiles(){
     if(d.error){ $("folderline").textContent=d.error; FILES=[]; renderList(); return; }
     $("folderline").textContent=d.folder; FILES=d.files; renderList();
   }catch(e){ $("folderline").textContent="Server unreachable"; }
+}
+// Onboard (printer-storage) listings for the unified library view. Offline
+// printers are simply absent from badges until they answer again.
+async function loadPrinterFiles(){
+  try{ const d=await (await fetch("/api/printer-files")).json(); ONBOARD=d.printers||[]; renderSrcBar(); renderList(); }catch(e){}
+}
+// Source-filter checkboxes: Hub + one per configured printer. A row is shown
+// if ANY of the locations it is stored on is checked. Rebuilt when the printer
+// list changes; per-printer choices survive the rebuild (keyed by id).
+function renderSrcBar(){
+  const bar=$("srcbar"); if(!bar) return;
+  const mk=(key,label,on)=>{
+    const l=document.createElement("label"); l.className=on?"on":"off";
+    const c=document.createElement("input"); c.type="checkbox"; c.checked=on;
+    c.addEventListener("change",()=>{
+      if(key==="hub") SRCSEL.hub=c.checked; else SRCSEL.p[key]=c.checked;
+      l.className=c.checked?"on":"off"; renderList();
+    });
+    l.appendChild(c); l.appendChild(document.createTextNode(label));
+    return l;
+  };
+  bar.innerHTML="";
+  bar.appendChild(mk("hub","Hub", SRCSEL.hub));
+  (ONBOARD||[]).forEach(pr=>{
+    if(SRCSEL.p[pr.id]===undefined) SRCSEL.p[pr.id]=true;
+    bar.appendChild(mk(pr.id, pr.name, SRCSEL.p[pr.id]));
+  });
+}
+function srcVisible(f){
+  if(f.src==="lib" && SRCSEL.hub) return true;
+  // a location counts unless its printer is explicitly unchecked
+  return f.locs.some(l => SRCSEL.p[l.pid] !== false);
 }
 function fmtSize(b){ return b>1048576 ? (b/1048576).toFixed(1)+" MB" : Math.max(1,Math.round(b/1024))+" KB"; }
 function fmtTime(ms){ const d=new Date(ms), df=(Date.now()-ms)/1000;
@@ -392,20 +469,140 @@ function sortFiles(arr){
   });
   return arr;
 }
+// --- Unified library view -----------------------------------------------------
+// One list, two sources: the Hub's server library (full rows — click for the
+// job card) and files that exist only on printer storage ("printer only" rows,
+// dashed edge). Badges on any row show which printers hold a copy; clicking a
+// badge opens a strip to rename/delete THAT printer's copy. Library rows get
+// hover ✎/🗑 for the library copy. Nothing here acts without a confirm/prompt,
+// and every failure alerts with the server's exact error.
+function onboardIndex(){
+  const m=new Map();
+  (ONBOARD||[]).forEach(pr=>{ (pr.files||[]).forEach(f=>{
+    if(!m.has(f.name)) m.set(f.name,[]);
+    m.get(f.name).push({pid:pr.id, pname:pr.name, size:f.size, mtime:f.mtime, permissions:f.permissions});
+  }); });
+  return m;
+}
 function renderList(){
   const q=$("filter").value.trim().toLowerCase(), list=$("list");
-  if(!FILES.length){ list.innerHTML='<div class="empty-list">No <code>.gcode</code> files here yet.<br><br>Point <code>gcodeFolder</code> in <code>config.json</code> at your Orca output folder, then Refresh.</div>'; return; }
-  const shown=FILES.filter(f=>!q||f.name.toLowerCase().includes(q));
-  if(!shown.length){ list.innerHTML='<div class="empty-list">Nothing matches that filter.</div>'; return; }
+  const ob=onboardIndex();
+  const libNames=new Set(FILES.map(f=>f.name));
+  const rows=FILES.map(f=>({ ...f, src:"lib", locs: ob.get(f.name)||[] }));
+  ob.forEach((locs,name)=>{ if(!libNames.has(name)) rows.push({
+    name, src:"onboard", locs, lastPrinted:0,
+    size:Math.max(...locs.map(l=>l.size||0)), mtime:Math.max(...locs.map(l=>l.mtime||0))
+  }); });
+  if(!rows.length){ list.innerHTML='<div class="empty-list">No <code>.gcode</code> files here yet.<br><br>Point <code>gcodeFolder</code> in <code>config.json</code> at your Orca output folder, then Refresh.</div>'; return; }
+  const shown=rows.filter(srcVisible).filter(f=>!q||f.name.toLowerCase().includes(q));
+  if(!shown.length){ list.innerHTML='<div class="empty-list">Nothing matches the filter / source selection.</div>'; return; }
   sortFiles(shown);
   list.innerHTML="";
-  shown.forEach(f=>{ const b=document.createElement("button"); b.className="job"+(SELECTED===f.name?" active":"");
-    // Thumbnail extracted from the gcode header (Snapmaker Orca embeds PNGs
-    // in the first 256 KB). Files without one just 404 and the img hides.
-    b.innerHTML=`<img class="jthumb" loading="lazy" src="/api/thumb?file=${encodeURIComponent(f.name)}&v=${f.mtime||0}" onerror="this.style.display='none'">`+
-      `<span class="jtxt"><div class="jn">${esc(f.name)}</div><div class="jm">${fmtTime(f.mtime)} · ${fmtSize(f.size)}</div>`+
-      (f.lastPrinted?`<div class="jm jprinted">Printed ${fmtTime(f.lastPrinted)}</div>`:"")+`</span>`;
-    b.addEventListener("click",()=>selectFile(f.name)); list.appendChild(b); });
+  shown.forEach(f=>{
+    const b=document.createElement("button");
+    b.className="job"+(f.src==="onboard"?" onboard":"")+(SELECTED===f.name&&f.src==="lib"?" active":"");
+    // Thumbnails: library rows read the local file head (cached server-side);
+    // printer-only rows ask /api/pthumb (local copy first, then printer metadata).
+    const thumb = f.src==="lib"
+      ? `<img class="jthumb" loading="lazy" src="/api/thumb?file=${encodeURIComponent(f.name)}&v=${f.mtime||0}" onerror="this.style.display='none'">`
+      : `<img class="jthumb" loading="lazy" src="/api/pthumb?id=${f.locs[0].pid}&file=${encodeURIComponent(f.name)}" onerror="this.style.display='none'">`;
+    const chips = f.locs.length
+      ? `<div class="chiprow">${f.src==="onboard"?'<span class="chip srconly">printer only</span>':""}${f.locs.map(l=>`<span class="chip act" role="button" data-pid="${l.pid}" title="stored on ${esc(l.pname)} — click to manage that copy">${esc(l.pname)}</span>`).join("")}</div>`
+      : "";
+    b.innerHTML=thumb+
+      `<span class="jtxt"><div class="jn">${esc(f.name)}</div><div class="jm">${fmtTime(f.mtime)} · ${fmtSize(f.size)}${f.src==="onboard"?" · printer storage":""}</div>`+
+      (f.lastPrinted?`<div class="jm jprinted">Printed ${fmtTime(f.lastPrinted)}</div>`:"")+chips+`</span>`+
+      (f.src==="lib"?`<span class="jact"><span class="ab" role="button" data-act="ren" title="Rename in Hub library">✎</span><span class="ab" role="button" data-act="del" title="Delete from Hub library">🗑</span></span>`:"");
+    if(f.src==="lib") b.addEventListener("click",()=>selectFile(f.name));
+    else b.addEventListener("click",()=>toggleAct(f.name, f.locs[0].pid));
+    b.querySelectorAll(".chip.act").forEach(ch=>ch.addEventListener("click",e=>{ e.stopPropagation(); toggleAct(f.name, +ch.dataset.pid); }));
+    b.querySelectorAll(".ab").forEach(ab=>ab.addEventListener("click",e=>{ e.stopPropagation(); ab.dataset.act==="ren"?libRename(f.name):libDelete(f.name); }));
+    list.appendChild(b);
+    if(ACT && ACT.name===f.name){
+      const loc=f.locs.find(l=>l.pid===ACT.pid);
+      if(loc){
+        const s=document.createElement("div"); s.className="actstrip";
+        if(XFER && XFER.name===f.name && XFER.fromPid===loc.pid){
+          // live transfer status; ✕ only once it has finished (the copy itself
+          // runs server-side and cannot be cancelled from here)
+          s.innerHTML=`<span>${XFER.err?esc(XFER.err):esc(loc.pname)+" → "+esc(XFER.toName)+": "+esc(XFER.msg)}</span>`+(XFER.done?` <span class="sb" role="button" data-a="x">✕</span>`:"");
+          const x=s.querySelector('[data-a="x"]'); if(x) x.addEventListener("click",()=>{ XFER=null; renderList(); });
+        } else if(ACT.send){
+          const targets=(ONBOARD||[]).filter(pr=>pr.id!==loc.pid);
+          s.innerHTML=`<span>Send "${esc(f.name)}" to:</span> `+targets.map(pr=>`<span class="sb" role="button" data-t="${pr.id}">${esc(pr.name)}</span>`).join(" ")+` <span class="sb" role="button" data-a="x">✕</span>`;
+          targets.forEach(pr=>{ s.querySelector(`[data-t="${pr.id}"]`).addEventListener("click",()=>startTransfer(loc.pid,loc.pname,pr.id,pr.name,f.name,loc.size)); });
+          s.querySelector('[data-a="x"]').addEventListener("click",()=>{ ACT.send=false; renderList(); });
+        } else {
+          s.innerHTML=`<span>${esc(loc.pname)} storage:</span> <span class="sb" role="button" data-a="ren">✎ Rename</span> <span class="sb" role="button" data-a="del">🗑 Delete</span> <span class="sb" role="button" data-a="send">→ Send to…</span> <span class="sb" role="button" data-a="x">✕</span>`;
+          s.querySelector('[data-a="ren"]').addEventListener("click",()=>pRename(loc.pid,loc.pname,f.name));
+          s.querySelector('[data-a="del"]').addEventListener("click",()=>pDelete(loc.pid,loc.pname,f.name));
+          s.querySelector('[data-a="send"]').addEventListener("click",()=>{ ACT.send=true; renderList(); });
+          s.querySelector('[data-a="x"]').addEventListener("click",()=>{ ACT=null; renderList(); });
+        }
+        list.appendChild(s);
+      }
+    }
+  });
+}
+function toggleAct(name,pid){ ACT=(ACT&&ACT.name===name&&ACT.pid===pid)?null:{name,pid}; renderList(); }
+async function post(url,body){
+  const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+  const d=await r.json().catch(()=>({error:"HTTP "+r.status}));
+  if(!r.ok||d.error) throw new Error(d.error||("HTTP "+r.status));
+  return d;
+}
+async function libRename(name){
+  const nn=prompt("Rename in Hub library:",name); if(!nn||nn===name) return;
+  try{ await post("/api/files/rename",{name,newName:nn}); if(SELECTED===name) SELECTED=null; await loadFiles(); }
+  catch(e){ alert("Rename failed: "+e.message); }
+}
+async function libDelete(name){
+  if(!confirm('Delete "'+name+'" from the Hub library?\n(Copies on printer storage are not touched.)')) return;
+  try{ await post("/api/files/delete",{name}); if(SELECTED===name) SELECTED=null; await loadFiles(); }
+  catch(e){ alert("Delete failed: "+e.message); }
+}
+async function pRename(pid,pname,name){
+  const nn=prompt("Rename on "+pname+" printer storage:",name); if(!nn||nn===name) return;
+  try{ await post("/api/printer-files/rename",{printer:pid,name,newName:nn}); ACT=null; await loadPrinterFiles(); }
+  catch(e){ alert("Rename failed: "+e.message); }
+}
+async function pDelete(pid,pname,name){
+  if(!confirm('Delete "'+name+'" from '+pname+' PRINTER storage?\nThis removes it from the printer — the Hub library is not touched.')) return;
+  try{ await post("/api/printer-files/delete",{printer:pid,name}); ACT=null; await loadPrinterFiles(); }
+  catch(e){ alert("Delete failed: "+e.message); }
+}
+// --- cross-printer transfer (UI) ----------------------------------------------
+// One at a time. The strip shows live percent from /api/print-status; the list
+// re-renders each poll tick, and the strip re-appears wherever the row lands.
+let XFER = null; // { name, fromPid, toName, jobId, msg, err, done }
+async function startTransfer(fromPid,fromName,toPid,toName,name,size){
+  if(XFER && !XFER.done){ alert("A transfer is already running — one at a time."); return; }
+  if(!confirm('Copy "'+name+'" ('+fmtSize(size||0)+')\nfrom '+fromName+' to '+toName+'?')) return;
+  try{
+    const d=await post("/api/printer-files/transfer",{from:fromPid,name,to:toPid});
+    XFER={ name, fromPid, toName, jobId:d.jobId, msg:"starting…", err:null, done:false };
+    ACT={ name, pid:fromPid }; renderList(); pollXfer();
+  }catch(e){ alert("Transfer failed to start: "+e.message); }
+}
+async function pollXfer(){
+  if(!XFER || XFER.done) return;
+  try{
+    const d=await (await fetch("/api/print-status?job="+encodeURIComponent(XFER.jobId))).json();
+    if(d.error && !d.done){ XFER.err="Transfer: "+d.error; XFER.done=true; }
+    else if(d.done){
+      XFER.done=true;
+      if(d.error) XFER.err="Transfer FAILED: "+d.error;
+      else{
+        XFER.msg="done"+(d.result&&d.result.sizeVerified?" ✓ size verified":" — SIZE MISMATCH, check the copy");
+        loadPrinterFiles();
+      }
+    } else {
+      XFER.msg = d.phase==="verify" ? "verifying…"
+        : (d.total ? "transferring "+Math.min(100,Math.round(d.sent/d.total*100))+"%" : "working…");
+    }
+  }catch(e){ XFER.err="Status poll failed: "+e.message; XFER.done=true; }
+  renderList();
+  if(XFER && !XFER.done) setTimeout(pollXfer, 800);
 }
 
 // --- "Up next" queue ---------------------------------------------------------
@@ -1048,7 +1245,7 @@ async function loadInventory(){
 }
 
 // ---- settings / discovery / tip ----
-$("gear").addEventListener("click",()=>{ $("setup").classList.toggle("show"); refreshAuthLine(); });
+$("gear").addEventListener("click",()=>{ $("setup").classList.toggle("show"); refreshAuthLine(); refreshTunnelLine(); });
 $("manageAuth").addEventListener("click",()=>{ location.href="/auth.html"; });
 async function refreshAuthLine(){
   try{
@@ -1060,6 +1257,70 @@ async function refreshAuthLine(){
                               "open — anyone who can reach this Hub can use it";
   }catch{ $("authHint").textContent = ""; }
 }
+// ---- remote access (Cloudflare tunnel) ----
+let tunTimer = null, tunState = null;
+async function refreshTunnelLine(){
+  try{
+    const t = await (await fetch("/api/tunnel/status")).json();
+    tunState = t;
+    $("tunMode").value = t.mode;
+    $("tunAuto").checked = t.autostart;
+    $("tunTokenRow").style.display = t.mode === "token" ? "" : "none";
+    if (t.tokenSet && !$("tunToken").value) $("tunToken").placeholder = "token saved — paste to replace";
+    if (t.hostname && !$("tunHost").value) $("tunHost").value = t.hostname;
+
+    const running = t.state === "running" || t.state === "starting";
+    $("tunGo").textContent = !t.binary.present ? "Download cloudflared (~40 MB)"
+                            : running ? "Stop tunnel" : "Start tunnel";
+    $("tunUrlRow").style.display = (running && t.url) ? "" : "none";
+    if (t.url) $("tunUrl").textContent = t.url;
+
+    $("tunHint").textContent =
+      t.state === "running"  ? "connected — Hub is reachable over HTTPS" :
+      t.state === "starting" ? "starting…" :
+      t.state === "error"    ? "error — see below" :
+      !t.binary.present      ? "cloudflared not installed yet" :
+                               "off — LAN only";
+    $("tunMsg").textContent =
+      t.error ? t.error :
+      (t.authMode !== "password" && !running)
+        ? "Requires the Hub password gate — set one under Manage access first."
+        : "";
+    // poll while the tunnel is settling
+    if (running && t.state !== "running") { clearTimeout(tunTimer); tunTimer = setTimeout(refreshTunnelLine, 2000); }
+  }catch{ $("tunHint").textContent = ""; }
+}
+async function tunSaveConfig(){
+  const body = { mode: $("tunMode").value, autostart: $("tunAuto").checked,
+                 hostname: $("tunHost").value };
+  if ($("tunToken").value) body.token = $("tunToken").value;
+  await fetch("/api/tunnel/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+}
+$("tunMode").addEventListener("change",()=>{ tunSaveConfig().then(refreshTunnelLine); });
+$("tunAuto").addEventListener("change",()=>{ tunSaveConfig(); });
+$("tunToken").addEventListener("change",()=>{ tunSaveConfig(); });
+$("tunHost").addEventListener("change",()=>{ tunSaveConfig(); });
+$("tunCopy").addEventListener("click",()=>{ navigator.clipboard.writeText($("tunUrl").textContent).catch(()=>{}); });
+$("tunGo").addEventListener("click", async ()=>{
+  if (!tunState) return;
+  $("tunGo").disabled = true;
+  try{
+    if (!tunState.binary.present){
+      $("tunMsg").textContent = "Downloading cloudflared from Cloudflare's GitHub releases…";
+      const r = await (await fetch("/api/tunnel/download",{method:"POST"})).json();
+      $("tunMsg").textContent = r.ok ? "Downloaded cloudflared v"+r.version : (r.error||"Download failed");
+    } else if (tunState.state === "running" || tunState.state === "starting"){
+      await fetch("/api/tunnel/stop",{method:"POST"});
+    } else {
+      await tunSaveConfig();
+      const r = await (await fetch("/api/tunnel/start",{method:"POST"})).json();
+      if (r.error) $("tunMsg").textContent = r.error;
+    }
+  }catch(e){ $("tunMsg").textContent = e.message; }
+  $("tunGo").disabled = false;
+  setTimeout(refreshTunnelLine, 800);
+});
+
 $("addPrinter").addEventListener("click",()=>addPrinterRow("",""));
 $("discover").addEventListener("click",runDiscover);
 $("saveCfg").addEventListener("click",saveConfig);
