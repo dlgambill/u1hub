@@ -14,11 +14,16 @@ any browser — on your network, or **securely from anywhere** — you can:
 - See **every machine's loaded colors and live status** at a glance, updated **in
   real time**: progress, screen-matching time remaining, and a **layer counter**
   tick the moment the printer reports them, not on a polling delay.
+- **Peek inside any machine** — open its **chamber camera** as an on-demand live view
+  from the card, and close it again to keep data use down.
 - **Change a loaded filament's color from the Hub** — tap a swatch on any idle machine
   and pick from common colors, type a hex code or a color name ("tan"), or open the
   full color picker. The touchscreen updates to match.
 - **Push a job to any machine** — and optionally pre-map each color to the head you
   want it to print from, so the machine's mapping screen comes up already correct.
+- **Ask "what can I print right now?"** — **Spool Match** reads each printer's loaded
+  colors and lists the library jobs those colors can already produce, best match first,
+  one tap from printing.
 - Watch an **upload progress bar** while a file is sent, so a big push isn't a silent wait.
 - **Pause, resume, or cancel** a running print from any card — and if a print errors,
   the card shows the **firmware's actual error message**, not just a red dot.
@@ -26,6 +31,8 @@ any browser — on your network, or **securely from anywhere** — you can:
   plate when one part fails instead of scrapping the whole bed.
 - **Set the bed temperature** per machine, and get a warning chip when a printer's
   **storage runs low**.
+- **Power a printer on or off** through a smart plug — with live wattage on metered
+  plugs, and a guard that refuses to cut power to a machine that's mid-print.
 - **Queue jobs "up next"** — build a shared print queue that survives Hub restarts,
   and reorder or remove entries with a tap.
 - **Plan Full Spectrum mixes from any 3MF** — drop a multi-color project on the FS Mix
@@ -41,6 +48,56 @@ any browser — on your network, or **securely from anywhere** — you can:
 
 It talks straight to each printer's built-in Moonraker API. Nothing is installed on the
 printers, and nothing leaves your network unless you turn remote access on.
+
+---
+
+## New in 2.8 — the power & cameras release
+
+- **Turn printers on and off from the Hub.** Put a printer behind a smart plug and its
+  card gains a **power row** — an On/Off toggle, and on metered plugs the **live wattage**
+  it's drawing right now, so you can tell a working machine from an idle one at a glance.
+  **The Off button is hard-blocked while a printer is printing or paused:** the Hub checks
+  live print state before it will cut power and refuses if it can't confirm the machine is
+  idle — you can't kill a running job from the dashboard by accident. Power-*on* is always
+  allowed, so you can wake an offline printer straight from its tile. Two plug types are
+  supported: **Shelly** (metered, reports live watts) and a **generic URL** driver that
+  fires any on/off HTTP endpoint — Tasmota, ESPHome, Home Assistant, or a DIY plug.
+  Configure it per printer in `config.json`; the plug's IP stays server-side and never
+  reaches the browser.
+
+![Smart power control — live wattage on the card, with Off locked out while the printer runs](docs/power.png)
+
+- **Spool Match — "what can I print right now?"** A new **Spool Match** tab turns the usual
+  question around: instead of picking a file and hunting for a machine with the right colors
+  loaded, it reads **each printer's currently loaded colors** and shows you every library job
+  those colors can already print. Files are ranked **best match first** — an **exact** badge
+  when every color lines up, a percentage when it's partial — and a printer's row expands to
+  the matching files with thumbnails and a one-tap **Print**. Color closeness is judged in
+  perceptual (CIEDE2000) space, scored against a cached palette index of your whole library.
+
+![Spool Match — every printer's loaded colors and how many library files they can print](docs/spool-match.png)
+![A printer expanded to its matching files, ranked best-first, each one tap from printing](docs/spool-match-expanded.png)
+
+- **Cameras, on demand.** Every printer card can open its **chamber camera** as a live
+  view — but it no longer streams by default. Tap **Live view** to start the feed, **✕** to
+  close it. That keeps cards clean and, when you're watching remotely over the tunnel, stops
+  a wall of cameras from quietly eating your cellular data. The choice is remembered **per
+  device**, so your phone can stay on-demand while the shop desktop runs always-on — flip
+  **Auto-start on every card** in Settings to restore the old behavior on whichever device
+  you're using.
+
+![Chamber camera — tap Live view to open the feed on demand](docs/cameras.png)
+![The live chamber view, expanded on a printing card](docs/camera-live.png)
+![Per-device camera preference — Auto-start on every card, in Settings](docs/camera-settings.png)
+
+- **Know which official spools are loaded.** Snapmaker's RFID spools carry their identity on
+  the tag, so official rolls now show a small **🔒 vendor · material** line under the color
+  swatch, with the full profile in the tooltip. Third-party and blank heads are unchanged and
+  stay color-only, so the extra detail appears only where the printer actually knows what's
+  loaded. It's read from the same `print_task_config` the color swatch already uses, and it
+  lays the groundwork for the spool registry and scan-to-apply work coming next.
+
+![An official Snapmaker spool showing its vendor and material under the swatch](docs/spool-identity.png)
 
 ---
 
@@ -386,8 +443,8 @@ release, bump the version in `package.json` and the `VERSION` constants in `serv
 and `public/index.html`, then tag and push:
 
 ```
-git tag v2.7.0
-git push origin v2.7.0
+git tag v2.8.0
+git push origin v2.8.0
 ```
 
 `.github/workflows/release.yml` builds Linux, Windows, and Apple-Silicon macOS binaries
