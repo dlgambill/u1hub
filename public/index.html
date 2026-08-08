@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- U1 Print Hub — index v2.7.0 -->
+<!-- U1 Print Hub — index v2.8.0 -->
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
@@ -155,11 +155,67 @@
   .h .lab{padding:5px 6px 7px; text-align:center;}
   .h .ht{font-family:var(--mono); font-size:9px; color:var(--ink-faint); letter-spacing:.08em;}
   .h .hm{font-size:10px; color:var(--ink-dim); margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
-  .pcard .foot{display:flex; align-items:center; gap:9px;}
+  .h .hid{font-size:9px; color:var(--ink-faint); margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; letter-spacing:.02em;}
+  .h .hid .lk{color:var(--signal); margin-right:2px;}
+  .pcard .foot{display:flex; align-items:center; justify-content:flex-end; gap:9px; flex-wrap:wrap;}
   .pcard .fname{font-family:var(--mono); font-size:11px; color:var(--ink-dim); margin-top:-7px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
   .pcard .fnamerow{display:flex; align-items:center; gap:8px; margin-top:-7px;}
   .pcard .fnamerow .fname{margin-top:0; flex:1; min-width:0;}
   .pcard .cthumb{width:44px; height:44px; border-radius:6px; object-fit:cover; flex:none; background:#20242c; border:1px solid var(--line-soft);}
+  /* Live chamber-camera tile — persistent <img> re-mounted across rebuilds. */
+  .pcard .camtile{position:relative; width:100%; aspect-ratio:4/3; border-radius:8px; overflow:hidden; background:#15181e; border:1px solid var(--line-soft); display:flex; align-items:center; justify-content:center;}
+  .pcard .camtile::before{content:"live view…"; font-family:var(--mono); font-size:11px; color:var(--ink-faint); letter-spacing:.05em;}
+  .pcard .campair{position:absolute; inset:0;}
+  .pcard .camframe{position:absolute; inset:0; width:100%; height:100%; object-fit:cover; display:block; cursor:zoom-in; opacity:0;}
+  .pcard .camframe.show{opacity:1;}
+  /* on-demand mode: a slim button in place of the tile until the user opens it */
+  .pcard .camopen{width:100%; padding:9px 0; border-radius:8px; background:var(--panel-2); border:1px solid var(--line-soft); color:var(--ink-dim); font:inherit; font-size:12px; cursor:pointer; letter-spacing:.02em;}
+  .pcard .camopen:hover{border-color:var(--signal); color:var(--ink);}
+  .pcard .camclose{position:absolute; top:6px; right:6px; z-index:3; width:24px; height:24px; border-radius:6px; border:none; background:rgba(10,12,16,.66); color:#fff; font-size:13px; line-height:1; cursor:pointer; display:flex; align-items:center; justify-content:center;}
+  .pcard .camclose:hover{background:rgba(10,12,16,.9);}
+  .cammodal{position:fixed; inset:0; background:rgba(0,0,0,.86); display:none; align-items:center; justify-content:center; z-index:9999; padding:20px; cursor:zoom-out;}
+  .cammodal.show{display:flex;}
+  .cammodal .cambox{display:flex; flex-direction:column; gap:8px; max-width:min(96vw,900px); max-height:90vh;}
+  .cammodal #cambig{max-width:100%; max-height:82vh; object-fit:contain; border-radius:10px; border:1px solid var(--line); background:#15181e;}
+  .cammodal .camname{font-family:var(--mono); font-size:12px; color:var(--ink-dim); text-align:center;}
+  /* Spool Match tab */
+  .viewtabs{display:flex; gap:4px; margin-right:auto;}
+  .vtab{font-family:var(--mono); font-size:12px; letter-spacing:.04em; padding:6px 13px; border-radius:8px; border:1px solid var(--line-soft); background:#20242c; color:var(--ink-dim); cursor:pointer;}
+  .vtab:hover{color:var(--ink);}
+  .vtab.on{border-color:var(--signal); color:var(--ink);}
+  .matchgrid{display:flex; flex-direction:column; gap:10px;}
+  .matchcard{border:1px solid var(--line-soft); border-radius:12px; overflow:hidden; background:var(--panel,#161a20);}
+  .matchhead{width:100%; display:flex; align-items:center; gap:10px; padding:12px 14px; background:none; border:0; cursor:pointer; text-align:left;}
+  .matchhead .mpn{font-weight:600; color:var(--ink); font-size:15px;}
+  .mswrow{display:flex; gap:4px; margin-left:2px;}
+  .msw{width:22px; height:22px; border-radius:5px; border:1px solid rgba(255,255,255,.18); display:inline-block; box-sizing:border-box;}
+  .msw.empty{background:repeating-linear-gradient(135deg,#262a32,#262a32 5px,#222630 5px,#222630 10px); border-style:dashed; font-family:var(--mono); font-size:7px; color:var(--ink-faint); text-align:center; line-height:20px;}
+  .mcount{margin-left:auto; font-family:var(--mono); font-size:12px; color:var(--ink-dim); white-space:nowrap;}
+  .mchev{color:var(--ink-faint); font-size:11px; width:10px;}
+  .mlist{border-top:1px solid var(--line-soft);}
+  .mrow{display:flex; align-items:center; gap:10px; padding:8px 14px;}
+  .mrow:not(:last-child){border-bottom:1px solid rgba(255,255,255,.05);}
+  .mdots{display:flex; gap:3px; flex:none;}
+  .mdot{width:12px; height:12px; border-radius:3px; border:1px solid rgba(255,255,255,.15); opacity:.35;}
+  .mdot.on{opacity:1; border-color:rgba(255,255,255,.55);}
+  .mname{flex:1; min-width:0; font-size:13px; color:var(--ink-dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .mpct{font-family:var(--mono); font-size:11px; color:var(--ink-faint); flex:none;}
+  .mpct.full{color:var(--signal);}
+  .mprint{font-size:12px; padding:5px 12px; flex:none;}
+  .mempty{padding:12px 14px; font-family:var(--mono); font-size:12px; color:var(--ink-faint);}
+  .pcard.flash{box-shadow:0 0 0 2px var(--signal); transition:box-shadow .2s;}
+  .mname{cursor:pointer;}
+  .mname:hover, .mrow.exp .mname{color:var(--ink);}
+  .mdetail{padding:12px 14px 14px; border-top:1px solid rgba(255,255,255,.05); background:rgba(255,255,255,.015);}
+  .mdmeta{font-family:var(--mono); font-size:11px; color:var(--ink-faint); margin-bottom:9px;}
+  .mdthumbwrap{max-width:230px; border-radius:8px; overflow:hidden; background:#0e1013; margin-bottom:11px;}
+  .mdthumb{width:100%; display:block;}
+  .mdchips{display:flex; flex-wrap:wrap; gap:8px 16px; margin-bottom:9px;}
+  .mchip{display:flex; align-items:center; gap:6px; font-size:12px; color:var(--ink-dim);}
+  .mchip .sw{width:16px; height:16px; border-radius:4px; border:1px solid rgba(255,255,255,.18); flex:none;}
+  .mchip .mct{color:var(--ink);}
+  .mchip .mcx{color:var(--ink-faint); font-family:var(--mono); font-size:11px;}
+  .mdhint{font-size:12px; color:var(--ink-faint); line-height:1.5;}
   .pcard .errline{font-family:var(--mono); font-size:11px; color:var(--bad); margin-top:-5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
   /* per-card stats panel */
   .pcard .statsbtn{font:inherit; font-family:var(--mono); font-size:10.5px; color:var(--ink-faint); background:transparent; border:1px solid var(--line); border-radius:6px; padding:3px 8px; cursor:pointer; letter-spacing:.04em;}
@@ -173,13 +229,24 @@
   .statspanel .jbars{display:flex; align-items:flex-end; gap:3px; height:34px;}
   .statspanel .jbars i{flex:1; border-radius:2px 2px 0 0; min-height:2px;}
   .statspanel .jcap{font-family:var(--mono); font-size:10px; color:var(--ink-faint);}
-  .pcard .matchline{font-size:11.5px; color:var(--ink-dim); flex:1;}
+  .pcard .matchline{font-size:11.5px; color:var(--ink-dim);}
+  .pcard .matchrow{margin-bottom:-7px;}
   .pcard .matchline .approx{color:var(--ink-faint); font-style:italic;}
   .bedrow{display:flex; align-items:center; gap:8px; margin:11px 0 2px; font-size:12px;}
   .bedrow .bedlabel{color:var(--ink-dim); font-weight:700; letter-spacing:.04em; text-transform:uppercase; font-size:11px;}
   .bedrow .bedtemp{font-family:var(--mono); color:var(--ink);}
   .bedrow .bedset{width:62px; font:inherit; font-size:12.5px; color:var(--ink); background:var(--panel-2); border:1px solid var(--line); border-radius:6px; padding:5px 7px; margin-left:auto;}
   .bedrow .bedbtn{padding:6px 10px; font-size:12px;}
+  /* smart-plug power row — mirrors bedrow layout */
+  .powerrow{display:flex; align-items:center; gap:8px; margin:9px 0 2px; font-size:12px;}
+  .powerrow .plabel{color:var(--ink-dim); font-weight:700; letter-spacing:.04em; text-transform:uppercase; font-size:11px;}
+  .powerrow .pdot{width:8px; height:8px; border-radius:50%; background:var(--ink-faint); flex:none;}
+  .powerrow .pdot.on{background:var(--ok);} .powerrow .pdot.off{background:var(--ink-faint);}
+  .powerrow .pdraw{font-family:var(--mono); color:var(--ink); min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .powerrow .pdraw .dim{color:var(--ink-faint);}
+  .powerrow .pbtns{margin-left:auto; display:flex; gap:6px; flex:none;}
+  .powerrow .pbtn{padding:6px 12px; font-size:12px;}
+  .powerrow .pbtn[disabled]{opacity:.4; cursor:not-allowed;}
   .jobloading{display:none; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px;}
   .jobloading.show{display:block;}
   .jobloading .jlname{font-size:13px; color:var(--ink-dim); margin-bottom:10px;}
@@ -220,9 +287,19 @@
   .cmaphdr{font-family:var(--mono); font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:var(--ink-faint);}
   .cmaprow{display:flex; align-items:center; gap:8px;}
   .cmaprow .fsw{width:18px; height:18px; border-radius:4px; border:1px solid rgba(255,255,255,.18); flex:none;}
-  .cmaprow .flab{font-family:var(--mono); font-size:11px; color:var(--ink-dim); flex:none; width:104px;}
+  .cmaprow .flab{font-family:var(--mono); font-size:11px; color:var(--ink-dim); flex:none; width:92px; white-space:nowrap;}
   .cmaprow .arrow{color:var(--ink-faint); flex:none;}
-  .cmaprow select{flex:1; min-width:0; font-size:12.5px; padding:7px 8px;}
+  .cmaprow .cmswatches{display:grid; grid-template-columns:repeat(4,1fr); gap:6px; flex:1; min-width:0;}
+  .cmsw{position:relative; width:auto; min-width:0; height:34px; border-radius:6px; border:1px solid rgba(255,255,255,.18); padding:0; cursor:pointer; display:flex; align-items:flex-end; justify-content:center; overflow:hidden; -webkit-tap-highlight-color:transparent; transition:box-shadow .1s,border-color .1s,transform .04s;}
+  .cmsw:hover{border-color:rgba(255,255,255,.45);}
+  .cmsw:active{transform:scale(.94);}
+  .cmsw .cmswt{font-family:var(--mono); font-size:9px; line-height:1; letter-spacing:.03em; color:#fff; background:rgba(0,0,0,.62); padding:2px 4px; border-radius:4px; margin-bottom:3px; pointer-events:none;}
+  .cmsw.sel{border-color:var(--signal); box-shadow:0 0 0 2px var(--signal);}
+  .cmsw.rec::after{content:""; position:absolute; top:3px; right:3px; width:5px; height:5px; border-radius:50%; background:var(--signal); box-shadow:0 0 0 1px rgba(0,0,0,.55); pointer-events:none;}
+  .cmsw.sel.rec::after{display:none;}
+  /* empty head → dashed hatch placeholder, matches the empty head cards; not selectable */
+  .cmsw.empty{background:repeating-linear-gradient(135deg,#262a32,#262a32 6px,#222630 6px,#222630 12px); border-style:dashed; border-color:var(--line-soft); cursor:default; pointer-events:none;}
+  .cmsw.empty .cmswt{background:none; color:var(--ink-faint); padding:0; margin-bottom:2px;}
   .topbar{display:flex; justify-content:flex-end; align-items:center; gap:12px; margin-bottom:6px;}
   .vbadge{font-family:var(--mono); font-size:10.5px; letter-spacing:.04em; color:var(--ink-faint);}
   .vbadge.bad{color:var(--bad); font-weight:700;}
@@ -287,6 +364,7 @@
   </aside>
   <main class="main">
     <div class="topbar">
+      <div class="viewtabs"><button class="vtab on" data-view="dash">Dashboard</button><button class="vtab" data-view="match">Spool Match</button></div>
       <span class="vbadge" id="vbadge"></span>
       <a class="gear" href="/fs-colors.html" title="Full Spectrum mix planner">🎨 FS Mixer</a>
       <button class="gear" id="gear" title="Settings">⚙ Settings</button>
@@ -334,9 +412,16 @@
           <input class="field" id="tunHost" style="margin-top:6px" placeholder="public hostname, e.g. hub.example.com" />
         </div>
         <div class="pstatus" id="tunMsg" style="margin-top:6px"></div>
+
+        <label class="fl" style="margin-top:18px">Chamber cameras <span class="hint">this device only</span></label>
+        <div class="row" style="margin-top:6px">
+          <label class="hint" style="display:flex; align-items:center; gap:6px; cursor:pointer">
+            <input type="checkbox" id="camAuto"> Auto-start on every card <span class="hint" style="opacity:.7">(otherwise tap “Live view” per card — lighter on cellular)</span></label>
+        </div>
       </div>
     </div>
 
+    <div id="dashview">
     <div class="sechead"><h2>Selected job</h2><span class="count" id="needcount"></span></div>
     <div class="jobloading" id="jobloading"><div class="jlname" id="jlname"></div><div class="jlbar"><div class="jlfill"></div></div></div>
     <div class="jobcard" id="jobcard">
@@ -365,6 +450,12 @@
     <details class="diag"><summary>Job diagnostics</summary><pre id="diagpre">Select a file.</pre></details>
 
     <div class="tipfoot"><a href="https://venmo.com/u/dgambill" target="_blank" rel="noopener">Buy me a beer 🍺</a></div>
+    </div>
+    <div class="matchview" id="matchview" style="display:none">
+      <div class="sechead"><h2>Spool Match</h2><span class="count" id="matchcount"></span></div>
+      <p class="subnote" id="matchnote">Tap a printer to see which library files its loaded colors can print right now (≥50% color match).</p>
+      <div class="matchgrid" id="matchgrid"></div>
+    </div>
   </main>
 
   <div class="modal" id="platemodal">
@@ -378,7 +469,7 @@
 
 <script>
 const $ = id => document.getElementById(id);
-const VERSION = "2.7.0";
+const VERSION = "2.8.0";
 let FILES = [], SELECTED = null, MAP = null, FLEET = [], MAPSEL = {};
 let ONBOARD = [], ACT = null; // onboard = /api/printer-files cache; ACT = open per-printer action strip {name,pid}
 let SRCSEL = { hub:true, p:{} }; // source-filter checkboxes; p[pid]=false hides that printer (default: everything on)
@@ -846,6 +937,226 @@ function fmtDur(sec){
   return h?`${h}h${String(m).padStart(2,'0')}m`:`${m}m`;
 }
 
+// ---- Live chamber-camera tiles ---------------------------------------------
+// The U1 cam is a ~1 fps snapshot stream (server proxies Snapmaker's monitor.jpg
+// through /api/camera). Because renderFleet() rebuilds every card, the <img>
+// elements are kept in JS (keyed by printer id) and re-attached after each render
+// — moving an existing node doesn't reload it, so frames never flicker. An
+// IntersectionObserver streams a card only while it's on screen; the server's
+// idle reaper stops the printer's stream ~60s after a card scrolls out of view.
+const CAMERAS = { imgs:{}, visible:new Set(), obs:null, big:null };
+const CAM_POLL_MS = 1600;
+
+// On-demand cameras (per-device preference). Default is "demand": cards show a
+// "Live view" button and only stream the ones you open — saves data on cellular
+// and keeps cards clean. Flip to "auto" per device in Settings to stream every
+// online card like before. CAMON tracks which cards are open this session.
+let CAMMODE = (typeof localStorage!=="undefined" && localStorage.getItem("u1.camMode")==="auto") ? "auto" : "demand";
+const CAMON = new Set();
+function camShouldShow(id){ return CAMMODE==="auto" || CAMON.has(id); }
+function setCamMode(mode){
+  CAMMODE = (mode==="auto") ? "auto" : "demand";
+  try{ localStorage.setItem("u1.camMode", CAMMODE); }catch{}
+  if(CAMMODE==="demand") CAMON.clear();   // dropping to on-demand closes all open tiles
+  renderFleet();
+}
+
+function camObserver(){
+  if(CAMERAS.obs || !("IntersectionObserver" in window)) return CAMERAS.obs;
+  CAMERAS.obs = new IntersectionObserver(ents=>{
+    ents.forEach(e=>{
+      const id=+e.target.dataset.camid;
+      if(e.isIntersecting) CAMERAS.visible.add(id); else CAMERAS.visible.delete(id);
+    });
+  }, { root:null, rootMargin:"120px", threshold:0.01 });
+  return CAMERAS.obs;
+}
+function makeCamEl(id){
+  const el=document.createElement("div"); el.className="campair"; el.dataset.camid=id;
+  const a=document.createElement("img"), b=document.createElement("img");
+  a.className=b.className="camframe";
+  [a,b].forEach(im=>{ im.alt="camera"; im.addEventListener("click",()=>openCamBig(id)); });
+  el.appendChild(a); el.appendChild(b);
+  const rec={ el, a, b, front:null };
+  const obs=camObserver();
+  if(obs) obs.observe(el); else CAMERAS.visible.add(id);   // no IO support → always stream
+  return rec;
+}
+// Re-attach persistent camera pairs into the freshly-rendered card slots.
+function mountCameras(){
+  const present=new Set();
+  document.querySelectorAll(".camtile[data-cam]").forEach(slot=>{
+    const id=+slot.dataset.cam; present.add(id);
+    const rec=CAMERAS.imgs[id] || (CAMERAS.imgs[id]=makeCamEl(id));
+    if(rec.el.parentNode!==slot) slot.appendChild(rec.el);  // move, no reload → no flicker
+  });
+  // Forget tiles for printers that went offline / were removed.
+  Object.keys(CAMERAS.imgs).forEach(k=>{
+    if(present.has(+k)) return;
+    const rec=CAMERAS.imgs[k];
+    if(CAMERAS.obs){ try{ CAMERAS.obs.unobserve(rec.el); }catch{} }
+    CAMERAS.visible.delete(+k); delete CAMERAS.imgs[k];
+  });
+}
+// One staggered ticker refreshes only the on-screen tiles (and the open modal).
+// Double-buffer: load the next frame into the hidden <img> of the pair and only
+// swap it in once it has fully decoded — so a tile never blanks or shows a
+// partial/errored frame. That mid-load repaint is what read as "flashing" when
+// several streams refreshed at once on desktop.
+function tickCameras(){
+  [...CAMERAS.visible].forEach((id,i)=>{
+    const rec=CAMERAS.imgs[id]; if(!rec) return;
+    setTimeout(()=>{
+      const back = rec.front===rec.a ? rec.b : rec.a;
+      back.onload=()=>{ back.classList.add("show"); if(rec.front && rec.front!==back) rec.front.classList.remove("show"); rec.front=back; };
+      back.onerror=()=>{};   // blip → keep the last good frame, don't flash to placeholder
+      back.src="/api/camera?id="+id+"&t="+Date.now();
+    }, i*180);
+  });
+  if(CAMERAS.big!=null){
+    const b=document.getElementById("cambig");
+    if(b) b.src="/api/camera?id="+CAMERAS.big+"&t="+Date.now();
+  }
+}
+setInterval(tickCameras, CAM_POLL_MS);
+// Tap-to-enlarge lightbox — lives outside #fleet so renderFleet never wipes it.
+function ensureCamModal(){
+  if(document.getElementById("cammodal")) return;
+  const m=document.createElement("div");
+  m.id="cammodal"; m.className="cammodal";
+  m.innerHTML=`<div class="cambox"><img id="cambig" alt="camera"><div class="camname" id="camname"></div></div>`;
+  m.addEventListener("click",closeCamBig);
+  document.body.appendChild(m);
+}
+function openCamBig(id){
+  ensureCamModal(); CAMERAS.big=id;
+  const p=(FLEET||[]).find(x=>x.id===id);
+  const nm=document.getElementById("camname"); if(nm) nm.textContent=p?p.name:("Printer "+id);
+  const b=document.getElementById("cambig"); if(b) b.src="/api/camera?id="+id+"&t="+Date.now();
+  document.getElementById("cammodal").classList.add("show");
+}
+function closeCamBig(){
+  CAMERAS.big=null;
+  const m=document.getElementById("cammodal"); if(m) m.classList.remove("show");
+}
+document.addEventListener("keydown",e=>{ if(e.key==="Escape") closeCamBig(); });
+
+// ---- Spool Match -----------------------------------------------------------
+// Runs the color-match engine in reverse: given a printer's loaded heads, which
+// library files can it print right now? Reuses colorDist + MATCH_THRESHOLD (the
+// same math as the head match rings) and the /api/library-palettes index.
+let LIBPAL = null;
+const MATCHOPEN = new Set();
+let EXPANDED = null;          // pid|name of the one open inline preview
+const MAPCACHE = {};          // name -> /api/map result, cached across expands
+async function loadLibPalettes(){
+  try{ const d=await (await fetch("/api/library-palettes")).json(); LIBPAL=d.files||[]; }
+  catch(e){ LIBPAL=[]; }
+}
+function loadedHeadList(p){
+  return (p.heads||[]).map((h,i)=>({ i, hex:(h&&h.loaded)?h.hex:null })).filter(h=>h.hex);
+}
+// Greedy nearest distinct head, same as defaultMapping — a file "covers" a color
+// if a still-free loaded head is within threshold. Returns coverage + which
+// file-color indices matched (for the dots).
+function matchFile(fileColors, heads){
+  const used=new Set(), matchedIdx=[];
+  fileColors.forEach((fc,ci)=>{
+    let best=-1, bd=MATCH_THRESHOLD;
+    heads.forEach(h=>{ if(used.has(h.i)) return; const d=colorDist(fc,h.hex); if(d<bd){ bd=d; best=h.i; } });
+    if(best>=0){ used.add(best); matchedIdx.push(ci); }
+  });
+  return { matched:matchedIdx.length, total:fileColors.length, pct: fileColors.length? matchedIdx.length/fileColors.length : 0, matchedIdx };
+}
+async function renderMatch(){
+  if(!LIBPAL) await loadLibPalettes();
+  const grid=$("matchgrid");
+  const online=(FLEET||[]).filter(p=>p.online);
+  $("matchcount").textContent = online.length+" printer"+(online.length===1?"":"s")+" online";
+  grid.innerHTML = online.map(p=>{
+    const heads=loadedHeadList(p);
+    const matches=(LIBPAL||[])
+      .filter(f=>Array.isArray(f.colors) && f.colors.length>0)
+      .map(f=>({ f, m:matchFile(f.colors, heads) }))
+      .filter(x=>x.m.pct>=0.5)
+      .sort((a,b)=> b.m.pct-a.m.pct || a.f.name.localeCompare(b.f.name));
+    const swrow=(p.heads||[]).map((h,i)=>{
+      if(!h||!h.loaded) return `<span class="msw empty">T${i+1}</span>`;
+      const bg=(h.colors&&h.colors.length>1)?`linear-gradient(135deg,${h.colors.join(",")})`:(h.hex||"#3a3f49");
+      return `<span class="msw" style="background:${bg}" title="T${i+1} ${h.hex||''}"></span>`;
+    }).join("");
+    const open=MATCHOPEN.has(p.id);
+    const rows = matches.length ? matches.map(x=>{
+      const dots=x.f.colors.map((c,ci)=>`<span class="mdot${x.m.matchedIdx.includes(ci)?' on':''}" style="background:${c}"></span>`).join("");
+      const pctTxt = x.m.matched===x.m.total ? "exact" : Math.round(x.m.pct*100)+"%";
+      const key=p.id+"|"+x.f.name, exp=(EXPANDED===key);
+      const row=`<div class="mrow${exp?' exp':''}"><span class="mdots">${dots}</span>`+
+             `<span class="mname" data-expand="${encodeURIComponent(x.f.name)}" data-pid="${p.id}">${esc(x.f.name)}</span>`+
+             `<span class="mpct${x.m.matched===x.m.total?' full':''}" title="${x.m.matched} of ${x.m.total} colors covered">${pctTxt}</span>`+
+             `<button class="btn primary mprint" data-file="${encodeURIComponent(x.f.name)}" data-pid="${p.id}">Print</button></div>`;
+      return row + (exp ? jobCardHtml(x.f.name, MAPCACHE[x.f.name]) : "");
+    }).join("") : `<div class="mempty">No library files match these loaded colors yet.</div>`;
+    return `<div class="matchcard${open?' open':''}">`+
+      `<button class="matchhead" data-mtoggle="${p.id}"><span class="mpn">${esc(p.name)}</span><span class="mswrow">${swrow}</span>`+
+      `<span class="mcount">${matches.length} match${matches.length===1?'':'es'}</span><span class="mchev">${open?'▾':'▸'}</span></button>`+
+      `<div class="mlist" style="${open?'':'display:none'}">${rows}</div></div>`;
+  }).join("") || `<div class="mempty">No printers online.</div>`;
+  grid.querySelectorAll("[data-mtoggle]").forEach(b=>b.addEventListener("click",()=>{
+    const id=+b.dataset.mtoggle; MATCHOPEN.has(id)?MATCHOPEN.delete(id):MATCHOPEN.add(id); renderMatch();
+  }));
+  // Click a file name → toggle an inline preview card (single open across the list).
+  grid.querySelectorAll(".mname[data-expand]").forEach(el=>el.addEventListener("click", async ()=>{
+    const name=decodeURIComponent(el.dataset.expand), key=(+el.dataset.pid)+"|"+name;
+    if(EXPANDED===key){ EXPANDED=null; renderMatch(); return; }
+    if(!MAPCACHE[name]){
+      try{ const m=await (await fetch("/api/map?file="+encodeURIComponent(name))).json(); if(!m.error) MAPCACHE[name]=m; }catch(e){}
+    }
+    EXPANDED=key; renderMatch();
+  }));
+  grid.querySelectorAll(".mprint").forEach(b=>b.addEventListener("click",(e)=>{
+    e.stopPropagation(); matchPrint(decodeURIComponent(b.dataset.file), +b.dataset.pid);
+  }));
+}
+// Inline preview card for a match row — mirrors the Selected-job card (thumbnail,
+// filament chips, meta) using the file's /api/map, cached in MAPCACHE.
+function jobCardHtml(name, m){
+  if(!m) return `<div class="mdetail"><div class="mempty">Couldn't load preview.</div></div>`;
+  const need=(m.palette||[]).filter(s=>s.used);
+  const meta=(m.meta||[]).join("  ·  ");
+  const chips=need.map(s=>`<span class="mchip"><span class="sw" style="background:${s.hex||'#3a3f49'}"></span><span class="mct">${esc(s.type||'PLA')}</span><span class="mcx">P${s.i+1} · ${s.hex||'—'}${s.wt? ' · '+s.wt+' g':''}</span></span>`).join("");
+  const over=need.length>(m.physicalHeads||4) && !m.isFS;
+  const hint = `Uses <b style="color:var(--ink)">${need.length}</b> of ${m.paletteCount} palette colors. `+
+    (m.isFS ? `<b style="color:var(--ink)">Full Spectrum</b> (${esc(m.fsFork||'mixed')}) — blends across the 4 heads, no swap needed.`
+     : over ? `<b style="color:var(--bad)">More than the U1's 4 toolheads</b> — needs a swap or re-slice.`
+     : `Load these into any heads; confirm mapping on the machine at start.`);
+  return `<div class="mdetail">`+
+    (meta?`<div class="mdmeta">${esc(meta)}</div>`:"")+
+    `<div class="mdthumbwrap"><img class="mdthumb" src="/api/thumb?file=${encodeURIComponent(name)}" onerror="this.parentNode.style.display='none'"></div>`+
+    `<div class="mdchips">${chips}</div>`+
+    `<div class="mdhint">${hint}</div></div>`;
+}
+// Pick a file for a printer → set it up in the normal flow and jump to that
+// card so the user confirms the auto-mapping and hits Print (no surprise prints).
+async function matchPrint(file, pid){
+  setView("dash");
+  await selectFile(file);
+  requestAnimationFrame(()=>{
+    const btn=document.querySelector('.pcard .btn[data-id="'+pid+'"]');
+    const card=btn?btn.closest(".pcard"):null;
+    if(card){ card.scrollIntoView({behavior:"smooth", block:"center"}); card.classList.add("flash"); setTimeout(()=>card.classList.remove("flash"),1600); }
+  });
+}
+function setView(v){
+  document.querySelectorAll(".vtab").forEach(t=>t.classList.toggle("on", t.dataset.view===v));
+  const dash=$("dashview"), match=$("matchview");
+  if(v==="match"){ if(dash) dash.style.display="none"; match.style.display=""; renderMatch(); }
+  else { match.style.display="none"; if(dash) dash.style.display=""; }
+}
+document.querySelectorAll(".vtab").forEach(t=>t.addEventListener("click",()=>{
+  if(t.dataset.view==="match") LIBPAL=null;   // refresh palettes on entry (cheap; server-cached)
+  setView(t.dataset.view);
+}));
+
 function renderFleet(){
   const need=neededColors();
   const wrap=$("fleet"); wrap.innerHTML="";
@@ -890,8 +1201,15 @@ function renderFleet(){
       // "official filament, not configurable!") — don't offer the picker on them.
       const editable = p.online && !busy && !h.official;
       const lockTitle = h.official ? ` title="Official Snapmaker RFID spool — color comes from the tag"` : "";
+      // Identity line — only for tag-verified official spools. The useful bit is
+      // the sub-type (SnapSpeed vs Basic) you can't otherwise see; vendor + SKU
+      // ride in the tooltip. Third-party heads render exactly as before.
+      const idTip = h.official ? [h.vendor||"Snapmaker", h.material||"", h.sub||"", h.sku?("· SKU "+h.sku):""].filter(Boolean).join(" ") : "";
+      const idLine = h.official
+        ? `<div class="hid" title="${esc(idTip)}"><span class="lk">🔒</span>${esc(h.vendor||"Snapmaker")}${h.sub?(" · "+esc(h.sub)):""}</div>`
+        : "";
       return `<div class="h${match?' match':''}${editable?' editable':''}"><div class="sw" style="background:${bg}"${editable?` data-pickopen="${p.id}:${i}" title="Change T${i+1} color"`:lockTitle}></div>`+
-             `<div class="lab"><div class="ht">T${i+1}</div><div class="hm">${esc(h.material||'')}</div><div class="ht" style="margin-top:2px">${h.colors?h.colors.join(" "):(h.hex||"")}</div></div></div>`;
+             `<div class="lab"><div class="ht">T${i+1}</div><div class="hm">${esc(h.material||'')}</div><div class="ht" style="margin-top:2px">${h.colors?h.colors.join(" "):(h.hex||"")}</div>${idLine}</div></div>`;
     }).join("");
     // factual heads-loaded, plus a separate ADVISORY color-match note
     let matchHtml="";
@@ -915,20 +1233,37 @@ function renderFleet(){
       if(loaded.length){
         const rows=need.map(n=>{
           const saved=MAPSEL[p.id+":"+n.i];
-          const chosen=(saved!==undefined)?String(saved):String(dft[n.i] ?? "");
-          const opts=loaded.map(({hi,h})=>{
-            const sel=(chosen!=="" && chosen===String(hi))?" selected":"";
-            return `<option value="${hi}"${sel}>T${hi+1} · ${h.hex}${h.material?(" "+esc(h.material)):""}</option>`;
+          let chosen=(saved!==undefined)?String(saved):String(dft[n.i] ?? "");
+          // No greedy default (more needed colors than free heads) → fall back to
+          // the first loaded head, matching the old <select>'s auto-select-first.
+          if(chosen==="") chosen=String(loaded[0].hi);
+          // guard: if the remembered head is no longer loaded (filament pulled since), fall back
+          if(!(heads[+chosen] && heads[+chosen].loaded)) chosen=String(loaded[0].hi);
+          // one swatch per physical head so the row lines up 1:1 with the head cards above;
+          // empty heads render as dashed, non-selectable placeholders
+          const sws=heads.map((h,hi)=>{
+            if(!h || !h.loaded){
+              return `<div class="cmsw empty" title="T${hi+1} · empty"><span class="cmswt">T${hi+1}</span></div>`;
+            }
+            const bg=(h.colors&&h.colors.length>1)?`linear-gradient(135deg, ${h.colors.join(", ")})`:(h.hex||'#3a3f49');
+            const sel=(chosen===String(hi))?" sel":"";
+            // subtle dot marks the head the matcher recommends (greedy nearest)
+            const rec=(dft[n.i]!==undefined && String(dft[n.i])===String(hi))?" rec":"";
+            const tip=`T${hi+1}${h.hex?(" · "+h.hex):""}${h.material?(" "+esc(h.material)):""}`;
+            return `<button type="button" class="cmsw${sel}${rec}" data-card="${p.id}" data-pi="${n.i}" data-hi="${hi}" style="background:${bg}" title="${esc(tip)}"><span class="cmswt">T${hi+1}</span></button>`;
           }).join("");
-          return `<div class="cmaprow"><span class="fsw" style="background:${n.hex||'#3a3f49'}"></span>`+
+          return `<div class="cmaprow" data-card="${p.id}"><span class="fsw" style="background:${n.hex||'#3a3f49'}"></span>`+
                  `<span class="flab">P${n.i+1} ${n.hex||''}</span><span class="arrow">→</span>`+
-                 `<select class="cmsel" data-card="${p.id}" data-pi="${n.i}">${opts}</select></div>`;
+                 `<div class="cmswatches">${sws}</div></div>`;
         }).join("");
         mapHtml=`<div class="cmap"><div class="cmaphdr">Send each color from →</div>${rows}</div>`;
       }
     }
     card.innerHTML=`
       <div class="top"><span class="pn">${esc(p.name)}</span><span style="display:flex;align-items:center;gap:7px">${p.online?`<button class="statsbtn${STATSOPEN.has(p.id)?' on':''}" data-statsbtn="${p.id}" title="Temps &amp; job stats">▁▂▅</button>`:""}${diskChip(p)}<span class="pill ${pillCls}"><span class="dot"></span>${pillTxt}</span></span></div>
+      ${p.online ? (camShouldShow(p.id)
+        ? `<div class="camtile" data-cam="${p.id}">${CAMMODE==="demand"?`<button class="camclose" data-camclose="${p.id}" title="Hide camera">✕</button>`:""}</div>`
+        : `<button class="camopen" data-camopen="${p.id}">📷 Live view</button>`) : ""}
       ${p.state==="printing"?`<div class="progress"><i style="width:${Math.round((p.progress||0)*100)}%"></i></div>`:""}
       ${(p.state==="printing"||p.state==="paused")&&p.filename?`<div class="fnamerow"><img class="cthumb" loading="lazy" src="/api/pthumb?id=${p.id}&file=${encodeURIComponent(p.filename)}" onerror="this.style.display='none'"><div class="fname" title="${esc(p.filename)}">${esc(p.filename.replace(/\.gcode$/i,""))}${p.layer?` · L${p.layer.cur}/${p.layer.total}`:""}</div></div>`:""}
       ${p.state==="error"&&p.message?`<div class="errline" title="${esc(p.message)}">${esc(p.message)}</div>`:""}
@@ -936,9 +1271,10 @@ function renderFleet(){
       ${PICKOPEN && PICKOPEN.id===p.id && !busy ? colorPopHtml(p) : ""}
       ${p.online?`<div class="bedrow"><span class="bedlabel">Bed</span><span class="bedtemp">${p.bed?Math.round(p.bed.temp)+'° / '+Math.round(p.bed.target)+'°':'—'}</span>`+
         `<input class="bedset" id="bedin-${p.id}" type="number" min="0" max="120" placeholder="°C"><button class="btn ghost bedbtn" data-bed="${p.id}">Set</button><button class="btn ghost bedbtn" data-bed="${p.id}" data-off="1">Off</button></div>`:""}
+      ${p.plug?powerRowHtml(p, busy):""}
       ${mapHtml}
+      ${matchHtml?`<div class="matchrow">${matchHtml}</div>`:""}
       <div class="foot">
-        ${matchHtml}
         ${busy
           ? (p.state==="paused"
                 ? `<button class="btn ghost" data-ctl="${p.id}" data-act="resume">Resume</button>`
@@ -953,6 +1289,9 @@ function renderFleet(){
       ${p.online&&STATSOPEN.has(p.id)?statsPanelHtml(p.id):""}`;
     wrap.appendChild(card);
   });
+  mountCameras();
+  hydratePower();                              // repaint plug rows from cache (survives the 5 s rebuild)
+  if(FLEET.some(p=>p.plug)){ refreshPower(); startPowerPoll(); }
   $("fleetcount").textContent=online+"/"+FLEET.length+" online";
   wrap.querySelectorAll("button[data-statsbtn]").forEach(b=>{
     b.addEventListener("click",()=>{
@@ -965,11 +1304,26 @@ function renderFleet(){
   wrap.querySelectorAll("button[data-id]").forEach(b=>{
     b.addEventListener("click",()=>pushTo(parseInt(b.dataset.id,10), b.dataset.start==="1"));
   });
-  wrap.querySelectorAll(".cmsel").forEach(s=>{
-    s.addEventListener("change",()=>{ MAPSEL[s.dataset.card+":"+s.dataset.pi]=s.value; });
+  wrap.querySelectorAll(".cmsw:not(.empty)").forEach(sw=>{
+    sw.addEventListener("click",()=>{
+      MAPSEL[sw.dataset.card+":"+sw.dataset.pi]=sw.dataset.hi;
+      // reflect the pick immediately without a full fleet re-render (snappier on mobile)
+      const row=sw.closest(".cmaprow");
+      if(row){ row.querySelectorAll(".cmsw").forEach(x=>x.classList.remove("sel")); }
+      sw.classList.add("sel");
+    });
   });
   wrap.querySelectorAll("button[data-bed]").forEach(b=>{
     b.addEventListener("click",()=>setBed(parseInt(b.dataset.bed,10), b.dataset.off==="1"));
+  });
+  wrap.querySelectorAll("button[data-power]").forEach(b=>{
+    b.addEventListener("click",()=>setPower(parseInt(b.dataset.power,10), b.dataset.on==="1"));
+  });
+  wrap.querySelectorAll("button[data-camopen]").forEach(b=>{
+    b.addEventListener("click",()=>{ CAMON.add(parseInt(b.dataset.camopen,10)); renderFleet(); });
+  });
+  wrap.querySelectorAll("button[data-camclose]").forEach(b=>{
+    b.addEventListener("click",(e)=>{ e.stopPropagation(); CAMON.delete(parseInt(b.dataset.camclose,10)); renderFleet(); });
   });
   wrap.querySelectorAll("[data-pickopen]").forEach(el=>{
     el.addEventListener("click",()=>{
@@ -992,7 +1346,7 @@ let PUSHES=0;
 async function pushTo(printer, start){
   if(!SELECTED){ return; }
   const map={};
-  document.querySelectorAll('.cmsel[data-card="'+printer+'"]').forEach(s=>{ map[s.dataset.pi]=parseInt(s.value,10); });
+  document.querySelectorAll('.cmaprow[data-card="'+printer+'"] .cmsw.sel').forEach(sw=>{ map[sw.dataset.pi]=parseInt(sw.dataset.hi,10); });
   const mapped=Object.keys(map).length;
   const st=$("pst-"+printer);
   if(st){ st.className="pstatus work"; st.innerHTML=pushBar(0,"Starting upload…"); }
@@ -1176,6 +1530,87 @@ async function skipObject(name){
   }catch(e){ alert("Couldn't skip: "+e.message); }
 }
 
+// ---- Smart-plug power control -------------------------------------------------
+// POWER caches the last reading per printer id so the 5 s fleet re-render can
+// repaint the row instantly (renderFleet rebuilds innerHTML, wiping live values);
+// refreshPower() then pulls fresh readings for every plugged printer on its own
+// 6 s tick, so watts stay live without forcing a whole-fleet redraw.
+let POWER = {};          // id -> { on, watts, energyWh, metered } | { on:null, err }
+let POWER_TIMER = null;
+
+function powerRowHtml(p, busy){
+  const c = POWER[p.id] || {};
+  const metered = p.plug && p.plug.type === "shelly";
+  let dotCls = "off", draw;
+  if(c.err){ draw = `<span class="dim">${esc(c.err)}</span>`; }
+  else if(c.on === true){ dotCls = "on"; draw = (metered && typeof c.watts === "number") ? (c.watts.toFixed(1)+" W") : "On"; }
+  else if(c.on === false){ draw = metered ? `<span class="dim">0.0 W · off</span>` : `<span class="dim">Off</span>`; }
+  else { draw = `<span class="dim">…</span>`; }
+  // Off is hard-blocked while printing/paused (the server enforces this too);
+  // On is always allowed — including on an offline printer you want to wake.
+  const offDisabled = busy ? " disabled" : "";
+  const offTitle = busy ? ` title="Can't cut power while printing or paused"` : "";
+  return `<div class="powerrow" data-pwrow="${p.id}">`+
+    `<span class="plabel">Power</span><span class="pdot ${dotCls}"></span>`+
+    `<span class="pdraw" id="pw-${p.id}">${draw}</span>`+
+    `<span class="pbtns">`+
+      `<button class="btn ghost pbtn" data-power="${p.id}" data-on="1">On</button>`+
+      `<button class="btn ghost pbtn" data-power="${p.id}" data-on="0"${offDisabled}${offTitle}>Off</button>`+
+    `</span></div>`;
+}
+
+function paintPowerRow(id){
+  const span = $("pw-"+id); if(!span) return;
+  const row = span.closest(".powerrow");
+  const dot = row ? row.querySelector(".pdot") : null;
+  const c = POWER[id] || {};
+  const pl = ((FLEET.find(x=>x.id===id)||{}).plug) || {};
+  const metered = pl.type === "shelly";
+  if(c.err){ span.innerHTML = `<span class="dim">${esc(c.err)}</span>`; if(dot) dot.className="pdot off"; return; }
+  if(c.on === true){ span.innerHTML = (metered && typeof c.watts==="number") ? (c.watts.toFixed(1)+" W") : "On"; if(dot) dot.className="pdot on"; }
+  else if(c.on === false){ span.innerHTML = metered ? `<span class="dim">0.0 W · off</span>` : `<span class="dim">Off</span>`; if(dot) dot.className="pdot off"; }
+  else { span.innerHTML = `<span class="dim">…</span>`; if(dot) dot.className="pdot off"; }
+}
+
+function hydratePower(){
+  document.querySelectorAll(".powerrow[data-pwrow]").forEach(row=>{
+    paintPowerRow(parseInt(row.dataset.pwrow,10));
+  });
+}
+
+async function refreshPower(){
+  const plugged = FLEET.filter(p=>p.plug);
+  await Promise.all(plugged.map(async p=>{
+    try{
+      const r = await fetch("/api/power?id="+p.id);
+      const d = await r.json();
+      if(!r.ok || d.error) throw new Error(d.error || ("HTTP "+r.status));
+      POWER[p.id] = { on: d.on, watts: d.watts, energyWh: d.energyWh, metered: d.metered };
+    }catch(e){ POWER[p.id] = { on: null, err: "unreachable" }; }
+    paintPowerRow(p.id);
+  }));
+}
+
+// live readings tick independently of the fleet poll (only if a plug exists)
+function startPowerPoll(){
+  if(POWER_TIMER) return;
+  POWER_TIMER = setInterval(()=>{ if(FLEET.some(p=>p.plug)) refreshPower(); }, 6000);
+}
+
+async function setPower(id, on){
+  const st = $("pst-"+id);
+  if(st){ st.className="pstatus work"; st.textContent = on ? "Powering on…" : "Powering off…"; }
+  try{
+    const r = await fetch("/api/power",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id,on})});
+    const d = await r.json(); if(!r.ok||d.error) throw new Error(d.error||("HTTP "+r.status));
+    POWER[id] = { on: d.on, watts: d.watts, energyWh: d.energyWh, metered: d.metered };
+    paintPowerRow(id);
+    if(st){ st.className="pstatus ok"; st.textContent = on ? "Powered on" : "Powered off"; }
+    // flipping the plug changes reachability — nudge the fleet to re-poll
+    setTimeout(loadFleet, on ? 4000 : 800);
+  }catch(e){ if(st){ st.className="pstatus err"; st.textContent=e.message; } }
+}
+
 async function setBed(printer, off){
   const inp=$("bedin-"+printer);
   const temp=off?0:parseInt((inp&&inp.value)||"",10);
@@ -1245,7 +1680,8 @@ async function loadInventory(){
 }
 
 // ---- settings / discovery / tip ----
-$("gear").addEventListener("click",()=>{ $("setup").classList.toggle("show"); refreshAuthLine(); refreshTunnelLine(); });
+$("gear").addEventListener("click",()=>{ $("setup").classList.toggle("show"); refreshAuthLine(); refreshTunnelLine(); const cb=$("camAuto"); if(cb) cb.checked=(CAMMODE==="auto"); });
+$("camAuto").addEventListener("change",e=>setCamMode(e.target.checked?"auto":"demand"));
 $("manageAuth").addEventListener("click",()=>{ location.href="/auth.html"; });
 async function refreshAuthLine(){
   try{

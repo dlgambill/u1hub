@@ -3,7 +3,7 @@
 // and pushes the chosen file to the chosen printer via Moonraker (server-side,
 // so no browser CORS headaches).
 
-const VERSION = "2.7.0";
+const VERSION = "2.8.0";
 
 const express = require("express");
 const fs = require("fs");
@@ -484,6 +484,47 @@ app.get("/api/map", (req, res) => {
   }
 });
 
+// ---- Library palette index (for Spool Match) --------------------------------
+// Spool Match needs every library file's required colours, not just the selected
+// one. This re-uses the exact tail-read + parseGcodeMap path as /api/map, cached
+// per file by (size, mtime) so a large library is parsed once and served
+// instantly thereafter. Returns only what the matcher needs: the used palette
+// hexes per file (plus FS / no-colour flags so the UI can label those).
+const PAL_CACHE = new Map(); // name -> { size, mtime, colors:[hex], isFS, noColors }
+function paletteForFile(name) {
+  const fp = safeFile(name);
+  if (!fp || !fs.existsSync(fp)) return null;
+  const st = fs.statSync(fp);
+  const hit = PAL_CACHE.get(name);
+  if (hit && hit.size === st.size && hit.mtime === st.mtimeMs) return hit;
+  const TAIL = 3 * 1024 * 1024;
+  let text;
+  if (st.size > TAIL) {
+    const fd = fs.openSync(fp, "r");
+    try { const buf = Buffer.alloc(TAIL); fs.readSync(fd, buf, 0, TAIL, st.size - TAIL); text = buf.toString("utf8"); }
+    finally { fs.closeSync(fd); }
+  } else { text = fs.readFileSync(fp, "utf8"); }
+  let r = parseGcodeMap(text, { scanBody: false });
+  if (r.noColors && st.size > TAIL) r = parseGcodeMap(fs.readFileSync(fp, "utf8"), { scanBody: true });
+  const colors = (Array.isArray(r.palette) ? r.palette : []).filter(s => s && s.used && s.hex).map(s => s.hex);
+  const rec = { size: st.size, mtime: st.mtimeMs, colors, isFS: !!r.isFS, noColors: !!r.noColors };
+  PAL_CACHE.set(name, rec);
+  return rec;
+}
+app.get("/api/library-palettes", (req, res) => {
+  try {
+    const files = fs.readdirSync(FOLDER).filter(f => /\.(gcode|gco|g)$/i.test(f));
+    const live = new Set(files);
+    for (const k of PAL_CACHE.keys()) if (!live.has(k)) PAL_CACHE.delete(k); // drop deleted files
+    const out = [];
+    for (const name of files) {
+      const rec = paletteForFile(name);
+      if (rec) out.push({ name, colors: rec.colors, isFS: rec.isFS, noColors: rec.noColors });
+    }
+    res.json({ files: out });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // Rewrite the file's palette colors so each chosen color exactly equals the
 // target head's loaded color. The U1 matches file-colors to loaded heads, so an
 // exact match forces deterministic routing. colorMap = { paletteIndex: "#RRGGBB" }.
@@ -650,6 +691,8 @@ function decodeHeads(ptc) {
   const typ  = ptc.filament_type || [];
   const sub  = ptc.filament_sub_type || [];
   const off  = ptc.filament_official || [];
+  const ven  = ptc.filament_vendor || [];
+  const sku  = ptc.filament_sku || [];
   const multi = ptc.filament_color_multi || [];
   return [0, 1, 2, 3].map(i => {
     const loaded = !!ex[i];
@@ -678,7 +721,14 @@ function decodeHeads(ptc) {
       colors,
       material: loaded ? (typ[i] || null) : null,
       sub: (loaded && sub[i] && sub[i] !== "NONE") ? sub[i] : null,
-      official: !!off[i]
+      official: !!off[i],
+      // Identity (tag-verified spool profile). vendor/sku come straight from
+      // print_task_config — the same source the color swatch uses, so they never
+      // disagree with the displayed color, and (unlike filament_detect) they
+      // don't go stale after the load-time RFID scan. Hardware-verified: an
+      // official Snapmaker SnapSpeed roll reported vendor "Snapmaker", sku 900002.
+      vendor: (loaded && off[i] && ven[i] && ven[i] !== "NONE") ? ven[i] : null,
+      sku: (loaded && off[i] && sku[i]) ? sku[i] : null
     };
   });
 }
@@ -909,6 +959,69 @@ async function diskPoll() {
 setInterval(diskPoll, 60000);
 setTimeout(diskPoll, 3000);
 
+// ---- Chamber camera (Snapmaker camera.* plugin) ----------------------------
+// Hardware-verified 2026-08-05 (.88/.83): the U1's built-in chamber cam is NOT on
+// any standard Moonraker webcam interface (/server/webcams/list empty, /webcam/
+// 502, :8080 refused). It streams through Snapmaker's own plugin:
+// camera.start_monitor {domain:"lan", interval:0} makes the plugin write ~1 fps
+// JPEGs to /server/files/camera/monitor.jpg (fetched over plain HTTP);
+// camera.stop_monitor ends it. Stream test confirmed continuous frames, first
+// frame ~1.1s after start.
+//
+// The monitor must run on a DEDICATED socket — issuing start_monitor on the
+// shared fleet-subscription socket does NOT take (verified: frames never
+// advanced). So each printer gets its own lazy camera socket, opened on first
+// snapshot request and closed by the idle reaper when no card is watching.
+const CAM = new Map(); // idx -> { ws, open, monitoring, lastReq, startedAt, cooldownUntil }
+const CAM_COOLDOWN_MS = 5000;   // plugin misbehaves if start_monitor is hammered
+const CAM_IDLE_MS = 60000;      // stop the stream after this long with no viewers
+const CAM_WARMUP_MS = 1400;     // first frame lands ~1.1s after start
+
+function camConnect(idx) {
+  const p = PRINTERS[idx];
+  if (!p || typeof WebSocket === "undefined") return null;
+  let c = CAM.get(idx);
+  if (c && c.ws && (c.ws.readyState === 0 || c.ws.readyState === 1)) return c; // connecting/open
+  if (c && Date.now() < c.cooldownUntil) return c;                              // throttle reconnect
+  c = c || { ws: null, open: false, monitoring: false, lastReq: 0, startedAt: 0, cooldownUntil: 0 };
+  const wsUrl = String(p.url).replace(/\/+$/, "").replace(/^http/, "ws") + "/websocket";
+  let ws;
+  try { ws = new WebSocket(wsUrl); } catch { c.cooldownUntil = Date.now() + CAM_COOLDOWN_MS; CAM.set(idx, c); return c; }
+  c.ws = ws; c.open = false; c.monitoring = false; c.cooldownUntil = Date.now() + CAM_COOLDOWN_MS;
+  ws.onopen = () => {
+    c.open = true; c.startedAt = Date.now();
+    try { ws.send(JSON.stringify({ jsonrpc: "2.0", method: "camera.start_monitor", params: { domain: "lan", interval: 0 }, id: 900 })); c.monitoring = true; } catch {}
+  };
+  ws.onmessage = (ev) => {
+    let j; try { j = JSON.parse(ev.data); } catch { return; }
+    if (j.method === "notify_camera_status_change" && Array.isArray(j.params) && j.params[0]) c.monitoring = !!j.params[0].monitoring;
+  };
+  ws.onerror = () => {};
+  ws.onclose = () => { c.open = false; c.monitoring = false; };
+  CAM.set(idx, c);
+  return c;
+}
+// Ensure a live stream; returns true if this call had to (re)start it (cold).
+function camEnsure(idx) {
+  const prev = CAM.get(idx);
+  const cold = !(prev && prev.open && prev.monitoring);
+  const c = camConnect(idx);
+  if (c) c.lastReq = Date.now();
+  return cold;
+}
+function camStop(idx) {
+  const c = CAM.get(idx);
+  if (!c || !c.ws) return;
+  try { if (c.open) c.ws.send(JSON.stringify({ jsonrpc: "2.0", method: "camera.stop_monitor", params: { domain: "lan" }, id: 901 })); } catch {}
+  try { c.ws.close(); } catch {}
+  c.open = false; c.monitoring = false; c.ws = null;
+}
+// Idle reaper: drop any camera socket nobody has watched for CAM_IDLE_MS.
+setInterval(() => {
+  const now = Date.now();
+  for (const [idx, c] of CAM) if (c.ws && now - c.lastReq > CAM_IDLE_MS) camStop(idx);
+}, 15000);
+
 // One fleet-card record per printer: fresh socket data shapes instantly with
 // zero HTTP; otherwise fall back to the classic HTTP probe with a short cache
 // so SSE broadcasts can't hammer offline printers with timeout storms.
@@ -929,7 +1042,12 @@ async function probeCached(p, idx) {
   return data;
 }
 async function fleetSnapshot() {
-  return Promise.all((PRINTERS || []).map((p, i) => probeCached(p, i).then(r => ({ id: i, ...r }))));
+  // `plug` is attached centrally (not threaded through every probe/offline
+  // return) so a plugged-but-offline printer still shows its power tile — that's
+  // exactly when you'd want to switch it on. Only the type is exposed; the plug
+  // IP stays server-side (the browser drives it through /api/power?id=N).
+  return Promise.all((PRINTERS || []).map((p, i) =>
+    probeCached(p, i).then(r => ({ id: i, plug: p.plug ? { type: p.plug.type } : null, ...r }))));
 }
 
 app.get("/api/fleet", async (req, res) => {
@@ -1201,6 +1319,39 @@ app.get("/api/pthumb", async (req, res) => {
   } catch { res.status(404).end(); }
 });
 
+// ---- Live chamber snapshot -------------------------------------------------
+// The browser polls this per printer on a staggered interval and points an <img>
+// at it. Ensures the plugin's monitor is running (starting it on first request),
+// then proxies the latest frame. A cold start needs ~1s for the first frame, so
+// we retry monitor.jpg once on a miss. Returns 503 (not 500) when there's simply
+// no frame yet, so the UI can show a retryable placeholder rather than an error.
+app.get("/api/camera", async (req, res) => {
+  const idx = +req.query.id;
+  const p = PRINTERS[idx];
+  if (!p) return res.status(400).end();
+  if (typeof WebSocket === "undefined") return res.status(503).json({ error: "no WebSocket client" });
+  const cold = camEnsure(idx);   // opens the dedicated camera socket if needed
+  const base = String(p.url).replace(/\/+$/, "");
+  const grab = async () => {
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), 3500);
+    try {
+      const r = await fetch(base + "/server/files/camera/monitor.jpg", { signal: ctrl.signal });
+      clearTimeout(to);
+      if (!r.ok) return null;
+      const b = Buffer.from(await r.arrayBuffer());
+      return (b.length > 2 && b[0] === 0xff && b[1] === 0xd8) ? b : null; // valid JPEG SOI
+    } catch { clearTimeout(to); return null; }
+  };
+  // On a cold start the stream needs ~1.1s to write its first frame; without the
+  // wait we'd serve the stale monitor.jpg left on disk. Warm streams skip this.
+  if (cold) await new Promise(r => setTimeout(r, CAM_WARMUP_MS));
+  let jpg = await grab();
+  if (!jpg) { await new Promise(r => setTimeout(r, 800)); jpg = await grab(); }
+  if (!jpg) return res.status(503).json({ error: "no frame" });
+  res.set("Cache-Control", "no-store").type("jpeg").send(jpg);
+});
+
 // ---- Filament color: set a slot's color from the Hub -----------------------
 // Verified live 2026-07-03: the touchscreen itself issues this exact gcode
 // (captured in /server/gcode_store when a color was changed on-screen):
@@ -1249,6 +1400,131 @@ app.post("/api/setcolor", async (req, res) => {
     res.json({ ok: true, slot: s, hex: "#" + m[1].toUpperCase(), heads: decodeHeads(ptc) });
   } catch (e) {
     res.status(502).json({ error: "Could not reach " + p.name + ": " + e.message });
+  }
+});
+
+// ---- Smart power control: switch a printer's plug on/off + read draw -------
+// Each printer MAY carry a typed `plug` descriptor in config.json:
+//   "plug": { "type":"shelly", "ip":"192.168.12.235" }                  // metered on/off
+//   "plug": { "type":"url", "on":"http://x/on", "off":"http://x/off" }  // any local-HTTP plug, on/off only
+// Hardware-verified on a Shelly Plug US Gen4 (model S4PL-00116US, gen 4):
+//   GET /rpc/Shelly.GetDeviceInfo  -> reachable, auth-optional (auth_en:false)
+//   GET /rpc/Switch.GetStatus?id=0 -> { output, apower, voltage, aenergy:{total}, temperature:{tC} }
+//   GET /rpc/Switch.Set?id=0&on=<bool> -> { was_on }
+// The `shelly` driver reads live draw + energy; the generic `url` driver just
+// fires the configured on/off URL (covers Tasmota, ESPHome, HA webhooks, DIY
+// ESP32 — anything with a local HTTP endpoint) with no metering.
+// SAFETY: turning a plug OFF is hard-blocked while its printer is printing or
+// paused — a live print_stats query gates every off (same pattern as the file-
+// management active-print guard). If we can't confirm the printer is idle, the
+// off is refused (fail safe). Turning ON is always allowed. NOTE: this guard
+// only covers the Hub's own Off button — the physical button, the Shelly app,
+// and power outages are outside the Hub's reach.
+
+async function plugRead(plug) {
+  if (!plug || !plug.type) throw new Error("no plug configured");
+  if (plug.type === "shelly") {
+    const ip = String(plug.ip || "").trim();
+    if (!ip) throw new Error("shelly plug missing 'ip'");
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), 3000);
+    try {
+      const r = await fetch("http://" + ip + "/rpc/Switch.GetStatus?id=0", { signal: ctrl.signal });
+      if (!r.ok) throw new Error("plug HTTP " + r.status);
+      const s = await r.json();
+      const ae = s.aenergy || {};
+      const t = s.temperature || {};
+      return {
+        on: !!s.output,
+        watts: typeof s.apower === "number" ? s.apower : null,
+        volts: typeof s.voltage === "number" ? s.voltage : null,
+        energyWh: typeof ae.total === "number" ? ae.total : null,
+        tempC: typeof t.tC === "number" ? t.tC : null,
+        metered: true
+      };
+    } finally { clearTimeout(to); }
+  }
+  if (plug.type === "url") {
+    // generic plug: on/off only, no reliable status read
+    return { on: null, watts: null, volts: null, energyWh: null, tempC: null, metered: false };
+  }
+  throw new Error("unknown plug type '" + plug.type + "'");
+}
+
+async function plugSet(plug, on) {
+  if (!plug || !plug.type) throw new Error("no plug configured");
+  if (plug.type === "shelly") {
+    const ip = String(plug.ip || "").trim();
+    if (!ip) throw new Error("shelly plug missing 'ip'");
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), 3000);
+    try {
+      const r = await fetch("http://" + ip + "/rpc/Switch.Set?id=0&on=" + (on ? "true" : "false"), { signal: ctrl.signal });
+      if (!r.ok) throw new Error("plug HTTP " + r.status);
+      await r.json().catch(() => ({}));
+    } finally { clearTimeout(to); }
+    return;
+  }
+  if (plug.type === "url") {
+    const target = on ? plug.on : plug.off;
+    if (!target) throw new Error("url plug missing '" + (on ? "on" : "off") + "' endpoint");
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), 3000);
+    try {
+      const r = await fetch(String(target), { signal: ctrl.signal });
+      if (!r.ok) throw new Error("plug HTTP " + r.status);
+    } finally { clearTimeout(to); }
+    return;
+  }
+  throw new Error("unknown plug type '" + plug.type + "'");
+}
+
+// Live print state for the off-guard (mirrors the file-management guard helper).
+async function plugGuardState(base) {
+  const ctrl = new AbortController();
+  const to = setTimeout(() => ctrl.abort(), 3000);
+  try {
+    const r = await fetch(base + "/printer/objects/query?print_stats", { signal: ctrl.signal });
+    if (!r.ok) throw new Error("Moonraker " + r.status);
+    const ps = ((((await r.json()).result) || {}).status || {}).print_stats || {};
+    return ps.state || "unknown";
+  } finally { clearTimeout(to); }
+}
+
+app.get("/api/power", async (req, res) => {
+  const p = PRINTERS[req.query.id];
+  if (!p) return res.status(400).json({ error: "Unknown printer" });
+  if (!p.plug) return res.status(404).json({ error: "No plug configured for " + (p.name || "printer") });
+  try {
+    const st = await plugRead(p.plug);
+    res.json({ id: Number(req.query.id), type: p.plug.type, ...st });
+  } catch (e) {
+    res.status(502).json({ error: "Plug unreachable: " + e.message });
+  }
+});
+
+app.post("/api/power", async (req, res) => {
+  const b = req.body || {};
+  const p = PRINTERS[b.id];
+  if (!p) return res.status(400).json({ error: "Unknown printer" });
+  if (!p.plug) return res.status(404).json({ error: "No plug configured for " + (p.name || "printer") });
+  if (typeof b.on !== "boolean") return res.status(400).json({ error: "Body needs { id, on: true|false }" });
+  // SAFETY: never cut power to a printer that is printing or paused.
+  if (b.on === false) {
+    const base = String(p.url).replace(/\/+$/, "");
+    let state;
+    try { state = await plugGuardState(base); }
+    catch (e) { return res.status(502).json({ error: "Can't confirm " + p.name + " is idle (" + e.message + ") — refusing to power off." }); }
+    if (state === "printing" || state === "paused")
+      return res.status(409).json({ error: "REFUSED: " + p.name + " is " + state + " — the Hub won't cut power mid-print." });
+  }
+  try {
+    await plugSet(p.plug, b.on);
+    let st = null;
+    try { st = await plugRead(p.plug); } catch {}
+    res.json({ ok: true, id: Number(b.id), on: b.on, type: p.plug.type, ...(st || {}) });
+  } catch (e) {
+    res.status(502).json({ error: "Plug command failed: " + e.message });
   }
 });
 
@@ -1305,7 +1581,17 @@ app.post("/api/config", (req, res) => {
     gcodeFolder: (typeof b.gcodeFolder === "string" && b.gcodeFolder.trim()) ? b.gcodeFolder.trim() : (CFG.gcodeFolder || "./gcode"),
     port: PORT,
     printers: Array.isArray(b.printers)
-      ? b.printers.filter(p => p && p.url).map(p => ({ name: String(p.name || p.url), url: String(p.url) }))
+      ? b.printers.filter(p => p && p.url).map(p => {
+          const rec = { name: String(p.name || p.url), url: String(p.url) };
+          // Preserve a plug descriptor across a settings-UI save. The form
+          // doesn't know about plugs, so a hand-edited "plug" would otherwise be
+          // silently dropped — carry it from the incoming record if present,
+          // else from the existing config entry matched by url.
+          let plug = p.plug;
+          if (!plug) { const ex = (CFG.printers || []).find(x => x && x.url === p.url); if (ex && ex.plug) plug = ex.plug; }
+          if (plug) rec.plug = plug;
+          return rec;
+        })
       : (CFG.printers || []),
     tip: (b.tip && (b.tip.url || b.tip.label)) ? { label: String(b.tip.label || "Buy me a beer"), url: String(b.tip.url || "") } : (b.tip === null ? null : (CFG.tip || null))
   };
