@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- U1 Print Hub — index v2.8.0 -->
+<!-- U1 Print Hub — index v2.8.1 -->
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
@@ -312,11 +312,19 @@
   .fl{display:block; font-size:12px; font-weight:700; letter-spacing:.04em; color:var(--ink-dim); margin-bottom:6px; text-transform:uppercase;}
   .fl .hint{text-transform:none; font-weight:400; color:var(--ink-faint); letter-spacing:0; margin-left:6px;}
   .field{width:100%; font:inherit; font-size:14px; color:var(--ink); background:var(--panel-2); border:1px solid var(--line); border-radius:7px; padding:10px 12px;}
+  .field option, .sortsel option{background:var(--panel-2); color:var(--ink);}
   .prow{display:flex; gap:8px; margin-bottom:7px;}
   .prow input{flex:1; min-width:0;}
   .prow .pname{flex:none; width:90px;}
   .prow .rm{flex:none; background:transparent; border:1px solid var(--line); color:var(--ink-dim); border-radius:7px; padding:0 11px; cursor:pointer; font-size:16px;}
   .prow .rm:hover{color:var(--bad); border-color:var(--bad);}
+  .pblock{margin-bottom:13px; padding-bottom:11px; border-bottom:1px solid var(--line);}
+  .pblock:last-child{border-bottom:none;}
+  .plugrow{display:flex; gap:8px; align-items:center; flex-wrap:wrap; padding-left:2px;}
+  .plugrow .pluglab{flex:none; width:90px; font-size:12px; color:var(--ink-dim);}
+  .plugrow .plugtype{flex:none; width:172px;}
+  .plugrow input{flex:1; min-width:130px;}
+  .plugrow .plughint{flex-basis:100%; margin-left:98px; font-size:11px; color:var(--ink-faint);}
   .discwrap{margin-top:8px;}
   .discrow{display:flex; align-items:center; gap:9px; padding:8px 10px; border:1px solid var(--line-soft); border-radius:8px; margin-bottom:6px; font-size:13px;}
   .discrow .di{font-family:var(--mono); font-size:11.5px; color:var(--ink-dim); flex:1;}
@@ -469,7 +477,7 @@
 
 <script>
 const $ = id => document.getElementById(id);
-const VERSION = "2.8.0";
+const VERSION = "2.8.1";
 let FILES = [], SELECTED = null, MAP = null, FLEET = [], MAPSEL = {};
 let ONBOARD = [], ACT = null; // onboard = /api/printer-files cache; ACT = open per-printer action strip {name,pid}
 let SRCSEL = { hub:true, p:{} }; // source-filter checkboxes; p[pid]=false hides that printer (default: everything on)
@@ -1766,20 +1774,65 @@ async function loadConfigUI(){
     const c=await (await fetch("/api/config")).json();
     $("setFolder").value=c.gcodeFolder||"";
     $("setPrinters").innerHTML="";
-    (c.printers||[]).forEach(p=>addPrinterRow(p.name,p.url));
+    (c.printers||[]).forEach(p=>addPrinterRow(p.name,p.url,p.plug));
     if(!c.configured){ $("setup").classList.add("show"); $("setupmsg").textContent="welcome — add your printers to begin"; if(!$("setPrinters").children.length) addPrinterRow("",""); }
   }catch(e){}
 }
-function addPrinterRow(name,url){
-  const row=document.createElement("div"); row.className="prow";
-  row.innerHTML=`<input class="field pname" placeholder="U1" value="${esc(name||"")}"><input class="field purl" placeholder="http://192.168.1.50" value="${esc(url||"")}"><button class="rm" title="Remove">×</button>`;
-  row.querySelector(".rm").addEventListener("click",()=>row.remove());
-  $("setPrinters").appendChild(row);
+function addPrinterRow(name,url,plug){
+  const t = (plug && plug.type) || "";
+  const ip  = esc((plug && plug.ip)  || "");
+  const on  = esc((plug && plug.on)  || "");
+  const off = esc((plug && plug.off) || "");
+  const block=document.createElement("div"); block.className="pblock";
+  block.innerHTML=
+    `<div class="prow">`+
+      `<input class="field pname" placeholder="U1" value="${esc(name||"")}">`+
+      `<input class="field purl" placeholder="http://192.168.1.50" value="${esc(url||"")}">`+
+      `<button class="rm" title="Remove">×</button>`+
+    `</div>`+
+    `<div class="plugrow">`+
+      `<span class="pluglab">Smart plug</span>`+
+      `<select class="field plugtype">`+
+        `<option value=""${t===""?" selected":""}>None</option>`+
+        `<option value="shelly"${t==="shelly"?" selected":""}>Shelly (live watts)</option>`+
+        `<option value="url"${t==="url"?" selected":""}>Generic on/off URL</option>`+
+      `</select>`+
+      `<input class="field plugip" placeholder="plug IP, e.g. 192.168.1.60" value="${ip}">`+
+      `<input class="field plugon" placeholder="ON url" value="${on}">`+
+      `<input class="field plugoff" placeholder="OFF url" value="${off}">`+
+      `<span class="plughint"></span>`+
+    `</div>`;
+  const sel=block.querySelector(".plugtype");
+  const elIp=block.querySelector(".plugip"), elOn=block.querySelector(".plugon"),
+        elOff=block.querySelector(".plugoff"), hint=block.querySelector(".plughint");
+  const sync=()=>{
+    const v=sel.value;
+    elIp.style.display  = v==="shelly" ? "" : "none";
+    elOn.style.display  = v==="url" ? "" : "none";
+    elOff.style.display = v==="url" ? "" : "none";
+    hint.textContent = v==="shelly" ? "Off is blocked while this printer is printing."
+                     : v==="url"    ? "Any local HTTP switch (Tasmota, ESPHome, Home Assistant, DIY). Off is blocked mid-print."
+                     : "";
+  };
+  sel.addEventListener("change",sync); sync();
+  block.querySelector(".rm").addEventListener("click",()=>block.remove());
+  $("setPrinters").appendChild(block);
 }
 function gatherPrinters(){
-  return [...$("setPrinters").querySelectorAll(".prow")].map(r=>({
-    name:r.querySelector(".pname").value.trim(), url:r.querySelector(".purl").value.trim()
-  })).filter(p=>p.url);
+  return [...$("setPrinters").querySelectorAll(".pblock")].map(b=>{
+    const rec={ name:b.querySelector(".pname").value.trim(), url:b.querySelector(".purl").value.trim() };
+    const t=b.querySelector(".plugtype").value;
+    if(t==="shelly"){
+      const ip=b.querySelector(".plugip").value.trim();
+      rec.plug = ip ? {type:"shelly", ip} : null;
+    } else if(t==="url"){
+      const on=b.querySelector(".plugon").value.trim(), off=b.querySelector(".plugoff").value.trim();
+      rec.plug = (on&&off) ? {type:"url", on, off} : null;
+    } else {
+      rec.plug = null; // explicit "None" → clear any existing plug
+    }
+    return rec;
+  }).filter(p=>p.url);
 }
 async function runDiscover(){
   const w=$("discwrap"); w.innerHTML='<div class="discrow"><span class="di">Scanning the network… (~10s)</span></div>';

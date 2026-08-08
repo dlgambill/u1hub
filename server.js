@@ -3,7 +3,7 @@
 // and pushes the chosen file to the chosen printer via Moonraker (server-side,
 // so no browser CORS headaches).
 
-const VERSION = "2.8.0";
+const VERSION = "2.8.1";
 
 const express = require("express");
 const fs = require("fs");
@@ -1583,13 +1583,23 @@ app.post("/api/config", (req, res) => {
     printers: Array.isArray(b.printers)
       ? b.printers.filter(p => p && p.url).map(p => {
           const rec = { name: String(p.name || p.url), url: String(p.url) };
-          // Preserve a plug descriptor across a settings-UI save. The form
-          // doesn't know about plugs, so a hand-edited "plug" would otherwise be
-          // silently dropped — carry it from the incoming record if present,
-          // else from the existing config entry matched by url.
+          // Plug descriptor. The settings form now sends the plug explicitly:
+          //  - a valid {type,...} to set it,
+          //  - null to clear it,
+          //  - (field omitted) to preserve whatever's already there — this last case
+          //    covers a hand-edited config saved from an older frontend that doesn't
+          //    know about plugs. Validate the shape so a bad payload can't write junk.
           let plug = p.plug;
-          if (!plug) { const ex = (CFG.printers || []).find(x => x && x.url === p.url); if (ex && ex.plug) plug = ex.plug; }
-          if (plug) rec.plug = plug;
+          if (plug === undefined) {
+            const ex = (CFG.printers || []).find(x => x && x.url === p.url);
+            if (ex && ex.plug) plug = ex.plug;
+          }
+          if (plug && plug.type === "shelly" && plug.ip) {
+            rec.plug = { type: "shelly", ip: String(plug.ip).trim() };
+          } else if (plug && plug.type === "url" && plug.on && plug.off) {
+            rec.plug = { type: "url", on: String(plug.on).trim(), off: String(plug.off).trim() };
+          }
+          // anything else (null, unknown type, missing fields) → no plug written
           return rec;
         })
       : (CFG.printers || []),

@@ -62,8 +62,8 @@ printers, and nothing leaves your network unless you turn remote access on.
   allowed, so you can wake an offline printer straight from its tile. Two plug types are
   supported: **Shelly** (metered, reports live watts) and a **generic URL** driver that
   fires any on/off HTTP endpoint — Tasmota, ESPHome, Home Assistant, or a DIY plug.
-  Configure it per printer in `config.json`; the plug's IP stays server-side and never
-  reaches the browser.
+  Configure it per printer in `config.json`; the **dashboard only ever sees whether a
+  printer has a plug and its live draw** — never the plug's address.
 
 ![Smart power control — live wattage on the card, with Off locked out while the printer runs](docs/power.png)
 
@@ -331,6 +331,46 @@ Reopen Settings anytime with the gear button.
    create a tunnel in the Zero Trust dashboard pointing at
    `http://localhost:4545`, and paste its token into **Named tunnel** mode. Your
    hostname now survives Hub restarts — bookmark it, install it, print from the beach.
+
+### 4. Optional: smart plugs (power control)
+
+Wire a printer's power through a smart plug and the Hub can switch it right from that
+printer's card. Set it up in **⚙ Settings**: each printer row has a **Smart plug**
+dropdown — pick **Shelly** (metered, shows live watts) or **Generic on/off URL**, fill in
+the address, and **Save**. The Hub writes it into `config.json` for you; choose **None**
+and save to remove it. Two types are supported:
+
+- **Shelly** — a Shelly plug on your LAN. The card gets an On/Off toggle **and the live
+  wattage** the printer is drawing. Give it the plug's IP:
+
+  ```json
+  { "name": "U1", "url": "http://192.168.1.50",
+    "plug": { "type": "shelly", "ip": "192.168.1.60" } }
+  ```
+
+- **Generic URL** — anything that switches over HTTP (Tasmota, ESPHome, Home Assistant,
+  a DIY relay). You supply the on and off URLs; no wattage, just control:
+
+  ```json
+  { "name": "U2", "url": "http://192.168.1.51",
+    "plug": { "type": "url",
+              "on":  "http://192.168.1.61/on",
+              "off": "http://192.168.1.61/off" } }
+  ```
+
+Those blocks are what the Hub writes; you can also hand-edit `config.json` directly if you
+prefer — the `plug` sits **alongside** each printer's existing `name`/`url` and doesn't
+replace anything.
+
+Give the plug a **static IP** — set it on the plug itself, or as a DHCP reservation — so
+its address doesn't drift. The plug's IP lives in `config.json` on the machine running the
+Hub; the **dashboard never sees it** (only Settings, behind your password, reads it back so
+you can edit it).
+
+**Safety:** the **Off** button is refused while that printer is printing or paused. The
+Hub confirms the machine is idle before it will cut power, and fails safe (leaves it on)
+if it can't tell. Powering **on** is always allowed, so you can wake an offline printer
+from its tile.
 
 ---
 
