@@ -213,9 +213,10 @@ printers, and nothing leaves your network unless you turn remote access on.
 ![Remote access — Hub-managed Cloudflare tunnel status in Settings](docs/tunnel.png)
 ![The dashboard on a phone, over HTTPS, from anywhere](docs/remote-phone.png)
 
-- **A real phone app, finally.** Served over the tunnel's HTTPS, your phone's
-  **Add to Home Screen** now produces a true standalone install — full screen, own
-  icon, no browser chrome.
+- **App-like on your phone — no app store, nothing to download.** The Hub is a web
+  dashboard, so your phone just opens it in a browser. Served over the tunnel's
+  HTTPS, tapping **Add to Home Screen** now produces a true standalone install —
+  full screen, own icon, no browser chrome.
 - **One file explorer for the whole farm.** The file list now shows the Hub's library
   *and* every printer's onboard storage together. Badges on each row show exactly
   which machines hold a copy; files that exist only on a printer appear with a dashed
@@ -335,6 +336,11 @@ file list** that keeps the page tidy with big folders.
 ---
 
 ## Download (no Node.js needed)
+
+> **There is no phone app to download.** The Hub runs on a computer (Windows, Mac,
+> or Linux) that stays on; your phone opens it in a browser at that computer's
+> address — and can pin it to the home screen for an app-like icon. The downloads
+> below are for the **computer**, not your phone.
 
 Grab the build for your OS from the **[Releases](../../releases)** page, put it in
 its own folder, and run it — a browser opens to the dashboard.
