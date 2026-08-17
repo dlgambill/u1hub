@@ -1,6 +1,6 @@
 {
   "name": "u1-print-hub",
-  "version": "2.8.1",
+  "version": "2.9.0",
   "private": true,
   "type": "commonjs",
   "bin": "server.js",
@@ -9,6 +9,8 @@
   },
   "scripts": {
     "start": "node server.js",
+    "test": "node test/run-tests.js",
+    "refresh-filament-db": "node scripts/refresh-filament-db.js",
     "build": "pkg . --targets node22-win-x64,node22-macos-x64,node22-macos-arm64,node22-linux-x64 --out-path dist"
   },
   "dependencies": {
@@ -20,7 +22,9 @@
   "pkg": {
     "assets": [
       "public/**/*",
-      "parser.js"
+      "parser.js",
+      "filament-swatches.json",
+      "scripts/refresh-filament-db.js"
     ],
     "targets": [
       "node22-win-x64",

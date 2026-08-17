@@ -41,6 +41,11 @@
 "use strict";
 
 const zlib = require("zlib");
+// v2.9 Orca alignment: one decoder for the fork's definition strings, shared
+// with the gcode parser — emit (defString below) and parse (decodeMixedDefs)
+// are round-trip tested byte-exact in the harness, so the Hub and the fork can
+// never drift on serialization without a test failing.
+const { decodeMixedDefs } = require("./parser.js");
 
 // ---- Minimal ZIP reader (pure Node, no deps — keeps pkg builds unchanged) ----
 // 3MF is a ZIP. We only need two small text members, so: find the End Of
@@ -92,11 +97,14 @@ function zipRead(buf, entry) {
 }
 
 // ---- 3MF palette extraction ---------------------------------------------------
-function analyze3mf(buf) {
-  const entries = zipEntries(buf);
-  const psName = Object.keys(entries).find(n => /(^|\/)project_settings\.config$/i.test(n));
-  if (!psName) throw new Error("No Metadata/project_settings.config in this 3MF — is it a slicer project file?");
-  const ps = JSON.parse(zipRead(buf, entries[psName]).toString("utf8"));
+// Two entry points, one implementation: analyze3mf takes a whole uploaded 3MF
+// (fallback path); analyzeConfigs takes just the two small config members —
+// the browser extracts them locally and uploads ~200 KB instead of the whole
+// project, which can be hundreds of MB (and over a tunnel, Cloudflare caps
+// request bodies at ~100 MB with an HTML error page — the bug that surfaced
+// this).
+function analyzeConfigs(psText, msText) {
+  const ps = JSON.parse(psText);
 
   const palette = (Array.isArray(ps.filament_colour) ? ps.filament_colour : [])
     .map(c => {
@@ -108,12 +116,10 @@ function analyze3mf(buf) {
   // Usage ranking: model_settings.config assigns objects/parts to 1-based
   // extruder indices. Optional — plain (unsliced-plate) files may lack it.
   const usage = {};
-  const msName = Object.keys(entries).find(n => /(^|\/)model_settings\.config$/i.test(n));
-  if (msName) {
-    const xml = zipRead(buf, entries[msName]).toString("utf8");
+  if (msText) {
     const re = /key="extruder"\s+value="(\d+)"/g;
     let m;
-    while ((m = re.exec(xml))) {
+    while ((m = re.exec(msText))) {
       const i = parseInt(m[1], 10);
       usage[i] = (usage[i] || 0) + 1;
     }
@@ -123,12 +129,39 @@ function analyze3mf(buf) {
     .map((hex, i) => ({ index: i + 1, hex, parts: usage[i + 1] || 0 }))
     .filter(c => c.hex);
   colors.sort((a, b) => b.parts - a.parts);
+  const hasUsage = Object.keys(usage).length > 0;
+
+  // Orca alignment (v2.9): if the project ALREADY carries fork mix definitions,
+  // decode them with the shared parser and predict each swatch with our blend
+  // model. This is the reconciliation view — put the fork's Mix Effect preview
+  // next to these swatches and any divergence in interpretation is visible
+  // immediately. maxUid feeds new definitions so uids never collide with ones
+  // already in the project.
+  const existing = decodeMixedDefs(ps.mixed_filament_definitions, palette);
+  const existingMixes = existing.map(m => ({
+    id: m.id, filaments: m.filaments, weights: m.weights, hex: m.hex,
+    label: m.filaments.map((f, i) => `F${f} ${m.weights[i]}%`).join(" + ")
+  }));
+
   return {
     file: null,
     filamentCount: palette.length,
     colors,
-    hasUsage: Object.keys(usage).length > 0
+    hasUsage,
+    existingMixes,
+    maxUid: existing.reduce((a, m) => Math.max(a, m.id || 0), 0)
   };
+}
+
+function analyze3mf(buf) {
+  const entries = zipEntries(buf);
+  const psName = Object.keys(entries).find(n => /(^|\/)project_settings\.config$/i.test(n));
+  if (!psName) throw new Error("No Metadata/project_settings.config in this 3MF — is it a slicer project file?");
+  const msName = Object.keys(entries).find(n => /(^|\/)model_settings\.config$/i.test(n));
+  return analyzeConfigs(
+    zipRead(buf, entries[psName]).toString("utf8"),
+    msName ? zipRead(buf, entries[msName]).toString("utf8") : null
+  );
 }
 
 // ---- Color math ---------------------------------------------------------------
@@ -209,7 +242,14 @@ function grade(dE) {
 }
 
 // ---- Definition string emitter (verified formats only — see header) ------------
+// v2.9 robustness: weights are validated before emit — integer percents that
+// sum to exactly 100 — so a rounding bug upstream can't write a definition the
+// fork would misread. Round-trip (decodeMixedDefs(defString(x)) === x) is
+// asserted in the harness for every emitted shape.
 function defString(components, uid) {
+  const pcts = components.map(c => c.pct);
+  if (pcts.some(p => !Number.isInteger(p) || p < 1 || p > 100) || pcts.reduce((a, b) => a + b, 0) !== 100)
+    throw new Error("defString: component percents must be integers 1-100 summing to 100 (got " + pcts.join("/") + ")");
   const TAIL = "z0,xa0,xb0,d0,o0,u" + uid + ",cm0";
   if (components.length === 2) {
     // lower index first for consistency; P belongs to the SECOND filament
@@ -217,6 +257,9 @@ function defString(components, uid) {
     const [a, b] = [...components].sort((x, y) => x.slot - y.slot);
     return `${a.slot},${b.slot},1,1,${b.pct},0,g,w,m2,${TAIL}`;
   }
+  // 3+ components: g indices MUST be ascending (fork rule — hardware-verified;
+  // g31/g13 experiments both failed to load as pairs, and list order is the
+  // only documented-working shape for triples).
   const sorted = [...components].sort((x, y) => x.slot - y.slot);
   const g = sorted.map(c => c.slot).join("");
   const w = sorted.map(c => c.pct).join("/");
@@ -296,6 +339,127 @@ function shapeRecipe(r) {
   };
 }
 
+// ---- Base-set recommender (v2.9) ----------------------------------------------
+// The inverse of the solver: instead of "given these 4 loaded spools, how close
+// can I mix each target?", answer "which 4 spools from THIS candidate pool
+// should I load to cover ALL the targets?". Candidates come from the caller —
+// in practice the Hub UI feeds it the bound-spool library (measured hex from
+// RFID/QR bindings), so the answer names physical rolls, not abstract colors.
+//
+// Method: dedupe near-identical candidates (ΔE<1.5), cap the pool at 12 via
+// farthest-point sampling in Lab (keeps the most distinct colors; C(12,4)=495
+// sets stays instant), score every 4-set with a COARSE solve per target
+// (singles + pairs at 10% + triples on a 10% grid — ~200 blends/target/set),
+// rank by worst-case ΔE then average, then re-solve the top sets at the full
+// 5% resolution so displayed numbers match what "Compute mixes" will say.
+function coarseBest(tLab, four) {
+  let best = Infinity;
+  const de = comps => {
+    const rgb = blendRgb(comps.map(c => ({ rgb: c.rgb, w: c.pct / 100 })));
+    const d = deltaE2000(tLab, rgbToLab(rgb));
+    if (d < best) best = d;
+  };
+  for (const s of four) de([{ ...s, pct: 100 }]);
+  for (let i = 0; i < four.length; i++) for (let j = i + 1; j < four.length; j++)
+    for (let p = 10; p <= 90; p += 10)
+      de([{ ...four[i], pct: 100 - p }, { ...four[j], pct: p }]);
+  for (let i = 0; i < four.length; i++) for (let j = i + 1; j < four.length; j++)
+    for (let k = j + 1; k < four.length; k++)
+      for (let p1 = 10; p1 <= 80; p1 += 10) for (let p2 = 10; p2 <= 90 - p1; p2 += 10) {
+        const p3 = 100 - p1 - p2;
+        if (p3 < 10) continue;
+        de([{ ...four[i], pct: p1 }, { ...four[j], pct: p2 }, { ...four[k], pct: p3 }]);
+      }
+  return best;
+}
+
+function recommendSets(targetsHex, candidates, benchmarkHex) {
+  const targets = targetsHex.map(h => {
+    const rgb = hexToRgb(h);
+    return rgb ? { hex: rgbToHex(rgb), lab: rgbToLab(rgb) } : null;
+  }).filter(Boolean);
+  if (!targets.length) return { error: "No valid target colors" };
+
+  // Sanitize + dedupe (keep the first of any near-identical pair — first wins,
+  // so callers should order candidates by preference).
+  let pool = [];
+  for (const c of candidates || []) {
+    const rgb = hexToRgb(c && c.hex);
+    if (!rgb) continue;
+    const lab = rgbToLab(rgb);
+    if (pool.some(p => deltaE2000(p.lab, lab) < 1.5)) continue;
+    pool.push({ label: String(c.label || c.hex), hex: rgbToHex(rgb), spool_id: c.spool_id || null, rgb, lab });
+  }
+  if (pool.length < 4) return { error: "Need at least 4 distinct candidate colors (have " + pool.length + " after removing near-duplicates)" };
+
+  // Farthest-point cap at 12: seed with the most-saturated-from-mean color,
+  // then greedily add whichever candidate is farthest from the kept set.
+  let trimmed = 0;
+  if (pool.length > 12) {
+    trimmed = pool.length - 12;
+    const kept = [pool[0]];
+    const rest = pool.slice(1);
+    while (kept.length < 12) {
+      let bi = 0, bd = -1;
+      rest.forEach((c, i) => {
+        const d = Math.min(...kept.map(k => deltaE2000(k.lab, c.lab)));
+        if (d > bd) { bd = d; bi = i; }
+      });
+      kept.push(rest.splice(bi, 1)[0]);
+    }
+    pool = kept;
+  }
+
+  const scoreFour = four => {
+    let worst = 0, sum = 0;
+    for (const t of targets) {
+      const d = coarseBest(t.lab, four);
+      if (d > worst) worst = d;
+      sum += d;
+    }
+    return { worst, avg: sum / targets.length };
+  };
+
+  const sets = [];
+  for (let a = 0; a < pool.length; a++) for (let b = a + 1; b < pool.length; b++)
+    for (let c = b + 1; c < pool.length; c++) for (let d = c + 1; d < pool.length; d++) {
+      const four = [pool[a], pool[b], pool[c], pool[d]];
+      sets.push({ four, ...scoreFour(four) });
+    }
+  sets.sort((x, y) => (x.worst - y.worst) || (x.avg - y.avg));
+
+  // Exact re-solve of the finalists at full 5% resolution for display.
+  const shapeSet = (four, benchmark) => {
+    const sp = four.map((c, i) => ({ slot: i + 1, rgb: c.rgb }));
+    const per = targets.map(t => {
+      const r = solveTarget(t.hex, sp);
+      return { target: t.hex, dE: r.dE, grade: r.grade, mixHex: r.best.hex };
+    });
+    const worst = Math.max(...per.map(p => p.dE));
+    return {
+      benchmark: !!benchmark,
+      spools: four.map(c => ({ label: c.label, hex: c.hex, spool_id: c.spool_id })),
+      worst: +worst.toFixed(1),
+      avg: +(per.reduce((a, p) => a + p.dE, 0) / per.length).toFixed(1),
+      worstGrade: grade(worst).grade,
+      perTarget: per
+    };
+  };
+  const top = sets.slice(0, 3).map(s => shapeSet(s.four));
+
+  // Benchmark row (ideal CMYW by default): reference, never a recommendation —
+  // the user may not own these colors.
+  let benchmark = null;
+  const bh = (benchmarkHex && benchmarkHex.length === 4) ? benchmarkHex : ["#FF00FF", "#00FFFF", "#FFFF00", "#FFFFFF"];
+  const bpool = bh.map((h, i) => {
+    const rgb = hexToRgb(h);
+    return rgb && { label: ["Magenta", "Cyan", "Yellow", "White"][i] || h, hex: rgbToHex(rgb), spool_id: null, rgb, lab: rgbToLab(rgb) };
+  }).filter(Boolean);
+  if (bpool.length === 4) benchmark = shapeSet(bpool, true);
+
+  return { sets: top, benchmark, candidateCount: pool.length, trimmed };
+}
+
 // ---- Routes --------------------------------------------------------------------
 module.exports = function mountFsColors(app, express) {
   // Upload a 3MF, get its palette back (colors ranked by part usage).
@@ -310,8 +474,29 @@ module.exports = function mountFsColors(app, express) {
       }
     });
 
+  // Preferred path (v2.9): the browser extracts the two small config members
+  // from the 3MF locally and posts only their text — a few hundred KB instead
+  // of a whole project file, so tunnel uploads are instant and Cloudflare's
+  // body-size cap never enters the picture. The raw-upload route above stays
+  // as the fallback for browsers without DecompressionStream.
+  app.post("/api/fs-colors/analyze-parts",
+    express.json({ limit: "20mb" }),
+    (req, res) => {
+      try {
+        const b = req.body || {};
+        if (!b.projectSettings) return res.status(400).json({ error: "Need projectSettings text" });
+        res.json(analyzeConfigs(String(b.projectSettings), b.modelSettings ? String(b.modelSettings) : null));
+      } catch (e) {
+        res.status(422).json({ error: e.message });
+      }
+    });
+
   // Solve targets against loaded spools.
-  // Body: { spools: [hex|null x4 (slot order F1..F4)], targets: [hex, ...] }
+  // Body: { spools: [hex|null x4 (slot order F1..F4)], targets: [hex, ...],
+  //         uidStart? } — uidStart continues numbering after a project's
+  // existing definitions (analyze returns maxUid) so pasted uids never collide.
+  // Response adds `definitions`: every emitted def ';'-joined — the exact
+  // mixed_filament_definitions value, paste-once instead of copy-per-recipe.
   app.post("/api/fs-colors/solve", (req, res) => {
     const { spools, targets } = req.body || {};
     if (!Array.isArray(spools) || !Array.isArray(targets) || !targets.length)
@@ -322,13 +507,28 @@ module.exports = function mountFsColors(app, express) {
     });
     if (sp.filter(Boolean).length < 2)
       return res.status(400).json({ error: "Need at least 2 loaded spool colors" });
-    let uid = 0;
+    let uid = Math.max(0, parseInt((req.body || {}).uidStart, 10) || 0);
     const results = targets.slice(0, 64).map(t => {
       const r = solveTarget(t, sp);
       if (!r.error && r.best.components.length >= 2) r.def = defString(r.best.components, ++uid);
       return r;
     });
-    res.json({ results });
+    const definitions = results.filter(r => r.def).map(r => r.def).join(";");
+    res.json({ results, definitions });
+  });
+
+  // Recommend which 4 candidate spools to LOAD for a set of targets.
+  // Body: { targets: [hex,...], candidates: [{label, hex, spool_id?}, ...],
+  //         benchmark?: [hex x4] }
+  // The engine is pure — the UI feeds candidates from the bound-spool library,
+  // so recommendations name physical rolls (spool_id rides through).
+  app.post("/api/fs-colors/recommend", (req, res) => {
+    const { targets, candidates, benchmark } = req.body || {};
+    if (!Array.isArray(targets) || !targets.length || !Array.isArray(candidates))
+      return res.status(400).json({ error: "Need targets[] and candidates[]" });
+    const r = recommendSets(targets.slice(0, 64), candidates.slice(0, 64), benchmark);
+    if (r.error) return res.status(422).json({ error: r.error });
+    res.json(r);
   });
 };
 
@@ -336,3 +536,4 @@ module.exports = function mountFsColors(app, express) {
 module.exports.analyze3mf = analyze3mf;
 module.exports.solveTarget = solveTarget;
 module.exports.defString = defString;
+module.exports.recommendSets = recommendSets;

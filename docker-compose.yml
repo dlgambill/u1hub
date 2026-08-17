@@ -28,4 +28,11 @@ services:
 
     volumes:
       - ./config.json:/app/config.json   # persists your printer list & settings
-      - ./gcode:/app/gcode               # your Orca output folder
+      - ./gcode:/app/gcode               # your Orca output folder (printer-type
+                                         #   subfolders are created inside it)
+      # Optional but recommended: persist spool bindings + queue + print history
+      # across container rebuilds (create empty files first: touch spools.json
+      # queue.json printlog.json).
+      # - ./spools.json:/app/spools.json
+      # - ./queue.json:/app/queue.json
+      # - ./printlog.json:/app/printlog.json

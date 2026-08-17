@@ -11,5 +11,9 @@ printlog.json
 queue.json
 auth.json
 tunnel.json
+spools.json
 cloudflared
 cloudflared.exe
+
+# v2.9 loadout state — never commit
+slots.json

@@ -1,0 +1,38 @@
+name: "Beta: printer type problem"
+description: "A non-U1 printer type isn't detecting, routing, or printing right"
+title: "[beta] "
+labels: ["beta", "printer-types"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for beta-testing multi-printer-type support! Your report is how non-U1 hardware gets verified.
+        **The one thing that makes a report actionable:** in the Hub go to **⚙ Settings → Diagnostics → Download diagnostics** and attach the JSON below. It contains your Hub version, detected printer capabilities, the recent Hub log, and the tail of your printer's klippy/moonraker logs — with IPs and tokens scrubbed. Please review the file before attaching.
+  - type: input
+    id: printer
+    attributes:
+      label: Printer make / model / firmware
+      placeholder: "e.g. Sovol SV06 Plus ACE, stock Klipper/Moonraker"
+    validations:
+      required: true
+  - type: input
+    id: install
+    attributes:
+      label: How you run the Hub
+      placeholder: "Windows binary / macOS binary / Linux binary / Docker on Pi / node server.js"
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened vs. what you expected
+      placeholder: "Added the type, added the printer at http://x:7125, the card shows … but I expected …"
+    validations:
+      required: true
+  - type: textarea
+    id: diag
+    attributes:
+      label: Diagnostics bundle
+      description: "Drag the u1hub-diagnostics-*.json file here (Settings → Download diagnostics)."
+    validations:
+      required: false

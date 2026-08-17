@@ -103,26 +103,57 @@ function blendHex(hexes, wts) {
   });
   return "#" + [srgb(r), srgb(g), srgb(b)].map(v => v.toString(16).padStart(2, "0")).join("");
 }
-function parseMixedDefs(cfg, physHex) {
-  const raw = cfg["mixed_filament_definitions"];
+// Decode ONE fork definition entry into { id, filaments[], weights[] } — or
+// null if unrecognized. Handles BOTH hardware-verified serializations
+// (v2.9 Orca-alignment fix: the pair format was previously dropped here, so
+// pair mixes in sliced gcode never showed in the Hub's FS preview):
+//   m2 (pair):  A,B,1,1,P,0,g,w,m2,...,uN,cm0   → F_A (100-P)% + F_B P%
+//               (P belongs to the SECOND filament — polarity verified
+//                "2,4,…,40,…,m2" → F2 60% + F4 40%)
+//   m0 (list):  1,2,1,1,50,0,g<idx…>,w<p/p/…>,m0,...,uN,cm0
+//               leading tokens vestigial; g ascending 1-based indices.
+function decodeMixedDefEntry(entry) {
+  const f = String(entry).split(",").map(s => s.trim());
+  if (f.length < 3) return null;
+  const uTok = f.find(x => /^u\d+$/.test(x));
+  if (!uTok) return null;
+  const id = parseInt(uTok.slice(1), 10);
+  const mTok = f.find(x => /^m\d+$/.test(x));
+  // Pair serialization: mode m2, real data in the leading positional tokens.
+  if (mTok === "m2") {
+    const a = parseInt(f[0], 10), b = parseInt(f[1], 10), p = parseInt(f[4], 10);
+    if (!(a >= 1 && b >= 1 && p >= 0 && p <= 100)) return null;
+    return { id, filaments: [a, b], weights: [100 - p, p] };
+  }
+  // List serialization (m0 / legacy no-mode): g + w tokens carry the data.
+  const gTok = f.find(x => /^g\d+$/.test(x));
+  const wTok = f.find(x => /^w/.test(x));
+  if (!gTok) return null;
+  const fil = gTok.slice(1).split("").map(d => parseInt(d, 10));
+  const wts = (wTok && wTok.length > 1 && wTok.indexOf("/") >= 0)
+    ? wTok.slice(1).split("/").map(Number)
+    : fil.map(() => Math.round(100 / fil.length));
+  return { id, filaments: fil, weights: wts.slice(0, fil.length) };
+}
+
+// Decode a whole ';'-joined mixed_filament_definitions value. physHex is the
+// 1-based-indexed palette used to render preview swatches (blendHex).
+function decodeMixedDefs(raw, physHex) {
   if (!raw || /^(\s*|""|\[\]|nil|null|0)$/i.test(String(raw).trim())) return [];
   const out = [];
   for (const entry of String(raw).split(";")) {
     if (!entry.trim()) continue;
-    const f = entry.split(",").map(s => s.trim());
-    const gTok = f.find(x => /^g\d+$/.test(x));
-    const wTok = f.find(x => /^w/.test(x));
-    const uTok = f.find(x => /^u\d+$/.test(x));
-    if (!gTok || !uTok) continue;
-    const fil = gTok.slice(1).split("").map(d => parseInt(d, 10));
-    const wts = (wTok && wTok.length > 1 && wTok.indexOf("/") >= 0)
-      ? wTok.slice(1).split("/").map(Number)
-      : fil.map(() => Math.round(100 / fil.length));
-    const hexes = fil.map(i => physHex[i - 1]).filter(Boolean);
-    out.push({ id: parseInt(uTok.slice(1), 10), filaments: fil, weights: wts.slice(0, fil.length), hex: blendHex(hexes, wts) });
+    const d = decodeMixedDefEntry(entry);
+    if (!d) continue;
+    const hexes = d.filaments.map(i => (physHex || [])[i - 1]).filter(Boolean);
+    out.push({ ...d, hex: blendHex(hexes, d.weights) });
   }
   out.sort((a, b) => a.id - b.id);
   return out;
+}
+
+function parseMixedDefs(cfg, physHex) {
+  return decodeMixedDefs(cfg["mixed_filament_definitions"], physHex);
 }
 
 function parseGcodeMap(text, opts = {}) {
@@ -182,4 +213,4 @@ function parseGcodeMap(text, opts = {}) {
   };
 }
 
-module.exports = { parseGcodeMap };
+module.exports = { parseGcodeMap, decodeMixedDefs, decodeMixedDefEntry, blendHex };

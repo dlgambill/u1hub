@@ -3,7 +3,7 @@
 // and pushes the chosen file to the chosen printer via Moonraker (server-side,
 // so no browser CORS headaches).
 
-const VERSION = "2.8.1";
+const VERSION = "2.9.0";
 
 const express = require("express");
 const fs = require("fs");
@@ -12,6 +12,23 @@ const path = require("path");
 const os = require("os");
 const { Transform } = require("stream");
 const { parseGcodeMap } = require("./parser");
+
+// ---- Ring-buffer logger (v2.9, beta diagnostics) ----------------------------
+// Keeps the last ~500 log lines in memory so /api/diagnostics can hand a beta
+// tester's GitHub issue real evidence (capability detections, class-guard
+// hits, migrations, errors) without the Hub ever writing a log file or
+// phoning home. console.warn/error are mirrored in so uncaught noise is
+// captured too; hublog() is the deliberate hook at decision points.
+const HUBLOG = [];
+const HUBLOG_MAX = 500;
+function hublog(level, msg) {
+  HUBLOG.push({ t: Date.now(), level, msg: String(msg).slice(0, 500) });
+  if (HUBLOG.length > HUBLOG_MAX) HUBLOG.splice(0, HUBLOG.length - HUBLOG_MAX);
+}
+for (const lvl of ["warn", "error"]) {
+  const orig = console[lvl].bind(console);
+  console[lvl] = (...a) => { try { hublog(lvl, a.map(x => (x && x.stack) || String(x)).join(" ")); } catch {} orig(...a); };
+}
 
 // When packaged as a single executable (pkg), __dirname points inside the
 // read-only bundle. User-editable files (config.json, the gcode folder) must
@@ -24,17 +41,125 @@ const ASSET_DIR = __dirname;
 const CONFIG_PATH = path.join(BASE_DIR, "config.json");
 const DEFAULT_CFG = { gcodeFolder: "./gcode", port: 4545, printers: [], tip: { label: "Buy me a beer 🍺", url: "https://venmo.com/u/dgambill" } };
 
+// ---- Printer TYPES (v2.9) ---------------------------------------------------
+// A *type* owns a folder + accent + switcher tab; *instances* (physical
+// printers) belong to a type and share its folder/accent. Type name is
+// organizational ONLY — it never decides which features render. Feature-gating
+// stays on capability detection (Klipper objects, see CAPS below). Two
+// orthogonal layers, both present: type drives folder + accent + switcher;
+// capability detection drives UI.
+//
+// Folder model (constrained by design):
+//   * The built-in U1 type is GRANDFATHERED: locked to the existing flat gcode
+//     directory at its current path. Nothing on disk moves on upgrade.
+//   * Every NEW type gets an auto-created subfolder <base>/<slug>/. The user
+//     names the type; the Hub makes the folder. Nobody browses to an arbitrary
+//     path, so the traversal surface stays exactly what safeFile covers today.
+//   * The type→folder binding is persisted in config.json and re-validated on
+//     every load, so the lock survives restarts and hand-edits can't overlap.
+// Reuse-lock rules: collision → rejected; parent/child nesting → rejected;
+// unbind/delete → folder freed, gcode files PRESERVED on disk (never deleted);
+// folder missing at boot → per-type warning, no crash, no silent recreate.
+const U1_ACCENT = "#FFB200"; // today's exact accent — existing users see zero change
+const ACCENT_PRESETS = ["#5B9BF0", "#46C18C", "#C77DFF", "#FF7A59", "#3EC9C9", "#E0568C", "#A8C64E", "#F0C33C"];
+const BUILTIN_U1 = { slug: "u1", label: "U1", accent: U1_ACCENT, builtin: true };
+
+function slugify(label) {
+  return String(label || "").toLowerCase().trim()
+    .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
+}
+
 // Live config — editable from the Settings page, no restart needed.
-let CFG, FOLDER, PRINTERS;
+let CFG, FOLDER, PRINTERS, TYPES;
+let TYPE_WARNINGS = {};   // slug -> human-readable boot/validation warning
+function typeBySlug(slug) { return (TYPES || []).find(t => t.slug === slug); }
+// Immutable slug → directory. Renaming a display label must never move the
+// folder or strand queue entries, so the path derives from the slug alone.
+function typeFolder(t) { return t.builtin ? FOLDER : path.resolve(FOLDER, t.folder || t.slug); }
+
+// Validate the persisted type list: dedupe slugs, pin the grandfathered U1,
+// enforce the reuse-lock rules against hand-edited configs, surface (don't
+// crash on, don't silently fix) folders that are missing at startup.
+function validateTypes(list) {
+  TYPE_WARNINGS = {};
+  const out = [];
+  const seen = new Set();
+  let u1 = (list || []).find(t => t && t.slug === "u1");
+  u1 = { ...BUILTIN_U1, label: (u1 && u1.label) || "U1", accent: (u1 && u1.accent) || U1_ACCENT };
+  out.push(u1); seen.add("u1");
+  for (const t of (list || [])) {
+    if (!t || !t.slug || t.slug === "u1") continue;
+    const slug = slugify(t.slug);
+    if (!slug || seen.has(slug)) { if (slug) TYPE_WARNINGS[slug] = "Duplicate type slug — kept the first entry."; continue; }
+    const rec = { slug, label: String(t.label || slug), accent: String(t.accent || ACCENT_PRESETS[out.length % ACCENT_PRESETS.length]), folder: slug };
+    const dir = typeFolder(rec);
+    // Nesting guard: a type folder must be a DIRECT child of the base folder —
+    // never the base itself, never outside it, never inside another type's dir.
+    // Auto-created folders always satisfy this; hand-edited configs might not.
+    if (dir === FOLDER || path.dirname(dir) !== FOLDER) {
+      TYPE_WARNINGS[slug] = "Folder for type '" + rec.label + "' is not a direct subfolder of the gcode base — type disabled to prevent file bleed.";
+      continue;
+    }
+    if (!fs.existsSync(dir)) {
+      // Missing at startup: warn, keep the binding, do NOT silently recreate.
+      TYPE_WARNINGS[slug] = "Bound folder is missing on disk (" + dir + "). Files are NOT touched — restore the folder or delete the type.";
+    }
+    out.push(rec); seen.add(slug);
+  }
+  return out;
+}
+
+function saveConfigFile() {
+  try { fs.writeFileSync(CONFIG_PATH, JSON.stringify(CFG, null, 2)); } catch {}
+}
+
 function loadConfig() {
   try { CFG = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8")); }
   catch { CFG = { ...DEFAULT_CFG }; }
   FOLDER = path.resolve(BASE_DIR, CFG.gcodeFolder || "./gcode");
   PRINTERS = Array.isArray(CFG.printers) ? CFG.printers : [];
-  try { fs.mkdirSync(FOLDER, { recursive: true }); } catch {}
+  try { fs.mkdirSync(FOLDER, { recursive: true }); } catch {}   // base dir: today's behavior, unchanged
+  // v2.8.1 → v2.9 migration: register the built-in U1 type and tag existing
+  // printers as U1 instances. No files move — U1 stays flat in the base dir.
+  let migrated = false;
+  if (!Array.isArray(CFG.types)) { CFG.types = [{ ...BUILTIN_U1 }]; migrated = true; }
+  TYPES = validateTypes(CFG.types);
+  CFG.types = TYPES;
+  for (const p of PRINTERS) {
+    if (!p.type || !typeBySlug(p.type)) { p.type = "u1"; migrated = true; }
+  }
+  if (migrated) saveConfigFile();
+  CAPS.clear();            // printer list may have changed — re-detect capabilities
   if (FARM_READY) farmWsRestart(); // reconnect sockets to the new printer list
   // (FARM_READY is a hoisted var — falsy during the initial top-of-file
   // loadConfig(), so sockets first connect once the farm section is defined)
+}
+// ---- Capability detection (the OTHER layer — drives UI, not folders) --------
+// Queried from Klipper's own object list per printer, cached until the config
+// changes. print_task_config present = Snapmaker U1-style 4-head machine with
+// the color/RFID API; absent = generic Klipper/Moonraker (e.g. Sovol SV06
+// Plus ACE on stock Moonraker :7125) — heads counted from extruder objects.
+const CAPS = new Map(); // printer idx -> { multiColor, heads } | null while unknown
+async function detectCaps(idx) {
+  const p = PRINTERS[idx];
+  if (!p) return null;
+  const hit = CAPS.get(idx);
+  if (hit) return hit;
+  const base = String(p.url).replace(/\/+$/, "");
+  try {
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), 3500);
+    const r = await fetch(base + "/printer/objects/list", { signal: ctrl.signal });
+    clearTimeout(to);
+    if (!r.ok) return null;
+    const objects = (((await r.json()).result) || {}).objects || [];
+    const multiColor = objects.includes("print_task_config");
+    const heads = multiColor ? 4 : Math.max(1, objects.filter(o => /^extruder\d*$/.test(o)).length);
+    const caps = { multiColor, heads };
+    CAPS.set(idx, caps);
+    hublog("info", "caps[" + (p.name || idx) + "]: multiColor=" + multiColor + " heads=" + heads + " (objects: " + objects.length + ")");
+    return caps;
+  } catch (e) { hublog("warn", "caps[" + (p.name || idx) + "]: detection failed — " + (e && e.message || e)); return null; }
 }
 loadConfig();
 const PORT = CFG.port || 4545;
@@ -45,9 +170,18 @@ const PORT = CFG.port || 4545;
 // new start — skipping boot-mid-print (no prior state observed) and
 // resume-from-pause (paused -> printing is not a new print).
 const PRINTLOG_PATH = path.join(BASE_DIR, "printlog.json");
-function loadPrintLog() { try { return JSON.parse(fs.readFileSync(PRINTLOG_PATH, "utf8")); } catch { return {}; } }
+// v2.9: printlog is namespaced per type slug — { "u1": { basename: ms }, ... }.
+// A flat v2.8.x map (basename -> ms) is wrapped under "u1" on first load
+// (existing entries were all U1 prints by definition).
+function loadPrintLog() {
+  let raw; try { raw = JSON.parse(fs.readFileSync(PRINTLOG_PATH, "utf8")); } catch { return {}; }
+  if (!raw || typeof raw !== "object") return {};
+  const flat = Object.values(raw).some(v => typeof v === "number");
+  return flat ? { u1: raw } : raw;
+}
 function savePrintLog() { try { fs.writeFileSync(PRINTLOG_PATH, JSON.stringify(PRINTLOG, null, 2)); } catch {} }
 let PRINTLOG = loadPrintLog();
+function plogOf(slug) { return PRINTLOG[slug] || (PRINTLOG[slug] = {}); }
 
 // --- print queue --------------------------------------------------------------
 // A single shared "up next" list (queue.json, array of {id, file, added}).
@@ -56,11 +190,18 @@ let PRINTLOG = loadPrintLog();
 // When a print is STARTED for a file that's in the queue, the first matching
 // entry is removed automatically (upload-without-start leaves the queue alone).
 const QUEUE_PATH = path.join(BASE_DIR, "queue.json");
-function loadQueue() { try { const q = JSON.parse(fs.readFileSync(QUEUE_PATH, "utf8")); return Array.isArray(q) ? q : []; } catch { return []; } }
+// v2.9: entries carry a type slug ({id, file, added, type}). Pre-2.9 entries
+// (no type field) are tagged "u1" on first load — they were all U1 jobs.
+function loadQueue() {
+  try {
+    const q = JSON.parse(fs.readFileSync(QUEUE_PATH, "utf8"));
+    return Array.isArray(q) ? q.map(e => (e && !e.type ? { ...e, type: "u1" } : e)) : [];
+  } catch { return []; }
+}
 function saveQueue() { try { fs.writeFileSync(QUEUE_PATH, JSON.stringify(QUEUE, null, 2)); } catch {} }
 let QUEUE = loadQueue();
-function dequeueFile(name) {
-  const i = QUEUE.findIndex(e => e.file === name);
+function dequeueFile(name, slug) {
+  const i = QUEUE.findIndex(e => e.file === name && (!slug || e.type === slug));
   if (i !== -1) { QUEUE.splice(i, 1); saveQueue(); }
 }
 
@@ -89,7 +230,7 @@ async function pollPrintStarts() {
     // it wasn't a pause. prev===undefined => first observation => boot-mid-print => skip.
     if (s.state === "printing" && prev !== undefined && prev !== "printing" && prev !== "paused") {
       const base = path.basename(s.filename || "");
-      if (base) { PRINTLOG[base] = Date.now(); savePrintLog(); }
+      if (base) { plogOf(PRINTERS[i].type || "u1")[base] = Date.now(); savePrintLog(); }
     }
     LAST_STATE[i] = s.state;
   }
@@ -118,31 +259,126 @@ app.get("/fs-colors.html", (req, res) => {
   try { res.type("html").send(fs.readFileSync(path.join(ASSET_DIR, "public", "fs-colors.html"), "utf8")); }
   catch (e) { res.status(500).send("fs-colors.html not found"); }
 });
+// QR spool labels (v2.9): printable sheet, same packaged-binary treatment.
+app.get("/labels.html", (req, res) => {
+  try { res.type("html").send(fs.readFileSync(path.join(ASSET_DIR, "public", "labels.html"), "utf8")); }
+  catch (e) { res.status(500).send("labels.html not found"); }
+});
 require("./fs-colors.js")(app, express);
+// RFID / spool identity (v2.9): hub-side tag scanning → spool_id → filament
+// identity, backed by the bundled FilamentColors.xyz snapshot. Printers never
+// read tags for this feature; see rfid.js design notes.
+require("./rfid.js")(app, express, BASE_DIR, ASSET_DIR, {
+  getPrinters: () => PRINTERS,
+  // v2.9 loadout: slot-range validation wants detected head counts (Rule-of-
+  // capability, not type labels). null while unknown — validation stays lenient.
+  getCaps: (idx) => detectCaps(idx),
+  log: hublog
+});
 
-// Resolve a requested filename safely INSIDE the watched folder (no traversal).
-function safeFile(name) {
+// Resolve a requested filename safely INSIDE a type's bound folder (no
+// traversal). Same basename-only discipline as always — the type only selects
+// WHICH locked folder, so safeFile coverage is unchanged in kind.
+function safeFile(name, t) {
   if (!name) return null;
-  const p = path.resolve(FOLDER, path.basename(name));
-  return p.startsWith(FOLDER) ? p : null;
+  const dir = typeFolder(t || typeBySlug("u1"));
+  const p = path.resolve(dir, path.basename(name));
+  return p.startsWith(dir + path.sep) || path.dirname(p) === dir ? p : null;
+}
+// Resolve the ?type= / body.type param to a validated type record (default U1).
+function reqTypeOf(req) {
+  const slug = String((req.query && req.query.type) || ((req.body || {}).type) || "").trim();
+  if (!slug) return typeBySlug("u1") || TYPES[0];
+  return typeBySlug(slug) || null;
 }
 
+// ---- Types API ---------------------------------------------------------------
+app.get("/api/types", (req, res) => {
+  res.json({
+    types: TYPES.map(t => ({
+      slug: t.slug, label: t.label, accent: t.accent, builtin: !!t.builtin,
+      // v2.9 ships multi-printer-type as BETA: harness-verified against mock
+      // printers, awaiting broad real-hardware verification (Rule #1 by proxy
+      // — beta testers attach /api/diagnostics bundles to GitHub issues).
+      beta: !t.builtin,
+      folder: typeFolder(t),
+      printerCount: PRINTERS.filter(p => (p.type || "u1") === t.slug).length,
+      warning: TYPE_WARNINGS[t.slug] || null
+    }))
+  });
+});
+
+// "Add printer type" — deliberately separate from "Add printer": the user only
+// names it; the Hub generates the immutable slug, creates <base>/<slug>/,
+// assigns the next preset accent, and the switcher tab appears. Done once.
+app.post("/api/types", (req, res) => {
+  const label = String((req.body || {}).label || "").trim();
+  if (!label) return res.status(400).json({ error: "Type needs a name" });
+  const slug = slugify(label);
+  if (!slug) return res.status(400).json({ error: "Name must contain letters or numbers" });
+  if (typeBySlug(slug)) return res.status(409).json({ error: "A type with slug '" + slug + "' already exists — its folder is locked to that type. Pick a different name." });
+  const rec = { slug, label, accent: String((req.body || {}).accent || "").trim() || ACCENT_PRESETS[(TYPES.length - 1) % ACCENT_PRESETS.length], folder: slug };
+  const dir = typeFolder(rec);
+  // Reuse-lock: refuse a folder that already belongs to (or nests with) another
+  // type. Structural with auto-subfolders, but hand-edited configs exist.
+  if (dir === FOLDER || path.dirname(dir) !== FOLDER)
+    return res.status(400).json({ error: "Type folder must be a direct subfolder of the gcode base" });
+  try { fs.mkdirSync(dir, { recursive: true }); }
+  catch (e) { return res.status(500).json({ error: "Could not create folder " + dir + " — " + e.message }); }
+  TYPES.push(rec); CFG.types = TYPES; saveConfigFile();
+  res.json({ ok: true, type: { ...rec, folder: dir } });
+});
+
+// Edit display label / accent. The slug (and therefore the folder) is
+// IMMUTABLE — renaming the label never moves files or strands queue entries.
+app.post("/api/types/update", (req, res) => {
+  const t = typeBySlug(String((req.body || {}).slug || ""));
+  if (!t) return res.status(404).json({ error: "Unknown type" });
+  const b = req.body || {};
+  if (typeof b.label === "string" && b.label.trim()) t.label = b.label.trim();
+  if (typeof b.accent === "string" && /^#[0-9a-fA-F]{6}$/.test(b.accent.trim())) t.accent = b.accent.trim().toUpperCase();
+  CFG.types = TYPES; saveConfigFile();
+  res.json({ ok: true, type: t });
+});
+
+// Delete/unbind a type: the folder is freed for reuse but gcode files are
+// PRESERVED on disk — the Hub never auto-deletes a user's prints.
+app.post("/api/types/delete", (req, res) => {
+  const slug = String((req.body || {}).slug || "");
+  const t = typeBySlug(slug);
+  if (!t) return res.status(404).json({ error: "Unknown type" });
+  if (t.builtin) return res.status(400).json({ error: "The built-in U1 type can't be deleted" });
+  const inUse = PRINTERS.filter(p => (p.type || "u1") === slug).length;
+  if (inUse) return res.status(409).json({ error: inUse + " printer(s) still belong to '" + t.label + "' — reassign or remove them first." });
+  TYPES = TYPES.filter(x => x.slug !== slug); CFG.types = TYPES;
+  const qBefore = QUEUE.length;
+  QUEUE = QUEUE.filter(e => e.type !== slug);
+  if (QUEUE.length !== qBefore) saveQueue();
+  delete TYPE_WARNINGS[slug];
+  saveConfigFile();
+  res.json({ ok: true, note: "Folder and gcode files were preserved on disk." });
+});
+
 app.get("/api/printers", (req, res) => {
-  res.json(PRINTERS.map((p, i) => ({ id: i, name: p.name })));
+  res.json(PRINTERS.map((p, i) => ({ id: i, name: p.name, type: p.type || "u1" })));
 });
 
 app.get("/api/files", (req, res) => {
+  const t = reqTypeOf(req);
+  if (!t) return res.status(400).json({ error: "Unknown printer type" });
+  const dir = typeFolder(t);
+  const plog = plogOf(t.slug);
   try {
-    const files = fs.readdirSync(FOLDER)
+    const files = fs.readdirSync(dir)
       .filter(f => /\.(gcode|gco|g)$/i.test(f))
       .map(f => {
-        const st = fs.statSync(path.join(FOLDER, f));
-        return { name: f, size: st.size, mtime: st.mtimeMs, lastPrinted: PRINTLOG[f] || null };
+        const st = fs.statSync(path.join(dir, f));
+        return { name: f, size: st.size, mtime: st.mtimeMs, lastPrinted: plog[f] || null };
       })
       .sort((a, b) => b.mtime - a.mtime);
-    res.json({ folder: FOLDER, files });
+    res.json({ folder: dir, type: t.slug, files });
   } catch (e) {
-    res.status(500).json({ error: "Cannot read folder " + FOLDER + " — " + e.message });
+    res.status(500).json({ error: "Cannot read folder " + dir + " — " + e.message + (TYPE_WARNINGS[t.slug] ? " · " + TYPE_WARNINGS[t.slug] : "") });
   }
 });
 
@@ -181,10 +417,12 @@ async function listOnboard(p) {
 // failing the whole response — offline machines must not blank the fleet view.
 app.get("/api/printer-files", async (req, res) => {
   const want = req.query.printer;
-  const targets = (want === undefined)
+  const slug = String(req.query.type || "");   // optional: only that type's instances
+  let targets = (want === undefined)
     ? PRINTERS.map((p, i) => ({ p, i }))
     : (PRINTERS[want] ? [{ p: PRINTERS[want], i: Number(want) }] : null);
   if (!targets) return res.status(400).json({ error: "Unknown printer " + want });
+  if (slug) targets = targets.filter(({ p }) => (p.type || "u1") === slug);
   const out = await Promise.all(targets.map(async ({ p, i }) => {
     try { return { id: i, name: p.name, online: true, files: await listOnboard(p) }; }
     catch (e) { return { id: i, name: p.name, online: false, error: String(e.message || e), files: [] }; }
@@ -209,27 +447,32 @@ function activePushOf(name) {
 }
 
 app.post("/api/files/delete", (req, res) => {
+  const t = reqTypeOf(req);
+  if (!t) return res.status(400).json({ error: "Unknown printer type" });
   const name = path.basename(String((req.body || {}).name || ""));
-  const fp = safeFile(name);
+  const fp = safeFile(name, t);
   if (!fp || !fs.existsSync(fp)) return res.status(404).json({ error: "File not found: " + name });
-  if (QUEUE.some(q => q.file === name))
+  if (QUEUE.some(q => q.file === name && q.type === t.slug))
     return res.status(409).json({ error: "'" + name + "' is in the print queue — remove it from the queue first." });
   if (activePushOf(name))
     return res.status(409).json({ error: "'" + name + "' is being sent to a printer right now — wait for the upload to finish." });
   try { fs.unlinkSync(fp); }
   catch (e) { return res.status(500).json({ error: "Delete failed: " + e.message }); }
-  if (PRINTLOG[name] !== undefined) { delete PRINTLOG[name]; savePrintLog(); }
+  const plog = plogOf(t.slug);
+  if (plog[name] !== undefined) { delete plog[name]; savePrintLog(); }
   res.json({ ok: true, deleted: name });
 });
 
 app.post("/api/files/rename", (req, res) => {
+  const t = reqTypeOf(req);
+  if (!t) return res.status(400).json({ error: "Unknown printer type" });
   const name = path.basename(String((req.body || {}).name || ""));
   let newName = path.basename(String((req.body || {}).newName || "").trim());
-  const fp = safeFile(name);
+  const fp = safeFile(name, t);
   if (!fp || !fs.existsSync(fp)) return res.status(404).json({ error: "File not found: " + name });
   if (!newName) return res.status(400).json({ error: "New name is empty" });
   if (!/\.(gcode|gco|g)$/i.test(newName)) newName += ".gcode"; // bare name -> .gcode
-  const np = safeFile(newName);
+  const np = safeFile(newName, t);
   if (!np) return res.status(400).json({ error: "Bad new name" });
   if (np === fp) return res.json({ ok: true, renamed: name, to: newName }); // exact no-op
   // Case-only renames (foo -> Foo) are legal on Windows even though
@@ -242,9 +485,10 @@ app.post("/api/files/rename", (req, res) => {
   try { fs.renameSync(fp, np); }
   catch (e) { return res.status(500).json({ error: "Rename failed: " + e.message }); }
   let queueTouched = false;
-  for (const q of QUEUE) if (q.file === name) { q.file = newName; queueTouched = true; }
+  for (const q of QUEUE) if (q.file === name && q.type === t.slug) { q.file = newName; queueTouched = true; }
   if (queueTouched) saveQueue();
-  if (PRINTLOG[name] !== undefined) { PRINTLOG[newName] = PRINTLOG[name]; delete PRINTLOG[name]; savePrintLog(); }
+  const plog = plogOf(t.slug);
+  if (plog[name] !== undefined) { plog[newName] = plog[name]; delete plog[name]; savePrintLog(); }
   res.json({ ok: true, renamed: name, to: newName, queueUpdated: queueTouched });
 });
 
@@ -421,12 +665,19 @@ app.post("/api/printer-files/transfer", async (req, res) => {
 });
 
 // --- queue routes -------------------------------------------------------------
-app.get("/api/queue", (req, res) => res.json({ queue: QUEUE }));
+// GET returns the whole queue (entries carry their type slug); pass ?type= to
+// filter server-side. POST requires the file to exist in that type's folder.
+app.get("/api/queue", (req, res) => {
+  const slug = String(req.query.type || "");
+  res.json({ queue: slug ? QUEUE.filter(e => e.type === slug) : QUEUE });
+});
 
 app.post("/api/queue", (req, res) => {
-  const fp = safeFile((req.body || {}).file);
+  const t = reqTypeOf(req);
+  if (!t) return res.status(400).json({ error: "Unknown printer type" });
+  const fp = safeFile((req.body || {}).file, t);
   if (!fp || !fs.existsSync(fp)) return res.status(404).json({ error: "File not found" });
-  QUEUE.push({ id: Math.random().toString(36).slice(2, 10), file: path.basename(fp), added: Date.now() });
+  QUEUE.push({ id: Math.random().toString(36).slice(2, 10), file: path.basename(fp), added: Date.now(), type: t.slug });
   saveQueue();
   res.json({ ok: true, queue: QUEUE });
 });
@@ -453,7 +704,9 @@ app.post("/api/queue/reorder", (req, res) => {
 // with thumbCache + long Cache-Control now actually serves.)
 
 app.get("/api/map", (req, res) => {
-  const fp = safeFile(req.query.file);
+  const t = reqTypeOf(req);
+  if (!t) return res.status(400).json({ error: "Unknown printer type" });
+  const fp = safeFile(req.query.file, t);
   if (!fp || !fs.existsSync(fp)) return res.status(404).json({ error: "File not found" });
   try {
     // The Orca config block (colours + "filament used [g]") lives at the END of
@@ -490,12 +743,14 @@ app.get("/api/map", (req, res) => {
 // per file by (size, mtime) so a large library is parsed once and served
 // instantly thereafter. Returns only what the matcher needs: the used palette
 // hexes per file (plus FS / no-colour flags so the UI can label those).
-const PAL_CACHE = new Map(); // name -> { size, mtime, colors:[hex], isFS, noColors }
-function paletteForFile(name) {
-  const fp = safeFile(name);
+const PAL_CACHE = new Map(); // "<slug>:<name>" -> { size, mtime, colors:[hex], usedCount, anyTC, isFS, noColors }
+function paletteForFile(name, t) {
+  t = t || typeBySlug("u1");
+  const fp = safeFile(name, t);
   if (!fp || !fs.existsSync(fp)) return null;
   const st = fs.statSync(fp);
-  const hit = PAL_CACHE.get(name);
+  const key = t.slug + ":" + name;
+  const hit = PAL_CACHE.get(key);
   if (hit && hit.size === st.size && hit.mtime === st.mtimeMs) return hit;
   const TAIL = 3 * 1024 * 1024;
   let text;
@@ -507,18 +762,23 @@ function paletteForFile(name) {
   let r = parseGcodeMap(text, { scanBody: false });
   if (r.noColors && st.size > TAIL) r = parseGcodeMap(fs.readFileSync(fp, "utf8"), { scanBody: true });
   const colors = (Array.isArray(r.palette) ? r.palette : []).filter(s => s && s.used && s.hex).map(s => s.hex);
-  const rec = { size: st.size, mtime: st.mtimeMs, colors, isFS: !!r.isFS, noColors: !!r.noColors };
-  PAL_CACHE.set(name, rec);
+  const rec = { size: st.size, mtime: st.mtimeMs, colors,
+    usedCount: (r.usedIdx || []).length, anyTC: !!r.anyTC,
+    isFS: !!r.isFS, noColors: !!r.noColors };
+  PAL_CACHE.set(key, rec);
   return rec;
 }
 app.get("/api/library-palettes", (req, res) => {
+  const t = reqTypeOf(req);
+  if (!t) return res.status(400).json({ error: "Unknown printer type" });
+  const dir = typeFolder(t);
   try {
-    const files = fs.readdirSync(FOLDER).filter(f => /\.(gcode|gco|g)$/i.test(f));
-    const live = new Set(files);
-    for (const k of PAL_CACHE.keys()) if (!live.has(k)) PAL_CACHE.delete(k); // drop deleted files
+    const files = fs.readdirSync(dir).filter(f => /\.(gcode|gco|g)$/i.test(f));
+    const live = new Set(files.map(f => t.slug + ":" + f));
+    for (const k of PAL_CACHE.keys()) if (k.startsWith(t.slug + ":") && !live.has(k)) PAL_CACHE.delete(k); // drop deleted files
     const out = [];
     for (const name of files) {
-      const rec = paletteForFile(name);
+      const rec = paletteForFile(name, t);
       if (rec) out.push({ name, colors: rec.colors, isFS: rec.isFS, noColors: rec.noColors });
     }
     res.json({ files: out });
@@ -572,12 +832,19 @@ function uploadWithProgress(base, fp, name, job) {
 const JOBS = new Map();   // jobId -> { phase, sent, total, done, error, result, ts }
 const newJobId = () => "j" + Date.now() + Math.random().toString(16).slice(2, 6);
 
-app.post("/api/print", (req, res) => {
-  const { file, printer, start, map } = req.body || {};
-  const fp = safeFile(file);
+app.post("/api/print", async (req, res) => {
+  const { file, printer, start, map, force } = req.body || {};
+  const t = reqTypeOf(req);
+  if (!t) return res.status(400).json({ error: "Unknown printer type" });
+  const fp = safeFile(file, t);
   if (!fp || !fs.existsSync(fp)) return res.status(404).json({ error: "File not found" });
   const p = PRINTERS[printer];
   if (!p) return res.status(400).json({ error: "Unknown printer" });
+  // Structural cross-class block: the switcher already hides the other fleet,
+  // but the server refuses too — a stale page or hand-crafted request can't
+  // send a U1 file to a Sovol (or vice versa).
+  if ((p.type || "u1") !== t.slug)
+    return res.status(400).json({ error: p.name + " belongs to a different printer type ('" + (p.type || "u1") + "') — switch to that type to send this file." });
 
   // map is { logicalToolIndex: physicalHeadIndex }. Reject two tools → same head.
   let tools = [];
@@ -588,6 +855,32 @@ app.post("/api/print", (req, res) => {
       return res.status(400).json({ error: "Two colors are mapped to the same head — give each its own head." });
     }
   }
+
+  // Send-time class guard (quiet backstop). Mostly redundant once the switcher
+  // hides cross-class targets, but cheap: sniff the gcode's palette against the
+  // target's DETECTED capabilities and catch anything that slipped through
+  // (e.g. a file dropped into the wrong type's folder by hand).
+  //   * multi-color / toolchange / FS gcode → single-extruder instance: WARN
+  //     (409 until the client confirms with force:true).
+  //   * single-color job → multi-head U1-style instance: soft note only.
+  let classNote = null;
+  try {
+    const pal = paletteForFile(path.basename(fp), t);
+    const caps = await detectCaps(Number(printer));
+    if (pal && caps) {
+      const multiJob = pal.isFS || pal.usedCount > 1 || (pal.anyTC && pal.usedCount !== 1);
+      if (multiJob && caps.heads === 1 && !force) {
+        hublog("info", "class-guard: blocked '" + path.basename(fp) + "' → " + p.name + " (multi-color job, single extruder)");
+        return res.status(409).json({
+          classWarning: true,
+          error: "'" + path.basename(fp) + "' looks like a multi-color job (" +
+            (pal.isFS ? "Full Spectrum" : pal.usedCount + " colors" + (pal.anyTC ? ", toolchanges" : "")) +
+            ") but " + p.name + " reports a single extruder. It will likely fail or print wrong. Send anyway?"
+        });
+      }
+      if (!multiJob && caps.multiColor) classNote = "Single-color job — any one loaded head on " + p.name + " can print it.";
+    }
+  } catch {} // guard is advisory — never let sniffing break a legitimate send
 
   const base = String(p.url).replace(/\/+$/, "");
   const name = path.basename(fp);
@@ -600,7 +893,7 @@ app.post("/api/print", (req, res) => {
   const jobId = newJobId();
   const job = { file: name, phase: "upload", sent: 0, total: 0, done: false, error: null, result: null, ts: Date.now() };
   JOBS.set(jobId, job);
-  res.json({ jobId });
+  res.json({ jobId, note: classNote });
 
   (async () => {
     try {
@@ -612,7 +905,7 @@ app.post("/api/print", (req, res) => {
         lines.push("SET_PRINT_PREFERENCES BED_LEVEL=0 FLOW_CALIBRATE=0 TIME_LAPSE_CAMERA=0");
         await gcode(lines.join("\n"));
       }
-      if (start) { job.phase = "starting"; await gcode(`SDCARD_PRINT_FILE FILENAME="${name}"`); dequeueFile(name); }
+      if (start) { job.phase = "starting"; await gcode(`SDCARD_PRINT_FILE FILENAME="${name}"`); dequeueFile(name, t.slug); }
       job.result = { printer: p.name, started: !!start, mapped: tools.length };
       job.phase = "done"; job.done = true;
     } catch (e) {
@@ -1039,6 +1332,15 @@ async function probeCached(p, idx) {
   }
   const disk = DISK_CACHE.get(idx);
   if (disk && data && data.online) { data.diskFree = disk.free; data.diskTotal = disk.total; }
+  // Capability layer: attach detected caps so the UI gates features on what the
+  // machine actually reports, never on the type label. A generic Klipper box
+  // (no print_task_config) gets its Snapmaker-specific heads array blanked —
+  // decodeHeads on an absent object would fabricate 4 empty U1 heads.
+  if (data && data.online) {
+    const caps = await detectCaps(idx);
+    data.caps = caps;
+    if (caps && !caps.multiColor) { data.heads = []; data.mapTable = null; }
+  }
   return data;
 }
 async function fleetSnapshot() {
@@ -1047,7 +1349,7 @@ async function fleetSnapshot() {
   // exactly when you'd want to switch it on. Only the type is exposed; the plug
   // IP stays server-side (the browser drives it through /api/power?id=N).
   return Promise.all((PRINTERS || []).map((p, i) =>
-    probeCached(p, i).then(r => ({ id: i, plug: p.plug ? { type: p.plug.type } : null, ...r }))));
+    probeCached(p, i).then(r => ({ id: i, ptype: p.type || "u1", plug: p.plug ? { type: p.plug.type } : null, ...r }))));
 }
 
 app.get("/api/fleet", async (req, res) => {
@@ -1267,10 +1569,11 @@ function extractThumb(buf) {
     return (png.length > 8 && png[0] === 0x89 && png[1] === 0x50) ? png : null;
   } catch { return null; }
 }
-function localThumb(name) {
-  const full = path.join(FOLDER, path.basename(name));
+function localThumb(name, t) {
+  t = t || typeBySlug("u1");
+  const full = path.join(typeFolder(t), path.basename(name));
   let stat; try { stat = fs.statSync(full); } catch { return null; }
-  const key = "L:" + name + ":" + stat.mtimeMs;
+  const key = "L:" + t.slug + ":" + name + ":" + stat.mtimeMs;
   if (THUMB_CACHE.has(key)) return THUMB_CACHE.get(key);
   let png = null;
   try {
@@ -1284,9 +1587,11 @@ function localThumb(name) {
   return png;
 }
 app.get("/api/thumb", (req, res) => {
+  const t = reqTypeOf(req);
+  if (!t) return res.status(400).end();
   const name = path.basename(String(req.query.file || ""));
   if (!/\.gcode$/i.test(name)) return res.status(400).end();
-  const png = localThumb(name);
+  const png = localThumb(name, t);
   if (!png) return res.status(404).end();
   res.set("Cache-Control", "public, max-age=86400").type("png").send(png);
 });
@@ -1294,8 +1599,8 @@ app.get("/api/pthumb", async (req, res) => {
   const p = PRINTERS[+req.query.id];
   const filename = String(req.query.file || "");
   if (!p || !filename) return res.status(400).end();
-  // 1) local copy of the same file — verified extraction path
-  const local = localThumb(path.basename(filename));
+  // 1) local copy of the same file — verified extraction path (printer's own type folder)
+  const local = localThumb(path.basename(filename), typeBySlug(p.type || "u1"));
   if (local) return res.set("Cache-Control", "public, max-age=3600").type("png").send(local);
   // 2) printer-side metadata thumbnail (optional Moonraker feature)
   const base = String(p.url).replace(/\/+$/, "");
@@ -1570,19 +1875,121 @@ app.get("/api/inventory", async (req, res) => {
 
 // ---- Settings: read/write config from the UI (no file editing) ----
 function publicCfg() {
-  return { gcodeFolder: CFG.gcodeFolder || "./gcode", folderResolved: FOLDER, printers: PRINTERS, tip: CFG.tip || null, configured: PRINTERS.length > 0 };
+  return { gcodeFolder: CFG.gcodeFolder || "./gcode", folderResolved: FOLDER, printers: PRINTERS,
+    types: TYPES.map(t => ({ slug: t.slug, label: t.label, accent: t.accent, builtin: !!t.builtin, warning: TYPE_WARNINGS[t.slug] || null })),
+    tip: CFG.tip || null, configured: PRINTERS.length > 0 };
 }
 app.get("/api/config", (req, res) => res.json(publicCfg()));
 app.get("/api/version", (req, res) => res.json({ version: VERSION }));
+
+// ---- Diagnostics bundle (v2.9, beta support) --------------------------------
+// User-initiated ONLY — the Hub has zero telemetry and this keeps it that way.
+// Settings → "Download diagnostics" produces one JSON the user reviews and
+// attaches to a GitHub issue. Contents: version/platform, types + warnings,
+// printers with DETECTED capabilities, the in-memory ring buffer, and the tail
+// of each printer's klippy.log + moonraker.log fetched over Moonraker's file
+// API with a suffix Range header (~192 KB per log — klippy.log can be tens of
+// MB and we only ever want the recent end).
+//
+// Rule #1 note: HTTP 206 ranged GETs are hardware-verified on the Snapmaker
+// fork for GCODE paths; /server/files/klippy.log on the fork is UNVERIFIED, so
+// every log fetch is individually tolerant — a missing log becomes a note in
+// the bundle, never a failed export. Stock Moonraker serves both logs there.
+//
+// Sanitization happens at generation, before the user ever sees the file:
+//   * every configured printer host → stable alias ("printer-1", …) so reports
+//     stay legible without leaking the LAN layout
+//   * any remaining IPv4 (incl. loopback) → "x.x.x.x"
+//   * JWT-shaped tokens (tunnel credentials pasted into logs) → "<token>"
+//   * auth.json / tunnel.json contents are never read — only booleans ship
+const DIAG_TAIL_BYTES = 192 * 1024;
+async function diagFetchLogTail(base, file) {
+  try {
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), 6000);
+    const r = await fetch(base + "/server/files/" + file, {
+      headers: { Range: "bytes=-" + DIAG_TAIL_BYTES }, signal: ctrl.signal
+    });
+    clearTimeout(to);
+    if (r.status !== 200 && r.status !== 206)
+      return { ok: false, note: "HTTP " + r.status + " — log not exposed at /server/files/" + file };
+    // A server that ignores Range replies 200 with the WHOLE file. Refuse to
+    // inline anything huge rather than ballooning the bundle (or Hub memory).
+    const len = parseInt(r.headers.get("content-length") || "0", 10);
+    if (r.status === 200 && len > 2 * 1024 * 1024)
+      return { ok: false, note: "server ignored Range and the full log is " + (len / 1048576).toFixed(1) + " MB — too large to inline" };
+    let text = await r.text();
+    if (text.length > DIAG_TAIL_BYTES) text = text.slice(-DIAG_TAIL_BYTES);
+    return { ok: true, ranged: r.status === 206, bytes: text.length, tail: text };
+  } catch (e) {
+    return { ok: false, note: String((e && e.message) || e) };
+  }
+}
+app.get("/api/diagnostics", async (req, res) => {
+  const withLogs = String(req.query.logs || "1") !== "0";
+  const onlyIdx = req.query.printer !== undefined ? parseInt(req.query.printer, 10) : null;
+
+  const printers = await Promise.all(PRINTERS.map(async (p, i) => ({
+    alias: "printer-" + (i + 1),
+    name: p.name, type: p.type || "u1",
+    caps: (await detectCaps(i)) || null,
+    plug: (p.plug && p.plug.type) || null
+  })));
+
+  let spoolsBound = 0, slotsAssigned = 0;
+  try { const s = JSON.parse(fs.readFileSync(path.join(BASE_DIR, "spools.json"), "utf8")); spoolsBound = Object.keys(s.spools || {}).length; } catch {}
+  try {
+    const sl = JSON.parse(fs.readFileSync(path.join(BASE_DIR, "slots.json"), "utf8"));
+    for (const m of Object.values(sl || {})) slotsAssigned += Object.keys(m || {}).length;
+  } catch {}
+
+  const bundle = {
+    generatedAt: new Date().toISOString(),
+    hub: { version: VERSION, node: process.version, platform: process.platform, arch: process.arch, pkg: IS_PKG, uptimeSec: Math.round(process.uptime()) },
+    auth: { enabled: fs.existsSync(path.join(BASE_DIR, "auth.json")) },       // boolean only — contents never read
+    tunnel: { configured: fs.existsSync(path.join(BASE_DIR, "tunnel.json")) }, // boolean only — contents never read
+    types: TYPES.map(t => ({ slug: t.slug, label: t.label, builtin: !!t.builtin, beta: !t.builtin, warning: TYPE_WARNINGS[t.slug] || null, printerCount: PRINTERS.filter(p => (p.type || "u1") === t.slug).length })),
+    printers,
+    counts: { queue: QUEUE.length, spoolsBound, slotsAssigned },
+    log: HUBLOG.slice(),
+    klipperLogs: {}
+  };
+
+  if (withLogs) {
+    for (let i = 0; i < PRINTERS.length; i++) {
+      if (onlyIdx !== null && i !== onlyIdx) continue;
+      const base = String(PRINTERS[i].url).replace(/\/+$/, "");
+      bundle.klipperLogs["printer-" + (i + 1)] = {
+        klippy: await diagFetchLogTail(base, "klippy.log"),
+        moonraker: await diagFetchLogTail(base, "moonraker.log")
+      };
+    }
+  }
+
+  // Sanitize the SERIALIZED bundle so nothing slips through a nested field.
+  let out = JSON.stringify(bundle, null, 2);
+  PRINTERS.forEach((p, i) => {
+    try {
+      const host = new URL(p.url).hostname;
+      if (host) out = out.split(host).join("printer-" + (i + 1));
+    } catch {}
+  });
+  out = out.replace(/\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/g, "x.x.x.x");
+  out = out.replace(/eyJ[A-Za-z0-9._\-]{20,}/g, "<token>");
+  res.type("json").send(out);
+});
 
 app.post("/api/config", (req, res) => {
   const b = req.body || {};
   const next = {
     gcodeFolder: (typeof b.gcodeFolder === "string" && b.gcodeFolder.trim()) ? b.gcodeFolder.trim() : (CFG.gcodeFolder || "./gcode"),
     port: PORT,
+    types: CFG.types,   // types are managed via /api/types — a config save never drops them
     printers: Array.isArray(b.printers)
       ? b.printers.filter(p => p && p.url).map(p => {
-          const rec = { name: String(p.name || p.url), url: String(p.url) };
+          // Instance → type binding. Unknown/missing type falls back to the
+          // grandfathered U1 so a stale frontend can't orphan a printer.
+          const rec = { name: String(p.name || p.url), url: String(p.url), type: (p.type && typeBySlug(String(p.type))) ? String(p.type) : "u1" };
           // Plug descriptor. The settings form now sends the plug explicitly:
           //  - a valid {type,...} to set it,
           //  - null to clear it,
@@ -1623,19 +2030,26 @@ function localSubnets() {
   }
   return [...out];
 }
+// Probe both known Moonraker ports: the U1 serves on :80 (Snapmaker quirk);
+// stock Moonraker (e.g. Sovol SV06 Plus ACE) serves on :7125. The port rides
+// in the printer's url, so every downstream call is per-instance automatically.
 async function probeMoonraker(ip) {
-  try {
-    const ctrl = new AbortController();
-    const to = setTimeout(() => ctrl.abort(), 900);
-    const r = await fetch(`http://${ip}/machine/system_info`, { signal: ctrl.signal });
-    clearTimeout(to);
-    if (!r.ok) return null;
-    const si = ((await r.json()).result || {}).system_info;
-    if (!si) return null;
-    const pi = si.product_info || {};
-    const { mac } = pickIface(si.network || {});
-    return { ip, url: `http://${ip}`, device_name: pi.device_name || null, machine_type: pi.machine_type || null, serial: pi.serial_number || null, mac };
-  } catch { return null; }
+  for (const port of [80, 7125]) {
+    try {
+      const ctrl = new AbortController();
+      const to = setTimeout(() => ctrl.abort(), 900);
+      const base = port === 80 ? `http://${ip}` : `http://${ip}:${port}`;
+      const r = await fetch(base + "/machine/system_info", { signal: ctrl.signal });
+      clearTimeout(to);
+      if (!r.ok) continue;
+      const si = ((await r.json()).result || {}).system_info;
+      if (!si) continue;
+      const pi = si.product_info || {};
+      const { mac } = pickIface(si.network || {});
+      return { ip, url: base, device_name: pi.device_name || null, machine_type: pi.machine_type || null, serial: pi.serial_number || null, mac };
+    } catch { /* try next port */ }
+  }
+  return null;
 }
 app.get("/api/discover", async (req, res) => {
   const found = [];

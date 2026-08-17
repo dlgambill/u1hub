@@ -1,11 +1,11 @@
 <!DOCTYPE html>
-<!-- U1 Print Hub — index v2.8.1 -->
+<!-- U1 Print Hub — index v2.9.0 -->
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <link rel="manifest" href="/manifest.json">
-<meta name="theme-color" content="#14161b">
+<meta name="theme-color" content="#0F1115">
 <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
 <link rel="apple-touch-icon" href="/icon-192.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -13,12 +13,18 @@
 <title>U1 Print Hub</title>
 <style>
   :root{
-    --chassis:#1A1C22; --panel:#23262E; --panel-2:#2B2F38;
-    --line:#353A45; --line-soft:#2E323B;
-    --ink:#ECEEF2; --ink-dim:#9AA0AC; --ink-faint:#6A7180;
-    --signal:#FFB200; --ok:#46C18C; --idle:#545B69; --bad:#E06A5C; --busy:#5B9BF0;
+    /* v2.9 contrast pass — same industrial identity, more separation:
+       chassis darkened two steps so panels visibly lift off it, all three ink
+       levels brightened (dim/faint were failing contrast on panels), status
+       colors saturated a notch. --signal stays #FFB200: it's the grandfathered
+       U1 accent and is swapped per printer type at runtime by applyAccent(). */
+    --chassis:#0F1115; --panel:#1D2027; --panel-2:#282C36;
+    --line:#3C4250; --line-soft:#313641;
+    --ink:#F4F6FA; --ink-dim:#AEB6C4; --ink-faint:#828B9A;
+    --signal:#FFB200; --ok:#3DD68C; --idle:#5C6474; --bad:#F26B5E; --busy:#6AACFF;
     --mono: ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
     --sans: ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    --elev:0 1px 2px rgba(0,0,0,.35), 0 4px 14px rgba(0,0,0,.22);  /* panel lift */
   }
   *{box-sizing:border-box;}
   html,body{margin:0;padding:0;height:100%;}
@@ -32,6 +38,47 @@
   .mark h1{font-size:13px; letter-spacing:.34em; text-transform:uppercase; font-weight:700; margin:0;}
   .refresh{font:inherit; font-size:11px; letter-spacing:.06em; color:var(--ink-dim); background:transparent; border:1px solid var(--line); border-radius:6px; padding:6px 10px; cursor:pointer;}
   .refresh:hover{color:var(--ink); border-color:var(--ink-faint);}
+  /* Printer-type switcher (v2.9). The active tab wears its type's accent and
+     the whole theme's --signal follows it — "which fleet am I on" is never a
+     guess. Only one type's printers + files render at a time. */
+  .typebar{display:flex; gap:6px; flex-wrap:wrap; padding:10px 14px; border-bottom:1px solid var(--line);}
+  .ttab{font:inherit; font-size:12px; font-weight:700; letter-spacing:.05em; padding:7px 14px; border-radius:8px; border:1px solid var(--line-soft); background:#20242c; color:var(--ink-dim); cursor:pointer;}
+  .ttab:hover{color:var(--ink);}
+  .ttab.on{background:var(--signal); border-color:var(--signal); color:#10120a;}
+  .ttab .twarn{margin-left:5px;}
+  /* v2.9: non-U1 printer types ship as BETA (harness-verified, awaiting broad
+     real-hardware verification via user-submitted diagnostics bundles) */
+  .betachip{display:inline-block; font-size:8.5px; font-weight:800; letter-spacing:.09em; padding:1px 5px 2px; border-radius:4px; background:#8a5cf6; color:#fff; margin-left:6px; vertical-align:1px;}
+  /* Spools (RFID) view */
+  .spoolwrap{display:flex; flex-direction:column; gap:14px; margin-top:14px;}
+  .scanbtn{font:inherit; font-size:14px; font-weight:700; background:var(--signal); color:#1a1400; border:none; border-radius:10px; padding:14px 22px; cursor:pointer;}
+  .scanbtn:disabled{opacity:.5; cursor:default;}
+  .scanstate{font-family:var(--mono); font-size:12px; color:var(--ink-dim); min-height:16px;}
+  .spoolcard{background:var(--panel); border:1px solid var(--line); border-radius:11px; padding:14px 16px;}
+  .spoolrow{display:flex; align-items:center; gap:11px; padding:8px 0; border-bottom:1px solid var(--line-soft);}
+  .spoolrow:last-child{border-bottom:none;}
+  .spoolsw{width:34px; height:34px; border-radius:7px; border:1px solid rgba(255,255,255,.2); flex:none;}
+  .spoolmeta{flex:1; min-width:0;}
+  .spoolname{font-size:13.5px; font-weight:600; color:var(--ink);}
+  .spoolsub{font-family:var(--mono); font-size:10.5px; color:var(--ink-faint); margin-top:2px; word-break:break-all;}
+  .fcsearch{display:flex; flex-direction:column; gap:8px;}
+  .fcres{max-height:280px; overflow:auto; display:flex; flex-direction:column; gap:4px;}
+  .fcitem{display:flex; align-items:center; gap:9px; padding:6px 8px; border:1px solid var(--line-soft); border-radius:8px; cursor:pointer; background:transparent; font:inherit; color:var(--ink); text-align:left;}
+  .fcitem:hover{border-color:var(--signal);}
+  .fcitem .sw{width:24px; height:24px; border-radius:5px; border:1px solid rgba(255,255,255,.18); flex:none;}
+  .fcitem .fi{min-width:0; flex:1;}
+  .fcitem .fin{font-size:12.5px; font-weight:600;}
+  .fcitem .fim{font-family:var(--mono); font-size:10px; color:var(--ink-faint); margin-top:1px;}
+  .attrib{font-size:11px; color:var(--ink-faint);}
+  .attrib a{color:var(--ink-dim);}
+  /* type management rows in Settings */
+  .typerow{display:flex; gap:8px; align-items:center; margin-bottom:7px; flex-wrap:wrap;}
+  .typerow .taccent{width:44px; height:34px; padding:2px; border:1px solid var(--line); border-radius:7px; background:var(--panel-2); cursor:pointer;}
+  .typerow .tname{flex:1; min-width:120px;}
+  .typerow .tslug{font-family:var(--mono); font-size:10.5px; color:var(--ink-faint); flex:none;}
+  .typerow .rm{flex:none; background:transparent; border:1px solid var(--line); color:var(--ink-dim); border-radius:7px; padding:0 11px; cursor:pointer; font-size:16px;}
+  .typerow .rm:hover{color:var(--bad); border-color:var(--bad);}
+  .typewarnline{font-size:11.5px; color:var(--bad); margin:2px 0 8px;}
   .folderline{font-family:var(--mono); font-size:10.5px; color:var(--ink-faint); padding:9px 18px; border-bottom:1px solid var(--line-soft); letter-spacing:.02em; word-break:break-all;}
   .filter{padding:11px 14px; border-bottom:1px solid var(--line-soft);}
   .filter input{width:100%; font:inherit; font-size:13px; color:var(--ink); background:var(--panel-2); border:1px solid var(--line); border-radius:7px; padding:8px 11px;}
@@ -339,11 +386,108 @@
   .warn{display:none; margin-top:12px; background:#2a1f1c; border:1px solid #5a3b34; border-radius:8px; padding:11px 13px; font-size:12.5px; color:#f0c9c0; line-height:1.5;}
   .warn.show{display:block;}
 
+  /* ======================= v2.9 UI polish layer =======================
+     Pure override layer — no markup or JS hooks change, so every verified
+     flow keeps working. Two goals: (1) contrast/legibility, (2) phones stop
+     feeling like a shrunken desktop. */
+
+  /* Panels lift off the darker chassis instead of blending into it. */
+  .pcard, .jobcard, .setcard, .spoolcard, .matchcard, .modalbox, .jobloading{box-shadow:var(--elev);}
+
+  /* BUG FIX: class="row" is used throughout Settings and the spool cards but
+     was never styled — those divs fell back to raw inline flow (baseline-
+     aligned buttons next to inputs = the "clunky" feel, and a <select> sized
+     to its longest option could stretch the page past the phone viewport).
+     Now a real flex row; the inline gap/wrap styles some rows carry simply
+     override these defaults like they always intended to. */
+  .row{display:flex; align-items:center; gap:8px; flex-wrap:wrap;}
+  .row .field{width:auto; flex:1 1 auto; min-width:0;}
+  select.field{max-width:100%; text-overflow:ellipsis;}
+
+  /* Spool-row actions anchor to the top of the row (level with the name)
+     instead of floating vertically centered when the sub-line wraps. */
+  .spoolrow .qbtn, .spoolrow a.qbtn{align-self:flex-start; margin-top:2px;}
+
+  /* No double-tap-zoom heuristics on controls — taps fire immediately. */
+  button, select, input, a.gear, .fcitem, .vtab, .ttab, .cmsw, .h .sw{touch-action:manipulation;}
+
+  /* Manual-bind color swatch buttons (open the Hub's own palette picker). */
+  .mcsw{width:44px; height:36px; padding:0; border:1px solid var(--line); border-radius:7px; cursor:pointer; flex:none;}
+  .mcsw:hover{border-color:var(--signal);}
+  #mcpick .cpsw{min-height:22px;}
+
+  /* Keyboard/scanner users get a visible focus ring (accent-colored). */
+  :focus-visible{outline:2px solid var(--signal); outline-offset:2px; border-radius:4px;}
+  .field:focus, .filter input:focus, .sortsel:focus{border-color:var(--signal); outline:none;}
+
+  /* BUG FIX: file-row actions (print/queue/delete…) only appeared on :hover —
+     on a touchscreen there is no hover, so they were unreachable. On any
+     coarse-pointer device they now render always. */
+  @media (hover:none){
+    .job .jact{display:flex;}
+    .h.editable .sw::after{content:"\270E"; position:absolute; right:4px; bottom:2px; font-size:11px; color:rgba(255,255,255,.75); text-shadow:0 1px 2px rgba(0,0,0,.8); pointer-events:none;}
+  }
+  /* Coarse pointers get real touch targets (44px Apple/48dp Android floor). */
+  @media (pointer:coarse){
+    .btn, .gear, .refresh, .scanbtn{min-height:44px;}
+    .qbtn, .jact .ab, .rm, .modalx{min-width:40px; min-height:40px; display:inline-flex; align-items:center; justify-content:center; font-size:14px;}
+    .ttab, .vtab{min-height:40px; display:inline-flex; align-items:center;}
+    .fcitem{padding:10px 10px; min-height:46px;}
+    .qitem{padding:8px 8px;}
+    .spoolrow{padding:11px 0;}
+    .cmsw{height:42px;}
+    .field, .filter input, .sortsel, select.field{font-size:16px;}  /* ≥16px kills iOS focus-zoom — the single biggest mobile clunk */
+  }
+
   @media (max-width:880px){
     .shell{grid-template-columns:1fr;}
     .side{height:auto; position:static; min-height:auto; border-right:none; border-bottom:1px solid var(--line);}
-    .list{max-height:34vh;}
+    .list{max-height:38vh; -webkit-overflow-scrolling:touch;}
     .fleet{grid-template-columns:1fr;}
+    .main{padding:14px 14px calc(56px + env(safe-area-inset-bottom));}
+    /* The view switcher is the phone's main nav — pin it. Sticky bar with a
+       blur so Dashboard / Spool Match / Spools are always one tap away. */
+    .topbar{position:sticky; top:0; z-index:40; margin:-14px -14px 10px; padding:10px 14px calc(10px);
+      background:color-mix(in srgb, var(--chassis) 82%, transparent); backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
+      border-bottom:1px solid var(--line-soft); flex-wrap:wrap; justify-content:flex-start; row-gap:8px;}
+    .viewtabs{width:100%; margin-right:0; overflow-x:auto; -webkit-overflow-scrolling:touch; scrollbar-width:none;}
+    .viewtabs::-webkit-scrollbar{display:none;}
+    .vtab{white-space:nowrap; flex:1; justify-content:center;}
+    .vbadge{order:3;} .topbar .gear{margin-left:auto;} .topbar a.gear{margin-left:0;}
+    /* Settings rows stack instead of crushing four inputs into one line. */
+    .prow{flex-wrap:wrap;}
+    .prow .pname{width:100%; flex:1 1 100%;}
+    .prow .purl{flex:1 1 calc(100% - 52px);}
+    .prow .ptype{flex:1 1 100%; width:100% !important;}
+    .plugrow .pluglab{width:100%;}
+    .plugrow .plugtype{flex:1 1 100%; width:100%;}
+    .plugrow .plughint{margin-left:0;}
+    .typerow .tslug{flex-basis:100%; order:5; margin-top:2px;}
+    /* The tunnel-mode select carries inline width:auto — on a phone it goes
+       full-width so its long option labels can't stretch the page. */
+    #tunMode{flex:1 1 100% !important; width:100% !important; min-width:0;}
+    /* Belt-and-braces: nothing may drag the app wider than the screen. */
+    html, body{overflow-x:clip;}
+    .setcard, .jobcard, .spoolcard, .pcard{min-width:0;}
+    /* Cards and modals breathe edge-to-edge on small screens. */
+    .setcard, .jobcard, .spoolcard{padding:13px;}
+    .modal{padding:10px; align-items:flex-end;}
+    .modalbox{max-height:86vh; border-radius:14px 14px 0 0; padding:14px 14px calc(14px + env(safe-area-inset-bottom));}
+    .needstrip{gap:10px;}
+    .fsgrid{grid-template-columns:repeat(auto-fill,minmax(96px,1fr));}
+    .cmaprow .flab{width:64px; font-size:10px;}
+    #jthumb{max-width:150px; max-height:150px;}
+    .heads{gap:6px;}
+    .sechead{margin-top:18px;}
+    .tipfoot{margin-top:24px;}
+  }
+  @media (max-width:400px){
+    .main{padding-left:10px; padding-right:10px;}
+    .topbar{margin-left:-10px; margin-right:-10px; padding-left:10px; padding-right:10px;}
+    .heads{grid-template-columns:repeat(2,1fr);}   /* 4 heads read fine as 2×2 on the narrowest phones */
+  }
+  @media (prefers-reduced-motion:reduce){
+    *, *::before, *::after{animation-duration:.01ms !important; transition-duration:.01ms !important;}
   }
 </style>
 </head>
@@ -351,6 +495,7 @@
 <div class="shell">
   <aside class="side">
     <div class="head"><div class="mark"><span class="glyph">//</span><h1>U1 Hub</h1></div><button class="refresh" id="refresh">Refresh</button></div>
+    <div class="typebar" id="typebar" style="display:none"></div>
     <div class="folderline" id="folderline">…</div>
     <div class="filter">
       <input id="filter" placeholder="Filter files…" />
@@ -372,7 +517,7 @@
   </aside>
   <main class="main">
     <div class="topbar">
-      <div class="viewtabs"><button class="vtab on" data-view="dash">Dashboard</button><button class="vtab" data-view="match">Spool Match</button></div>
+      <div class="viewtabs"><button class="vtab on" data-view="dash">Dashboard</button><button class="vtab" data-view="match">Spool Match</button><button class="vtab" data-view="spools">Spools</button></div>
       <span class="vbadge" id="vbadge"></span>
       <a class="gear" href="/fs-colors.html" title="Full Spectrum mix planner">🎨 FS Mixer</a>
       <button class="gear" id="gear" title="Settings">⚙ Settings</button>
@@ -380,10 +525,18 @@
     <div class="setup" id="setup">
       <div class="sechead"><h2>Settings</h2><span class="count" id="setupmsg"></span></div>
       <div class="setcard">
-        <label class="fl">G-code folder <span class="hint">your Orca output folder</span></label>
+        <label class="fl">G-code folder <span class="hint">your Orca output folder (base — each printer type gets its own subfolder)</span></label>
         <input class="field" id="setFolder" placeholder="e.g. C:/Users/you/gcode" />
 
-        <label class="fl" style="margin-top:14px">Printers</label>
+        <label class="fl" style="margin-top:14px">Printer types <span class="betachip">BETA</span> <span class="hint">a type owns a folder, an accent color and a switcher tab — U1 keeps the flat base folder. Non-U1 types are in beta: they work against stock Klipper/Moonraker in testing, and we're gathering real-hardware reports. Hit a problem? Use “Download diagnostics” below and attach the file to a <a href="https://github.com/dlgambill/u1hub/issues/new/choose" target="_blank" rel="noopener" style="color:var(--signal)">GitHub issue</a>.</span></label>
+        <div id="setTypes"></div>
+        <div class="row" style="margin-top:6px">
+          <input class="field" id="newTypeName" placeholder="e.g. SV06 Plus ACE" style="max-width:240px" />
+          <button class="btn ghost" id="addType">+ Add printer type</button>
+          <span class="pstatus" id="typeStatus"></span>
+        </div>
+
+        <label class="fl" style="margin-top:14px">Printers <span class="hint">add each physical machine into its type</span></label>
         <div id="setPrinters"></div>
         <div class="row" style="margin-top:8px">
           <button class="btn ghost" id="addPrinter">+ Add manually</button>
@@ -420,6 +573,13 @@
           <input class="field" id="tunHost" style="margin-top:6px" placeholder="public hostname, e.g. hub.example.com" />
         </div>
         <div class="pstatus" id="tunMsg" style="margin-top:6px"></div>
+
+        <label class="fl" style="margin-top:18px">Diagnostics <span class="hint">for bug reports — nothing is sent anywhere automatically</span></label>
+        <div class="row" style="margin-top:6px">
+          <button class="btn ghost" id="diagDl">⬇ Download diagnostics</button>
+          <span class="pstatus" id="diagMsg"></span>
+        </div>
+        <div class="hint" style="margin-top:5px">One JSON file: Hub version, printer types + detected capabilities, recent Hub log, and the tail of each printer's klippy.log / moonraker.log. IPs and tokens are scrubbed before the file is written — review it, then attach it to a <a href="https://github.com/dlgambill/u1hub/issues/new/choose" target="_blank" rel="noopener" style="color:var(--signal)">GitHub issue</a>.</div>
 
         <label class="fl" style="margin-top:18px">Chamber cameras <span class="hint">this device only</span></label>
         <div class="row" style="margin-top:6px">
@@ -464,6 +624,22 @@
       <p class="subnote" id="matchnote">Tap a printer to see which library files its loaded colors can print right now (≥50% color match).</p>
       <div class="matchgrid" id="matchgrid"></div>
     </div>
+    <div class="spoolview" id="spoolview" style="display:none">
+      <div class="sechead"><h2>Spools</h2><span class="count" id="spoolcount"></span></div>
+      <p class="subnote">Scan a spool's RFID tag to identify its filament. Unknown tags are bound once — brand, material, color and temps — then resolve instantly forever after. Once identified, load the spool into a printer slot from its card (→) so the Hub knows what's on every machine. The tag's UID is just a serial number; nothing proprietary is decoded.</p>
+      <div class="spoolwrap">
+        <div class="spoolcard" id="scanpanel">
+          <div id="scanctl"></div>
+          <div class="scanstate" id="scanstate"></div>
+        </div>
+        <div class="spoolcard" id="bindpanel" style="display:none"></div>
+        <div class="spoolcard">
+          <div class="fshead">Bound spools</div>
+          <div id="spoollist"></div>
+        </div>
+        <p class="attrib">Filament colors &amp; temps from <a href="https://filamentcolors.xyz" target="_blank" rel="noopener">FilamentColors.xyz</a> (© Joe Kaufeld, MIT) — colorimeter-measured swatches. <span id="fcmeta"></span> <button class="gear" id="fcrefresh" style="font-size:11px; padding:4px 9px">Update filament library</button></p>
+      </div>
+    </div>
   </main>
 
   <div class="modal" id="platemodal">
@@ -477,25 +653,75 @@
 
 <script>
 const $ = id => document.getElementById(id);
-const VERSION = "2.8.1";
+const VERSION = "2.9.0";
 let FILES = [], SELECTED = null, MAP = null, FLEET = [], MAPSEL = {};
 let ONBOARD = [], ACT = null; // onboard = /api/printer-files cache; ACT = open per-printer action strip {name,pid}
 let SRCSEL = { hub:true, p:{} }; // source-filter checkboxes; p[pid]=false hides that printer (default: everything on)
 let QUEUE = [], QOPEN = true;   // shared "up next" list (state lives in JS, not DOM)
+
+// ---- Printer types (v2.9) ---------------------------------------------------
+// The switcher selects the ACTIVE type: only that type's printers and files
+// render, so sending a U1 file to a Sovol is structurally impossible while in
+// the other mode. Last-active type persists per device across restarts.
+// U1 keeps today's exact accent; each other type wears its own, and the whole
+// theme's --signal follows the active type so the mode is unmissable.
+let TYPES = [{ slug:"u1", label:"U1", accent:"#FFB200", builtin:true }];
+let ACTIVETYPE = (typeof localStorage!=="undefined" && localStorage.getItem("u1.activeType")) || "u1";
+function activeType(){ return TYPES.find(t=>t.slug===ACTIVETYPE) || TYPES[0]; }
+function tparam(){ return "type="+encodeURIComponent(activeType().slug); }
+async function loadTypes(){
+  try{
+    const d=await (await fetch("/api/types")).json();
+    if(Array.isArray(d.types) && d.types.length) TYPES=d.types;
+  }catch(e){}
+  if(!TYPES.find(t=>t.slug===ACTIVETYPE)) ACTIVETYPE=TYPES[0].slug; // stored type may have been deleted
+  applyAccent(); renderTypeBar();
+}
+function applyAccent(){
+  const a=activeType().accent||"#FFB200";
+  document.documentElement.style.setProperty("--signal", a);
+  const th=document.querySelector('meta[name="theme-color"]'); if(th) th.setAttribute("content","#0F1115");
+}
+function renderTypeBar(){
+  const bar=$("typebar");
+  if(TYPES.length<2){ bar.style.display="none"; return; }   // single-type installs look exactly like 2.8
+  bar.style.display="";
+  bar.innerHTML="";
+  TYPES.forEach(t=>{
+    const b=document.createElement("button");
+    b.className="ttab"+(t.slug===ACTIVETYPE?" on":"");
+    // inactive tabs still show their accent as a dot so the palette reads at a glance
+    b.innerHTML=(t.slug===ACTIVETYPE?"":`<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${esc(t.accent)};margin-right:6px"></span>`)+esc(t.label)+(t.builtin?"":'<span class="betachip" title="Multi-printer-type support is in beta — Settings → Download diagnostics helps us fix issues">BETA</span>')+(t.warning?'<span class="twarn" title="'+esc(t.warning)+'">⚠</span>':"");
+    b.addEventListener("click",()=>setActiveType(t.slug));
+    bar.appendChild(b);
+  });
+}
+function setActiveType(slug){
+  if(slug===ACTIVETYPE) return;
+  ACTIVETYPE=slug;
+  try{ localStorage.setItem("u1.activeType", slug); }catch{}
+  SELECTED=null; MAP=null; MAPSEL={}; ACT=null; LIBPAL=null;
+  $("jobcard").classList.remove("show"); $("noselect").style.display="";
+  applyAccent(); renderTypeBar();
+  loadFiles(); loadQueue(); renderFleet(); loadPrinterFiles();
+  if($("matchview").style.display!=="none") renderMatch();
+}
 
 init();
 // PWA: register the (deliberately cache-free) service worker so the Hub can
 // be installed to the phone home screen. No fetch handler = no stale-version
 // risk; the version banner stays the source of truth.
 if("serviceWorker" in navigator && location.protocol!=="file:"){ navigator.serviceWorker.register("/sw.js").catch(()=>{}); }
-async function init(){ await checkVersion(); await loadConfigUI(); await loadFiles(); await loadQueue(); await loadFleet(); loadPrinterFiles(); startEvents(); 
+async function init(){ await checkVersion(); await loadTypes(); await loadConfigUI(); await loadFiles(); await loadQueue(); await loadFleet(); loadPrinterFiles(); startEvents();
   $("platex").addEventListener("click", closePlate);
   $("platemodal").addEventListener("click", e=>{ if(e.target===$("platemodal")) closePlate(); });
   $("qhead").addEventListener("click", ()=>{ QOPEN=!QOPEN; renderQueue(); });
   $("qadd").addEventListener("click", ()=>{ if(SELECTED) addQueue(SELECTED); });
-  setInterval(loadFiles, 15000);
-  setInterval(loadPrinterFiles, 15000);
-  setInterval(loadQueue, 15000);
+  // The 15s list refreshes also rebuild rows (file Print buttons, queue
+  // actions) — same mid-tap hazard, same guard.
+  setInterval(()=>{ if(!INTERACTING) loadFiles(); }, 15000);
+  setInterval(()=>{ if(!INTERACTING) loadPrinterFiles(); }, 15000);
+  setInterval(()=>{ if(!INTERACTING) loadQueue(); }, 15000);
   setInterval(()=>{ if(ES_OK) return; if(fleetRenderBlocked()) return; loadFleet(); }, 5000);
 }
 
@@ -514,7 +740,7 @@ $("filter").addEventListener("input", renderList);
 $("sort").addEventListener("change", e=>{ SORT=e.target.value; renderList(); });
 
 async function loadFiles(){
-  try{ const d = await (await fetch("/api/files")).json();
+  try{ const d = await (await fetch("/api/files?"+tparam())).json();
     if(d.error){ $("folderline").textContent=d.error; FILES=[]; renderList(); return; }
     $("folderline").textContent=d.folder; FILES=d.files; renderList();
   }catch(e){ $("folderline").textContent="Server unreachable"; }
@@ -522,7 +748,7 @@ async function loadFiles(){
 // Onboard (printer-storage) listings for the unified library view. Offline
 // printers are simply absent from badges until they answer again.
 async function loadPrinterFiles(){
-  try{ const d=await (await fetch("/api/printer-files")).json(); ONBOARD=d.printers||[]; renderSrcBar(); renderList(); }catch(e){}
+  try{ const d=await (await fetch("/api/printer-files?"+tparam())).json(); ONBOARD=d.printers||[]; renderSrcBar(); renderList(); }catch(e){}
 }
 // Source-filter checkboxes: Hub + one per configured printer. A row is shown
 // if ANY of the locations it is stored on is checked. Rebuilt when the printer
@@ -603,7 +829,7 @@ function renderList(){
     // Thumbnails: library rows read the local file head (cached server-side);
     // printer-only rows ask /api/pthumb (local copy first, then printer metadata).
     const thumb = f.src==="lib"
-      ? `<img class="jthumb" loading="lazy" src="/api/thumb?file=${encodeURIComponent(f.name)}&v=${f.mtime||0}" onerror="this.style.display='none'">`
+      ? `<img class="jthumb" loading="lazy" src="/api/thumb?file=${encodeURIComponent(f.name)}&${tparam()}&v=${f.mtime||0}" onerror="this.style.display='none'">`
       : `<img class="jthumb" loading="lazy" src="/api/pthumb?id=${f.locs[0].pid}&file=${encodeURIComponent(f.name)}" onerror="this.style.display='none'">`;
     const chips = f.locs.length
       ? `<div class="chiprow">${f.src==="onboard"?'<span class="chip srconly">printer only</span>':""}${f.locs.map(l=>`<span class="chip act" role="button" data-pid="${l.pid}" title="stored on ${esc(l.pname)} — click to manage that copy">${esc(l.pname)}</span>`).join("")}</div>`
@@ -646,18 +872,24 @@ function renderList(){
 function toggleAct(name,pid){ ACT=(ACT&&ACT.name===name&&ACT.pid===pid)?null:{name,pid}; renderList(); }
 async function post(url,body){
   const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
-  const d=await r.json().catch(()=>({error:"HTTP "+r.status}));
+  // Parse defensively: a tunnel/proxy error page (HTML) must surface as a
+  // human message, not "Unexpected token '<'".
+  const text=await r.text();
+  let d; try{ d=JSON.parse(text); }
+  catch{ d={error:/<!DOCTYPE|<html/i.test(text)
+    ? "Hub answered with a web page (HTTP "+r.status+") — tunnel/proxy replying while the Hub is down or restarting?"
+    : "HTTP "+r.status}; }
   if(!r.ok||d.error) throw new Error(d.error||("HTTP "+r.status));
   return d;
 }
 async function libRename(name){
   const nn=prompt("Rename in Hub library:",name); if(!nn||nn===name) return;
-  try{ await post("/api/files/rename",{name,newName:nn}); if(SELECTED===name) SELECTED=null; await loadFiles(); }
+  try{ await post("/api/files/rename",{name,newName:nn,type:activeType().slug}); if(SELECTED===name) SELECTED=null; await loadFiles(); }
   catch(e){ alert("Rename failed: "+e.message); }
 }
 async function libDelete(name){
   if(!confirm('Delete "'+name+'" from the Hub library?\n(Copies on printer storage are not touched.)')) return;
-  try{ await post("/api/files/delete",{name}); if(SELECTED===name) SELECTED=null; await loadFiles(); }
+  try{ await post("/api/files/delete",{name,type:activeType().slug}); if(SELECTED===name) SELECTED=null; await loadFiles(); }
   catch(e){ alert("Delete failed: "+e.message); }
 }
 async function pRename(pid,pname,name){
@@ -709,7 +941,7 @@ async function pollXfer(){
 // file is actually started; the panel refreshes on the same 15 s cadence as
 // the file list, plus immediately after any queue action or print start.
 async function loadQueue(){
-  try{ const d=await (await fetch("/api/queue")).json(); QUEUE=d.queue||[]; renderQueue(); }catch(e){}
+  try{ const d=await (await fetch("/api/queue?"+tparam())).json(); QUEUE=d.queue||[]; renderQueue(); }catch(e){}
 }
 function renderQueue(){
   const wrap=$("qwrap");
@@ -725,7 +957,7 @@ function renderQueue(){
     const f=FILES.find(x=>x.name===e.file);
     const row=document.createElement("div"); row.className="qitem";
     row.innerHTML=`<span class="qpos">${i+1}</span>`+
-      `<img class="qthumb" loading="lazy" src="/api/thumb?file=${encodeURIComponent(e.file)}${f?"&v="+(f.mtime||0):""}" onerror="this.style.visibility='hidden'">`+
+      `<img class="qthumb" loading="lazy" src="/api/thumb?file=${encodeURIComponent(e.file)}&${tparam()}${f?"&v="+(f.mtime||0):""}" onerror="this.style.visibility='hidden'">`+
       `<span class="qname${f?"":" qmiss"}" title="${esc(e.file)}">${esc(e.file)}${f?"":" — missing"}</span>`+
       `<button class="qbtn" data-mv="-1" title="Move up" ${i===0?"disabled":""}>↑</button>`+
       `<button class="qbtn" data-mv="1" title="Move down" ${i===QUEUE.length-1?"disabled":""}>↓</button>`+
@@ -739,7 +971,7 @@ function renderQueue(){
 async function addQueue(name){
   const btn=$("qadd"), old=btn.textContent;
   try{
-    const r=await fetch("/api/queue",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({file:name})});
+    const r=await fetch("/api/queue",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({file:name,type:activeType().slug})});
     const d=await r.json();
     if(!r.ok||d.error) throw new Error(d.error||("HTTP "+r.status));
     QUEUE=d.queue; renderQueue();
@@ -768,7 +1000,7 @@ async function selectFile(name){
   $("jobloading").classList.add("show");
   $("jobcard").classList.remove("show");
   $("noselect").style.display="none";
-  try{ const m=await (await fetch("/api/map?file="+encodeURIComponent(name))).json();
+  try{ const m=await (await fetch("/api/map?file="+encodeURIComponent(name)+"&"+tparam())).json();
     $("jobloading").classList.remove("show");
     if(m.error){ MAP=null; $("noselect").style.display=""; return; } MAP=m; renderJob(); renderFleet();
   }catch(e){ $("jobloading").classList.remove("show"); $("noselect").style.display=""; }
@@ -787,7 +1019,7 @@ function renderJob(){
   const f=FILES.find(x=>x.name===SELECTED);
   ti.onload=()=>tw.classList.add("show");
   ti.onerror=()=>tw.classList.remove("show");
-  ti.src="/api/thumb?file="+encodeURIComponent(SELECTED)+(f?"&t="+f.mtime:"");
+  ti.src="/api/thumb?file="+encodeURIComponent(SELECTED)+"&"+tparam()+(f?"&t="+f.mtime:"");
   const need=neededColors();
   $("needcount").textContent=need.length+(need.length===1?" color":" colors");
   const strip=$("needstrip"); strip.innerHTML="";
@@ -893,10 +1125,30 @@ async function loadFleet(){
 // 5 s poll takes over automatically — worst case is exactly v2.3.0 behavior.
 let ES=null, ES_OK=false;
 function fleetRenderBlocked(){
-  if(PUSHES>0 || PICKOPEN) return true;
+  if(PUSHES>0 || PICKOPEN || INTERACTING) return true;
   const a=document.activeElement;
   return !!(a && a.closest && a.closest("#fleet") && (a.tagName==="SELECT"||a.tagName==="INPUT"));
 }
+// ---- Tap-eating fix (v2.9) ---------------------------------------------------
+// renderFleet() rebuilds card DOM, and the SSE stream fires ~1/s during a
+// print. If a rebuild lands between touch-start and touch-end, the button
+// under the finger is replaced and the click never fires — the "I have to tap
+// twice" bug. Two guards:
+//   1. INTERACTING: any pointer that's currently down blocks re-renders; the
+//      deferred frame renders ~180ms after the pointer lifts.
+//   2. Identical-frame skip: SSE frames that wouldn't change anything don't
+//      rebuild the DOM at all (idle fleets stop churning entirely).
+let INTERACTING=false, INTERACT_T=null, FLEET_DIRTY=false, LAST_FLEET_SIG="";
+window.addEventListener("pointerdown",()=>{ INTERACTING=true; clearTimeout(INTERACT_T); },{capture:true,passive:true});
+const endInteract=()=>{
+  clearTimeout(INTERACT_T);
+  INTERACT_T=setTimeout(()=>{
+    INTERACTING=false;
+    if(FLEET_DIRTY && !fleetRenderBlocked()){ FLEET_DIRTY=false; renderFleet(); }
+  },180);
+};
+window.addEventListener("pointerup",endInteract,{capture:true,passive:true});
+window.addEventListener("pointercancel",endInteract,{capture:true,passive:true});
 function startEvents(){
   if(!window.EventSource) return;
   try{ ES=new EventSource("/api/events"); }catch{ return; }
@@ -904,7 +1156,11 @@ function startEvents(){
     ES_OK=true;
     let d; try{ d=JSON.parse(e.data); }catch{ return; }
     FLEET=d;
+    const sig=JSON.stringify(d)+"|"+activeType().slug;   // data-driven renders only — UI-triggered renderFleet() calls bypass this
+    if(sig===LAST_FLEET_SIG) return;
+    LAST_FLEET_SIG=sig;
     if(!fleetRenderBlocked()) renderFleet();
+    else FLEET_DIRTY=true;
   };
   ES.onerror=()=>{ ES_OK=false; };
 }
@@ -1058,7 +1314,7 @@ const MATCHOPEN = new Set();
 let EXPANDED = null;          // pid|name of the one open inline preview
 const MAPCACHE = {};          // name -> /api/map result, cached across expands
 async function loadLibPalettes(){
-  try{ const d=await (await fetch("/api/library-palettes")).json(); LIBPAL=d.files||[]; }
+  try{ const d=await (await fetch("/api/library-palettes?"+tparam())).json(); LIBPAL=d.files||[]; }
   catch(e){ LIBPAL=[]; }
 }
 function loadedHeadList(p){
@@ -1079,7 +1335,7 @@ function matchFile(fileColors, heads){
 async function renderMatch(){
   if(!LIBPAL) await loadLibPalettes();
   const grid=$("matchgrid");
-  const online=(FLEET||[]).filter(p=>p.online);
+  const online=(FLEET||[]).filter(p=>p.online && (p.ptype||"u1")===activeType().slug);
   $("matchcount").textContent = online.length+" printer"+(online.length===1?"":"s")+" online";
   grid.innerHTML = online.map(p=>{
     const heads=loadedHeadList(p);
@@ -1117,7 +1373,7 @@ async function renderMatch(){
     const name=decodeURIComponent(el.dataset.expand), key=(+el.dataset.pid)+"|"+name;
     if(EXPANDED===key){ EXPANDED=null; renderMatch(); return; }
     if(!MAPCACHE[name]){
-      try{ const m=await (await fetch("/api/map?file="+encodeURIComponent(name))).json(); if(!m.error) MAPCACHE[name]=m; }catch(e){}
+      try{ const m=await (await fetch("/api/map?file="+encodeURIComponent(name)+"&"+tparam())).json(); if(!m.error) MAPCACHE[name]=m; }catch(e){}
     }
     EXPANDED=key; renderMatch();
   }));
@@ -1139,7 +1395,7 @@ function jobCardHtml(name, m){
      : `Load these into any heads; confirm mapping on the machine at start.`);
   return `<div class="mdetail">`+
     (meta?`<div class="mdmeta">${esc(meta)}</div>`:"")+
-    `<div class="mdthumbwrap"><img class="mdthumb" src="/api/thumb?file=${encodeURIComponent(name)}" onerror="this.parentNode.style.display='none'"></div>`+
+    `<div class="mdthumbwrap"><img class="mdthumb" src="/api/thumb?file=${encodeURIComponent(name)}&${tparam()}" onerror="this.parentNode.style.display='none'"></div>`+
     `<div class="mdchips">${chips}</div>`+
     `<div class="mdhint">${hint}</div></div>`;
 }
@@ -1156,20 +1412,523 @@ async function matchPrint(file, pid){
 }
 function setView(v){
   document.querySelectorAll(".vtab").forEach(t=>t.classList.toggle("on", t.dataset.view===v));
-  const dash=$("dashview"), match=$("matchview");
-  if(v==="match"){ if(dash) dash.style.display="none"; match.style.display=""; renderMatch(); }
-  else { match.style.display="none"; if(dash) dash.style.display=""; }
+  const dash=$("dashview"), match=$("matchview"), spool=$("spoolview");
+  dash.style.display = v==="dash" ? "" : "none";
+  match.style.display = v==="match" ? "" : "none";
+  spool.style.display = v==="spools" ? "" : "none";
+  if(v==="match") renderMatch();
+  if(v==="spools") renderSpoolView();
 }
 document.querySelectorAll(".vtab").forEach(t=>t.addEventListener("click",()=>{
   if(t.dataset.view==="match") LIBPAL=null;   // refresh palettes on entry (cheap; server-cached)
   setView(t.dataset.view);
 }));
 
+// ---- Spools (RFID wrap-up, v2.9) --------------------------------------------
+// Hub-side scanning only — no printer reads tags for this. Web NFC is the
+// PRIMARY (and only shipped) adapter: Chrome/Android reads the tag UID right
+// in this page via NDEFReader (needs HTTPS — the Cloudflare tunnel provides
+// it). iOS Safari has NO Web NFC, so the scan button is feature-detected and
+// simply absent there — never a dead button. USB readers and QR labels are
+// architected server-side (same spool_id engine) but deferred to their own
+// hardware gates.
+let NDEF=null, SPOOLS=[], BINDUID=null, SLOTVIEW=[], PENDINGLOAD=null;
+function nfcSupported(){ return "NDEFReader" in window; }
+// One swatch renderer for every place a spool's color appears. Solids are a
+// flat fill; gradients blend smoothly; "multi" (silk duals/tris, coextruded)
+// gets hard diagonal segments so it reads as distinct colors at 34px.
+function swatchCss(sp){
+  const hx=(sp.hexes&&sp.hexes.length>=2)?sp.hexes:null;
+  if(!hx) return "#"+(sp.hex||"888888");
+  const cs=hx.map(h=>"#"+h);
+  if(sp.color_style==="gradient") return "linear-gradient(135deg,"+cs.join(",")+")";
+  const n=cs.length, stops=cs.map((c,i)=>`${c} ${Math.round(i*100/n)}% ${Math.round((i+1)*100/n)}%`).join(",");
+  return "linear-gradient(135deg,"+stops+")";
+}
+function pendingLoadLabel(){
+  if(!PENDINGLOAD) return "";
+  const p=(FLEET||[]).find(x=>x.id===PENDINGLOAD.printer);
+  return (p?p.name:"printer")+" · T"+(PENDINGLOAD.slot+1);
+}
+// One motion, both flows: record the loadout, then push the spool's measured
+// color onto the head via the verified /api/setcolor path (best-effort — a
+// printing/official head just keeps its color; the loadout still records).
+async function loadSpoolIntoSlot(printer, slot, sid, sp){
+  await post("/api/slots/assign",{printer, slot, spool_id:sid});
+  let colored=false;
+  try{ await post("/api/setcolor",{printer, slot, hex:"#"+sp.hex}); colored=true; }catch(e){}
+  PICKOPEN=null;
+  await loadFleet();
+  const st=$("pst-"+printer);
+  if(st){ st.className="pstatus ok"; st.textContent="T"+(slot+1)+" ← "+(sp.color_name||("#"+sp.hex))+" ✓"+(colored?" (color set)":" (loadout recorded — color unchanged)"); }
+}
+// Loadout (v2.9): which spool is physically in which printer slot. Hub-side
+// state only — closing the scan→bind→LOAD loop so a scanned tag can be
+// recorded into a machine, and the recommender/print memory know the shelf.
+async function loadSlotmap(){
+  try{ SLOTVIEW=(await (await fetch("/api/slots")).json()).printers||[]; }catch(e){ SLOTVIEW=[]; }
+}
+function spoolLocation(sid){
+  for(const p of SLOTVIEW) for(const [k,v] of Object.entries(p.slots||{}))
+    if(v.spool_id===sid) return {printer:p.printer, name:p.name, slot:+k};
+  return null;
+}
+function slotOccupant(printerId, slot){
+  const p=SLOTVIEW.find(x=>x.printer===printerId);
+  return p && p.slots && p.slots[slot] ? p.slots[slot] : null;
+}
+async function renderSpoolView(){
+  renderScanCtl();
+  await Promise.all([loadSpools(), loadFcMeta()]);
+}
+function renderScanCtl(){
+  const ctl=$("scanctl");
+  // QR is the second shipped adapter: any camera (iOS included) reads a label
+  // WE printed, which encodes the spool_id directly — no UID involved.
+  const camOk = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+  const qrBtn = camOk ? `<button class="scanbtn" id="qrscan" style="background:var(--panel-2);color:var(--ink);border:1px solid var(--line)">⌗ Scan QR label</button>` : "";
+  const labelLink = `<a class="gear" href="/labels.html" target="_blank" style="text-decoration:none">🏷 Print QR labels</a>`;
+  if(nfcSupported()){
+    ctl.innerHTML=`<div class="row" style="gap:10px;flex-wrap:wrap"><button class="scanbtn" id="nfcscan">📶 Tap to scan a spool tag</button>${qrBtn}${labelLink}</div>
+      <div class="subnote" style="margin-top:8px">NFC: hold the tag to the back of the phone (HTTPS + Android Chrome). QR: point the camera at a printed spool label.</div>
+      <div class="row" style="margin-top:10px"><input class="field" id="uidmanual" placeholder="…or type a tag UID (hex)" style="max-width:260px"><button class="btn ghost" id="uidgo">Look up</button></div>`;
+    $("nfcscan").addEventListener("click",startScan);
+  } else {
+    ctl.innerHTML=`<div class="row" style="gap:10px;flex-wrap:wrap">${qrBtn}${labelLink}</div>
+      <div class="subnote" style="margin-top:8px">No Web NFC in this browser (Android Chrome over HTTPS is the NFC scanner)${camOk?" — but QR labels scan fine with this camera":""}. You can also look a tag up by UID, or manage bound spools below.</div>
+      <div class="row" style="margin-top:10px"><input class="field" id="uidmanual" placeholder="tag UID (hex)" style="max-width:260px"><button class="btn ghost" id="uidgo">Look up</button></div>`;
+  }
+  const qb=$("qrscan");
+  if(qb) qb.addEventListener("click",startQrScan);
+  $("uidgo").addEventListener("click",()=>{ const v=$("uidmanual").value.trim(); if(v) handleUid(v); });
+  $("uidmanual").addEventListener("keydown",e=>{ if(e.key==="Enter"){ const v=$("uidmanual").value.trim(); if(v) handleUid(v); } });
+}
+
+// ---- QR label scanning ------------------------------------------------------
+// Native BarcodeDetector where available (Android Chrome); vendored jsQR
+// (Apache-2.0, © Cosmo Wolfe) everywhere else — which is what makes this the
+// iOS path. Payload must be "u1spool:<spool_id>"; anything else is ignored
+// with a message, never a bind.
+let QRSTREAM=null, QRRAF=0, QRDETECT=null;
+function stopQrScan(){
+  cancelAnimationFrame(QRRAF); QRRAF=0;
+  if(QRSTREAM){ QRSTREAM.getTracks().forEach(t=>t.stop()); QRSTREAM=null; }
+  const m=$("qrmodal"); if(m) m.classList.remove("show");
+}
+async function loadJsQR(){
+  if(window.jsQR) return window.jsQR;
+  await new Promise((ok,bad)=>{ const s=document.createElement("script"); s.src="/vendor/jsQR.js"; s.onload=ok; s.onerror=()=>bad(new Error("couldn't load QR decoder")); document.head.appendChild(s); });
+  return window.jsQR;
+}
+function ensureQrModal(){
+  if($("qrmodal")) return;
+  const m=document.createElement("div");
+  m.id="qrmodal"; m.className="modal";
+  m.innerHTML=`<div class="modalbox" style="max-width:440px"><div class="modalhdr"><span>Scan a spool QR label</span><button class="modalx" id="qrx">✕</button></div>
+    <video id="qrvideo" playsinline muted style="width:100%;border-radius:9px;background:#000"></video>
+    <div class="scanstate" id="qrstate" style="margin-top:8px">Point the camera at the label…</div></div>`;
+  document.body.appendChild(m);
+  $("qrx").addEventListener("click",stopQrScan);
+  m.addEventListener("click",e=>{ if(e.target===m) stopQrScan(); });
+}
+async function startQrScan(){
+  ensureQrModal();
+  const st=$("qrstate"), video=$("qrvideo");
+  $("qrmodal").classList.add("show");
+  st.textContent="Starting camera…";
+  try{
+    QRSTREAM=await navigator.mediaDevices.getUserMedia({video:{facingMode:"environment"}});
+    video.srcObject=QRSTREAM; await video.play();
+  }catch(e){
+    st.textContent = location.protocol!=="https:"&&location.hostname!=="localhost"
+      ? "Camera needs HTTPS — open the Hub through its tunnel URL."
+      : "Camera error: "+e.message;
+    return;
+  }
+  st.textContent="Point the camera at the label…";
+  let native=null;
+  if("BarcodeDetector" in window){
+    try{ native=new BarcodeDetector({formats:["qr_code"]}); }catch{ native=null; }
+  }
+  const jsqr = native ? null : await loadJsQR().catch(()=>null);
+  if(!native && !jsqr){ st.textContent="No QR decoder available in this browser."; return; }
+  const canvas=document.createElement("canvas"), ctx=canvas.getContext("2d",{willReadFrequently:true});
+  let last=0;
+  const tick=async (ts)=>{
+    if(!QRSTREAM) return;
+    QRRAF=requestAnimationFrame(tick);
+    if(ts-last<120 || !video.videoWidth) return;   // ~8 fps is plenty
+    last=ts;
+    let text=null;
+    try{
+      if(native){
+        const codes=await native.detect(video);
+        if(codes.length) text=codes[0].rawValue;
+      } else {
+        canvas.width=video.videoWidth; canvas.height=video.videoHeight;
+        ctx.drawImage(video,0,0);
+        const img=ctx.getImageData(0,0,canvas.width,canvas.height);
+        const r=jsqr(img.data,img.width,img.height);
+        if(r) text=r.data;
+      }
+    }catch{}
+    if(text){
+      const m=/^u1spool:(\S+)$/.exec(String(text).trim());
+      if(!m){ st.textContent="Not a Hub spool label — keep aiming, or print labels from the Spools tab."; return; }
+      stopQrScan();
+      handleSpoolId(m[1]);
+    }
+  };
+  QRRAF=requestAnimationFrame(tick);
+}
+async function handleSpoolId(sid){
+  const st=$("scanstate");
+  st.textContent="Looking up label…";
+  try{
+    const d=await post("/api/spools/resolve",{spool_id:sid});
+    if(d.known){ st.textContent=""; showSpoolResult(d.spool, d.spool_id, null); }
+    else { st.textContent="Label "+sid+" isn't bound on this Hub (was the spool forgotten?)."; }
+  }catch(e){ st.textContent="This label doesn't match any spool here — it may be from another Hub or a forgotten spool."; }
+}
+async function startScan(){
+  const st=$("scanstate");
+  try{
+    NDEF = NDEF || new NDEFReader();
+    await NDEF.scan();
+    st.textContent="Scanning… hold a tag to the phone.";
+    NDEF.onreading = ev=>{ if(ev.serialNumber) handleUid(ev.serialNumber); };
+    NDEF.onreadingerror = ()=>{ st.textContent="Couldn't read that tag — try again."; };
+  }catch(e){
+    st.textContent = location.protocol!=="https:" ? "Web NFC needs HTTPS — open the Hub through its tunnel URL." : ("NFC error: "+e.message);
+  }
+}
+async function handleUid(uid){
+  const st=$("scanstate");
+  st.textContent="Looking up tag…";
+  try{
+    const d=await post("/api/spools/resolve",{uid});
+    if(d.known){
+      st.textContent="";
+      showSpoolResult(d.spool, d.spool_id, d.uid);
+    } else {
+      st.textContent="New tag — tell the Hub what's on this spool (one time only).";
+      openBindPanel(d.uid);
+    }
+  }catch(e){ st.textContent="Lookup failed: "+e.message; }
+}
+// Known tag → identity card, now with the loop closed: "Load to printer"
+// records which machine + slot the spool physically went into (Hub-side
+// slots.json). On an eligible U1 head the checkbox ALSO pushes the spool's
+// measured hex via the existing hardware-verified /api/setcolor route, so
+// Spool Match sees it like an official RFID roll. Any printer — any type,
+// even offline — is a valid target: recording where filament went must not
+// depend on the printer being reachable.
+function headCountOf(p){
+  if(p.caps && p.caps.heads) return p.caps.heads;
+  if(Array.isArray(p.heads) && p.heads.length) return p.heads.length;
+  return (p.ptype||"u1")==="u1" ? 4 : 1;   // offline fallback: type is the best guess we have
+}
+function showSpoolResult(sp, sid, uid){
+  const bp=$("bindpanel"); bp.style.display="";
+  const fleet=(FLEET||[]);
+  const loc=spoolLocation(sid);
+  const popts=fleet.map(p=>`<option value="${p.id}">${esc(p.name)}${p.online?"":" (offline)"}</option>`).join("");
+  bp.innerHTML=`<div class="fshead">Scanned spool</div>
+    <div class="spoolrow"><span class="spoolsw" style="background:${esc(swatchCss(sp))}"></span>
+    <div class="spoolmeta"><div class="spoolname">${esc(sp.color_name||("#"+sp.hex))}</div>
+    <div class="spoolsub">${esc([sp.brand,sp.material_variant].filter(Boolean).join(" · "))}${sp.hot_end_temp?` · ${sp.hot_end_temp}°/${sp.bed_temp||"—"}°`:""} · #${esc(sp.hex)}${uid?` · tag ${esc(uid)}`:""}</div></div></div>
+    <div class="spoolsub" id="loadloc" style="margin-top:8px">${loc?`Loaded in <b>${esc(loc.name)} · T${loc.slot+1}</b>`:"Not loaded in any printer"}</div>
+    ${fleet.length?`<div class="row" style="margin-top:8px;flex-wrap:wrap;align-items:center">
+      <select class="field" id="loadprinter" style="max-width:190px">${popts}</select>
+      <select class="field" id="loadslot" style="max-width:90px"></select>
+      <button class="btn primary" id="loadgo">Load here</button>
+      ${loc?'<button class="btn ghost" id="unloadgo">Unload</button>':""}
+    </div>
+    <div class="row" style="margin-top:6px"><label class="hint" id="pushwrap" style="display:none;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" id="pushcolor" checked> also set that head's color on the printer</label></div>
+    <div class="subnote" id="loadhint" style="margin-top:4px"></div>`:""}
+    <div class="row" style="margin-top:8px"><button class="btn ghost" id="bindclose">Close</button><span class="pstatus" id="loadst"></span></div>`;
+  $("bindclose").addEventListener("click",()=>{ bp.style.display="none"; });
+  if(!fleet.length) return;
+  const psel=$("loadprinter"), ssel=$("loadslot");
+  const syncSlots=()=>{
+    const p=fleet.find(x=>x.id===+psel.value); if(!p) return;
+    const n=headCountOf(p);
+    ssel.innerHTML=Array.from({length:n},(_,i)=>`<option value="${i}">T${i+1}</option>`).join("");
+    if(loc && loc.printer===p.id && loc.slot<n) ssel.value=String(loc.slot);
+    syncHint();
+  };
+  const syncHint=()=>{
+    const p=fleet.find(x=>x.id===+psel.value); if(!p) return;
+    const slot=+ssel.value;
+    const occ=slotOccupant(p.id, slot);
+    const hint=$("loadhint");
+    hint.textContent = occ && occ.spool_id!==sid
+      ? "T"+(slot+1)+" currently holds "+(occ.spool.color_name||("#"+occ.spool.hex))+" — loading here replaces it."
+      : "";
+    // Color push is only offered where the verified write path applies:
+    // online U1-class head, filament present, not an official (color-locked)
+    // Snapmaker spool, printer idle.
+    const h=(p.heads||[])[slot];
+    const can=p.online && p.caps && p.caps.multiColor && h && h.loaded && !h.official && p.state!=="printing" && p.state!=="paused";
+    $("pushwrap").style.display = can ? "flex" : "none";
+  };
+  psel.addEventListener("change",syncSlots);
+  ssel.addEventListener("change",syncHint);
+  if(loc) psel.value=String(loc.printer);
+  syncSlots();
+  $("loadgo").addEventListener("click",async ()=>{
+    const st=$("loadst"); st.className="pstatus work"; st.textContent="Recording…";
+    const pid=+psel.value, slot=+ssel.value;
+    try{
+      await post("/api/slots/assign",{printer:pid,slot,spool_id:sid});
+      let msg="Loaded ✓";
+      if($("pushwrap").style.display!=="none" && $("pushcolor").checked){
+        try{ await post("/api/setcolor",{printer:pid,slot,hex:"#"+sp.hex}); msg="Loaded + head color set ✓"; loadFleet(); }
+        catch(e){ msg="Loaded ✓ — but color push failed: "+e.message; }
+      }
+      st.className="pstatus ok"; st.textContent=msg;
+      await loadSpools();
+      const p=fleet.find(x=>x.id===pid);
+      $("loadloc").innerHTML="Loaded in <b>"+esc(p?p.name:"printer")+" · T"+(slot+1)+"</b>";
+    }catch(e){ st.className="pstatus err"; st.textContent=e.message; }
+  });
+  const un=$("unloadgo");
+  if(un) un.addEventListener("click",async ()=>{
+    const st=$("loadst"); st.className="pstatus work"; st.textContent="Unloading…";
+    try{
+      await post("/api/slots/clear",{spool_id:sid});
+      st.className="pstatus ok"; st.textContent="Unloaded ✓";
+      un.style.display="none";
+      $("loadloc").textContent="Not loaded in any printer";
+      await loadSpools();
+    }catch(e){ st.className="pstatus err"; st.textContent=e.message; }
+  });
+}
+// Unknown tag → the one-time association prompt, in the settled order:
+// 1) search the bundled snapshot  2) sample from a loaded head  3) manual hex.
+function openBindPanel(uid){
+  BINDUID=uid;
+  const bp=$("bindpanel"); bp.style.display="";
+  const idle=(FLEET||[]).filter(p=>p.online && (p.ptype||"u1")===activeType().slug && p.caps && p.caps.multiColor);
+  const sampleOpts=idle.flatMap(p=>(p.heads||[]).map((h,i)=>h&&h.loaded?`<option value="${p.id}:${i}">${esc(p.name)} · T${i+1}${h.hex?" · "+esc(h.hex):""}</option>`:"").filter(Boolean));
+  bp.innerHTML=`<div class="fshead">New tag ${esc(uid)} — what's on this spool?</div>
+    ${SPOOLS.length?`<div class="subnote" style="margin:0 0 8px">Already bound this filament? Tap it to attach this tag — no duplicate gets created:</div>
+    <div class="fcres" style="max-height:150px;margin-bottom:10px">${SPOOLS.map(sp=>`<button class="fcitem" data-attach="${esc(sp.spool_id)}"><span class="sw" style="background:${esc(swatchCss(sp))}"></span><span class="fi"><span class="fin">${esc(sp.color_name||("#"+sp.hex))}</span><div class="fim">${esc([sp.brand,sp.material_variant].filter(Boolean).join(" · "))}${sp.uids.length?` · tag ${sp.uids.map(esc).join(", ")}`:""}</div></span></button>`).join("")}</div>
+    <div class="subnote" style="margin:0 0 8px">…or it's a new spool:</div>`:""}
+    <div class="fcsearch">
+      <input class="field" id="fcq" placeholder="Search filaments — color, brand, material (e.g. galaxy black PLA)">
+      <div class="fcres" id="fcres"><div class="subnote">Type to search ~2,266 measured swatches.</div></div>
+    </div>
+    ${sampleOpts.length?`<div class="row" style="margin-top:12px"><select class="field" id="samplesel" style="max-width:260px">${sampleOpts.join("")}</select><button class="btn ghost" id="samplego">Bind to this loaded color</button></div>`:""}
+    <div class="subnote" style="margin:10px 0 6px">…or describe it yourself:</div>
+    <div class="row">
+      <select class="field" id="mcmode" style="max-width:150px">
+        <option value="solid">Solid</option>
+        <option value="multi2">Dual-color</option>
+        <option value="multi3">Tri-color</option>
+        <option value="grad2">Gradient (2)</option>
+        <option value="grad3">Gradient (3)</option>
+      </select>
+      <button class="mcsw" id="manualhex" data-hex="#888888" style="background:#888888" title="Pick color 1"></button>
+      <button class="mcsw" id="manualhex2" data-hex="#DDDDDD" style="background:#DDDDDD;display:none" title="Pick color 2"></button>
+      <button class="mcsw" id="manualhex3" data-hex="#444444" style="background:#444444;display:none" title="Pick color 3"></button>
+      <span id="mcprev" style="width:34px;height:34px;border-radius:7px;border:1px solid rgba(255,255,255,.2);flex:none"></span>
+    </div>
+    <div id="mcpick" style="display:none"></div>
+    <div class="row" style="margin-top:8px">
+      <input class="field" id="manualname" placeholder="color name (optional)" style="max-width:180px">
+      <input class="field" id="manualbrand" placeholder="manufacturer (optional)" style="max-width:180px">
+    </div>
+    <div class="row" style="margin-top:8px">
+      <select class="field" id="manualtype" style="max-width:110px">
+        <option value="">type —</option>
+        <option>PLA</option><option>PETG</option><option>ABS</option><option>ASA</option>
+        <option>TPU</option><option>PC</option><option value="PA">PA (Nylon)</option>
+        <option>PVA</option><option>HIPS</option><option>Other</option>
+      </select>
+      <select class="field" id="manualvariant" style="max-width:130px">
+        <option value="">variant —</option>
+        <option>Basic</option><option>Matte</option><option>Silk</option><option>Glow</option>
+        <option>Sparkle</option><option>Translucent</option><option>Wood-fill</option>
+        <option value="CF">Carbon fiber</option><option>High-Speed</option>
+      </select>
+      <input class="field" id="manualhot" type="number" inputmode="numeric" placeholder="hotend °C" style="max-width:105px">
+      <input class="field" id="manualbed" type="number" inputmode="numeric" placeholder="bed °C" style="max-width:90px">
+    </div>
+    <div class="row" style="margin-top:8px">
+      <label class="hint" style="display:flex;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" id="savelocal" checked> save to my library</label>
+      <button class="btn ghost" id="manualgo">Bind this spool</button>
+    </div>
+    <div class="row" style="margin-top:8px"><button class="btn ghost" id="bindcancel">Cancel</button><span class="pstatus" id="bindst"></span></div>`;
+  const q=$("fcq");
+  let deb=null;
+  q.addEventListener("input",()=>{ clearTimeout(deb); deb=setTimeout(()=>fcSearch(q.value.trim()),250); });
+  q.focus();
+  $("bindcancel").addEventListener("click",()=>{ bp.style.display="none"; BINDUID=null; PENDINGLOAD=null; });
+  bp.querySelectorAll("[data-attach]").forEach(b=>b.addEventListener("click",()=>bindSpool({spool_id:b.dataset.attach})));
+  const sg=$("samplego");
+  if(sg) sg.addEventListener("click",async ()=>{
+    const [pid,slot]=$("samplesel").value.split(":").map(Number);
+    bindSpool({sample:{printer:pid,slot}});
+  });
+  const mcVal=id=>$(id).dataset.hex;
+  $("manualgo").addEventListener("click",()=>{
+    const mode=$("mcmode").value;
+    const n=/3$/.test(mode)?3:(/2$/.test(mode)?2:1);
+    const cs=[mcVal("manualhex"),mcVal("manualhex2"),mcVal("manualhex3")].slice(0,n);
+    const type=$("manualtype").value, variant=$("manualvariant").value;
+    bindSpool({identity:{
+      hex:cs[0],
+      hexes:n>1?cs:undefined,
+      color_style:n>1?(mode.startsWith("grad")?"gradient":"multi"):undefined,
+      color_name:$("manualname").value.trim(),
+      brand:$("manualbrand").value.trim(),
+      material:type,
+      // Convention matches the FilamentColors records ("PLA Matte"): basic or
+      // blank variant collapses to just the type.
+      material_variant:(!variant||variant==="Basic")?type:(type?type+" "+variant:variant),
+      hot_end_temp:$("manualhot").value||undefined,
+      bed_temp:$("manualbed").value||undefined
+    }, saveLocal:$("savelocal").checked});
+  });
+  // Color-mode plumbing: show 1–3 pickers and keep the live preview honest.
+  const mcSync=()=>{
+    const mode=$("mcmode").value, n=/3$/.test(mode)?3:(/2$/.test(mode)?2:1);
+    $("manualhex2").style.display=n>=2?"":"none";
+    $("manualhex3").style.display=n>=3?"":"none";
+    const cs=[mcVal("manualhex"),mcVal("manualhex2"),mcVal("manualhex3")].slice(0,n);
+    $("mcprev").style.background=swatchCss({hex:cs[0].slice(1),hexes:n>1?cs.map(c=>c.slice(1)):null,color_style:mode.startsWith("grad")?"gradient":"multi"});
+  };
+  $("mcmode").addEventListener("input",mcSync);
+  // Our own full-palette picker — Chrome-for-Android's native color dialog is
+  // an HSV-slider mess (and renders half-invisible on dark pages), so the
+  // swatch buttons open a Hub-styled panel instead: 12 hues × 5 shades plus a
+  // 12-step grayscale ramp, and a hex/name field (resolveColor handles "tan").
+  const mcPalette=(()=>{
+    const cells=[];
+    for(let i=0;i<12;i++){ const v=Math.round(255-(i*255/11)); cells.push("#"+((1<<24)|(v<<16)|(v<<8)|v).toString(16).slice(1).toUpperCase()); }
+    const hsl=(h,S,L)=>{const a=S*Math.min(L,1-L),f=n=>{const k=(n+h/30)%12;const c=L-a*Math.max(Math.min(k-3,9-k,1),-1);return Math.round(255*c).toString(16).padStart(2,"0");};return ("#"+f(0)+f(8)+f(4)).toUpperCase();};
+    for(const l of [.82,.66,.5,.36,.22]) for(let h=0;h<360;h+=30) cells.push(hsl(h,.92,l));
+    return cells;
+  })();
+  let MCTARGET=null;
+  function openMcPick(id){
+    MCTARGET=id;
+    const pk=$("mcpick"), cur=mcVal(id);
+    pk.style.display="";
+    pk.innerHTML=`<div class="cpop" style="margin-top:6px">
+      <div class="cpophdr">Color ${id==="manualhex"?1:id==="manualhex2"?2:3} — tap a swatch, or type a hex / name</div>
+      <div class="cpgrid" style="grid-template-columns:repeat(12,1fr)">${mcPalette.map(h=>`<span class="cpsw" data-mcc="${h}" title="${h}" style="background:${h}"></span>`).join("")}</div>
+      <div class="cprow">
+        <input class="cpin" id="mcin" value="${esc(cur)}" placeholder="#RRGGBB or name" spellcheck="false" autocomplete="off">
+        <span id="mcinprev" style="width:30px;height:30px;border-radius:6px;border:1px solid rgba(255,255,255,.25);flex:none;background:${esc(cur)}"></span>
+        <button class="btn primary" id="mcset">Set</button>
+        <button class="btn ghost" id="mcclose">Close</button>
+      </div></div>`;
+    const setColor=h=>{ $(MCTARGET).dataset.hex=h; $(MCTARGET).style.background=h; mcSync(); };
+    pk.querySelectorAll("[data-mcc]").forEach(c=>c.addEventListener("click",()=>{ setColor(c.dataset.mcc); $("mcin").value=c.dataset.mcc; $("mcinprev").style.background=c.dataset.mcc; }));
+    $("mcin").addEventListener("input",()=>{ const h=resolveColor($("mcin").value); if(h){ $("mcinprev").style.background=h; } });
+    $("mcset").addEventListener("click",()=>{ const h=resolveColor($("mcin").value); if(!h){ $("mcin").style.borderColor="var(--bad)"; return; } setColor(h.toUpperCase()); pk.style.display="none"; });
+    $("mcclose").addEventListener("click",()=>{ pk.style.display="none"; });
+  }
+  ["manualhex","manualhex2","manualhex3"].forEach(id=>$(id).addEventListener("click",()=>openMcPick(id)));
+  mcSync();
+}
+async function fcSearch(q){
+  const box=$("fcres");
+  if(!q){ box.innerHTML='<div class="subnote">Type to search.</div>'; return; }
+  try{
+    const d=await (await fetch("/api/filaments/search?q="+encodeURIComponent(q)+"&page_size=25")).json();
+    if(!d.results.length){ box.innerHTML='<div class="subnote">No match — use the color picker below (it saves into your local library).</div>'; return; }
+    box.innerHTML=d.results.map(s=>`<button class="fcitem" data-sid="${s.id}"><span class="sw" style="background:#${esc(s.hex)}"></span><span class="fi"><span class="fin">${esc(s.color_name)}</span><div class="fim">${esc([s.brand,s.material_variant].filter(Boolean).join(" · "))}${s.hot_end_temp?` · ${s.hot_end_temp}°/${s.bed_temp||"—"}°`:""}${s.color_source!=="measured"?" · "+esc(s.color_source):""}</div></span></button>`).join("");
+    box.querySelectorAll(".fcitem").forEach(b=>b.addEventListener("click",()=>bindSpool({swatch_id:+b.dataset.sid})));
+  }catch(e){ box.innerHTML='<div class="subnote">Search failed: '+esc(e.message)+'</div>'; }
+}
+async function bindSpool(body){
+  const st=$("bindst");
+  if(st){ st.className="pstatus work"; st.textContent="Binding…"; }
+  try{
+    const d=await post("/api/spools/bind",{...body, uid:BINDUID||undefined});
+    $("bindpanel").style.display="none"; BINDUID=null;
+    $("scanstate").textContent="";
+    if(PENDINGLOAD){                       // scan started at a printer card — finish the job
+      const t=PENDINGLOAD, lbl=pendingLoadLabel(); PENDINGLOAD=null;
+      await loadSpoolIntoSlot(t.printer, t.slot, d.spool_id, d.spool);
+      $("scanstate").textContent=(d.spool.color_name||("#"+d.spool.hex))+" bound and loaded into "+lbl+" ✓";
+      setView("dash");
+      return;
+    }
+    await loadSpools();
+    showSpoolResult(d.spool, d.spool_id, d.uid);
+  }catch(e){ if(st){ st.className="pstatus err"; st.textContent=e.message; } }
+}
+async function loadSpools(){
+  await loadSlotmap();   // loadout renders inline on the rows — fetch first
+  try{ SPOOLS=(await (await fetch("/api/spools")).json()).spools||[]; }catch(e){ SPOOLS=[]; }
+  $("spoolcount").textContent=SPOOLS.length+" bound";
+  const list=$("spoollist");
+  if(!SPOOLS.length){ list.innerHTML='<div class="subnote">No spools bound yet — scan a tag to start.</div>'; return; }
+  list.innerHTML=SPOOLS.map(sp=>{ const loc=spoolLocation(sp.spool_id); return `<div class="spoolrow"><span class="spoolsw" style="background:${esc(swatchCss(sp))}"></span>
+    <div class="spoolmeta"><div class="spoolname">${esc(sp.color_name||("#"+sp.hex))}${loc?` <span style="font-family:var(--mono);font-size:10px;font-weight:400;color:var(--signal)">▸ ${esc(loc.name)} T${loc.slot+1}</span>`:""}</div>
+    <div class="spoolsub">${esc([sp.brand,sp.material_variant].filter(Boolean).join(" · "))}${sp.hot_end_temp?` · ${sp.hot_end_temp}°/${sp.bed_temp||"—"}°`:""}${sp.uids.length?` · tag ${sp.uids.map(esc).join(", ")}`:" · no tag"}${sp.color_source&&sp.color_source!=="measured"?` · ${esc(sp.color_source)}`:""}</div></div>
+    <a class="qbtn" href="/labels.html?id=${encodeURIComponent(sp.spool_id)}" target="_blank" title="Print QR label" style="text-decoration:none">🏷</a>
+    <button class="qbtn" data-show="${esc(sp.spool_id)}" title="Details / load to printer">→</button>
+    <button class="qbtn qx" data-forget="${esc(sp.spool_id)}" title="Forget this spool">✕</button></div>`; }).join("");
+  list.querySelectorAll("[data-show]").forEach(b=>b.addEventListener("click",()=>{
+    const sp=SPOOLS.find(x=>x.spool_id===b.dataset.show);
+    if(sp) showSpoolResult(sp, sp.spool_id, sp.uids[0]||null);
+  }));
+  list.querySelectorAll("[data-forget]").forEach(b=>b.addEventListener("click",async ()=>{
+    if(!confirm("Forget this spool and its tag binding?")) return;
+    try{ await post("/api/spools/forget",{spool_id:b.dataset.forget}); loadSpools(); }catch(e){ alert(e.message); }
+  }));
+}
+async function loadFcMeta(){
+  try{
+    const m=await (await fetch("/api/filaments/meta")).json();
+    $("fcmeta").textContent=m.count+" swatches"+(m.localCount?` + ${m.localCount} local`:"")+(m.fetchedAt?` · updated ${new Date(m.fetchedAt).toLocaleDateString()}`:"");
+  }catch(e){}
+}
+$("fcrefresh").addEventListener("click",async ()=>{
+  const b=$("fcrefresh"); b.disabled=true; b.textContent="Updating…";
+  try{
+    const r=await fetch("/api/filaments/refresh",{method:"POST"});
+    const d=await r.json();
+    if(!r.ok||d.error) throw new Error(d.error||("HTTP "+r.status));
+    b.textContent="Updated ✓ ("+d.count+")";
+    loadFcMeta();
+  }catch(e){ b.textContent="Update failed"; alert(e.message); }
+  setTimeout(()=>{ b.textContent="Update filament library"; b.disabled=false; },2500);
+});
+
+// Diagnostics bundle (v2.9 beta support): user-initiated download, nothing is
+// ever sent anywhere by the Hub. Server sanitizes (IPs → aliases, tokens
+// stripped) before the file exists; the user reviews and attaches to an issue.
+$("diagDl").addEventListener("click",async ()=>{
+  const b=$("diagDl"), st=$("diagMsg");
+  b.disabled=true; st.className="pstatus work"; st.textContent="Collecting (fetches each printer's log tail — a few seconds)…";
+  try{
+    const r=await fetch("/api/diagnostics");
+    if(!r.ok) throw new Error("HTTP "+r.status);
+    const blob=await r.blob();
+    const a=document.createElement("a");
+    a.href=URL.createObjectURL(blob);
+    a.download="u1hub-diagnostics-"+new Date().toISOString().slice(0,19).replace(/[:T]/g,"-")+".json";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href), 5000);
+    st.className="pstatus ok"; st.textContent="Saved — review it, then attach to a GitHub issue.";
+  }catch(e){ st.className="pstatus err"; st.textContent="Export failed: "+e.message; }
+  b.disabled=false;
+});
+
 function renderFleet(){
   const need=neededColors();
   const wrap=$("fleet"); wrap.innerHTML="";
   let online=0;
-  FLEET.forEach(p=>{
+  // Only the active type's instances render — cross-class targets are hidden,
+  // so a file can't even be OFFERED to the wrong printer class.
+  const fleetShown=(FLEET||[]).filter(p=>(p.ptype||"u1")===activeType().slug);
+  fleetShown.forEach(p=>{
     if(p.online) online++;
     const card=document.createElement("div");
     card.className="pcard"+(p.online?"":" offline");
@@ -1190,9 +1949,11 @@ function renderFleet(){
       else if(p.state==="error"){ pillCls="err"; pillTxt="Error"; }
       else { pillCls="idle"; pillTxt="Idle"; }
     }
-    // heads
+    // heads — capability-gated, not type-gated: a printer without the
+    // Snapmaker color API (caps.multiColor false) has no head grid at all.
     const busy = p.online && (p.state==="printing"||p.state==="paused");
-    const heads=(p.heads||[]);
+    const multiCap = !p.caps || p.caps.multiColor !== false;   // unknown caps → render as before
+    const heads=multiCap ? (p.heads||[]) : [];
     const headsHtml=heads.map((h,i)=>{
       if(!h || !h.loaded) return `<div class="h empty"><div class="sw"></div><div class="lab"><div class="ht">T${i+1}</div><div class="hm">—</div></div></div>`;
       // advisory match: is this head close to any needed color?
@@ -1221,7 +1982,7 @@ function renderFleet(){
     }).join("");
     // factual heads-loaded, plus a separate ADVISORY color-match note
     let matchHtml="";
-    if(p.online){
+    if(p.online && multiCap){
       const loadedCount=heads.filter(h=>h&&h.loaded).length;
       if(need.length){
         let got=0;
@@ -1231,6 +1992,8 @@ function renderFleet(){
       } else {
         matchHtml=`<span class="matchline">${loadedCount}/4 heads loaded</span>`;
       }
+    } else if(p.online && p.caps){
+      matchHtml=`<span class="matchline">${p.caps.heads===1?"single extruder":"generic Klipper · "+p.caps.heads+" extruders"}</span>`;
     }
     const canSend = p.online && SELECTED && !busy;
     // per-color head picker (default: greedy nearest distinct head)
@@ -1275,8 +2038,8 @@ function renderFleet(){
       ${p.state==="printing"?`<div class="progress"><i style="width:${Math.round((p.progress||0)*100)}%"></i></div>`:""}
       ${(p.state==="printing"||p.state==="paused")&&p.filename?`<div class="fnamerow"><img class="cthumb" loading="lazy" src="/api/pthumb?id=${p.id}&file=${encodeURIComponent(p.filename)}" onerror="this.style.display='none'"><div class="fname" title="${esc(p.filename)}">${esc(p.filename.replace(/\.gcode$/i,""))}${p.layer?` · L${p.layer.cur}/${p.layer.total}`:""}</div></div>`:""}
       ${p.state==="error"&&p.message?`<div class="errline" title="${esc(p.message)}">${esc(p.message)}</div>`:""}
-      <div class="heads">${headsHtml}</div>
-      ${PICKOPEN && PICKOPEN.id===p.id && !busy ? colorPopHtml(p) : ""}
+      ${heads.length?`<div class="heads">${headsHtml}</div>`:""}
+      ${PICKOPEN && PICKOPEN.id===p.id && !busy && heads.length ? colorPopHtml(p) : ""}
       ${p.online?`<div class="bedrow"><span class="bedlabel">Bed</span><span class="bedtemp">${p.bed?Math.round(p.bed.temp)+'° / '+Math.round(p.bed.target)+'°':'—'}</span>`+
         `<input class="bedset" id="bedin-${p.id}" type="number" min="0" max="120" placeholder="°C"><button class="btn ghost bedbtn" data-bed="${p.id}">Set</button><button class="btn ghost bedbtn" data-bed="${p.id}" data-off="1">Off</button></div>`:""}
       ${p.plug?powerRowHtml(p, busy):""}
@@ -1300,7 +2063,7 @@ function renderFleet(){
   mountCameras();
   hydratePower();                              // repaint plug rows from cache (survives the 5 s rebuild)
   if(FLEET.some(p=>p.plug)){ refreshPower(); startPowerPoll(); }
-  $("fleetcount").textContent=online+"/"+FLEET.length+" online";
+  $("fleetcount").textContent=online+"/"+fleetShown.length+" online"+(FLEET.length!==fleetShown.length?" · "+esc(activeType().label):"");
   wrap.querySelectorAll("button[data-statsbtn]").forEach(b=>{
     b.addEventListener("click",()=>{
       const id=parseInt(b.dataset.statsbtn,10);
@@ -1351,7 +2114,7 @@ function renderFleet(){
 }
 
 let PUSHES=0;
-async function pushTo(printer, start){
+async function pushTo(printer, start, force){
   if(!SELECTED){ return; }
   const map={};
   document.querySelectorAll('.cmaprow[data-card="'+printer+'"] .cmsw.sel').forEach(sw=>{ map[sw.dataset.pi]=parseInt(sw.dataset.hi,10); });
@@ -1360,8 +2123,17 @@ async function pushTo(printer, start){
   if(st){ st.className="pstatus work"; st.innerHTML=pushBar(0,"Starting upload…"); }
   PUSHES++;
   try{
-    const r=await fetch("/api/print",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({file:SELECTED,printer,start,map})});
-    const d=await r.json(); if(!r.ok||d.error||!d.jobId) throw new Error(d.error||("HTTP "+r.status));
+    const r=await fetch("/api/print",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({file:SELECTED,printer,start,map,type:activeType().slug,force:!!force})});
+    const d=await r.json();
+    // Send-time class guard: the server sniffed the gcode against this
+    // printer's detected capabilities and wants a human decision.
+    if(r.status===409 && d.classWarning){
+      if(st){ st.className="pstatus"; st.textContent=""; }
+      if(confirm(d.error)) return await pushTo(printer, start, true);
+      return;
+    }
+    if(!r.ok||d.error||!d.jobId) throw new Error(d.error||("HTTP "+r.status));
+    if(d.note && st){ st.className="pstatus work"; st.innerHTML=pushBar(0,d.note); }
     await pollJob(d.jobId, st, start, mapped);
   }catch(e){ if(st){ st.className="pstatus err"; st.textContent=e.message; } }
   finally{ PUSHES=Math.max(0,PUSHES-1); }
@@ -1434,6 +2206,10 @@ function colorPopHtml(p){
       <button class="btn primary" id="cpapply" ${res?"":"disabled"}>Apply</button>
       <button class="btn ghost" id="cpcancel">Cancel</button>
     </div>
+    ${nfcSupported()||"BarcodeDetector" in window?`<div class="cprow" style="border-top:1px solid var(--line-soft);padding-top:9px">
+      ${nfcSupported()?`<button class="btn ghost" id="cpscan">📶 Scan spool → load here</button>`:""}
+      <span class="pstatus" id="cpscanst" style="flex:1;min-width:0"></span>
+    </div>`:""}
   </div>`;
 }
 function wirePickPopover(wrap){
@@ -1459,6 +2235,46 @@ function wirePickPopover(wrap){
   if(apply) apply.addEventListener("click",commitPick);
   const cancel=document.getElementById("cpcancel");
   if(cancel) cancel.addEventListener("click",()=>{ PICKOPEN=null; renderFleet(); });
+  // Scan-to-load (v2.9): the reverse of the Spools-view flow. You're standing
+  // at the printer, popover open on the slot you're feeding — tap scan, tap
+  // the spool's tag, and the Hub records the loadout AND sets the head color
+  // in one motion (same verified /api/setcolor path as Apply).
+  const scanBtn=document.getElementById("cpscan");
+  if(scanBtn) scanBtn.addEventListener("click",async ()=>{
+    if(!PICKOPEN) return;
+    const target={printer:PICKOPEN.id, slot:PICKOPEN.slot};
+    const st=document.getElementById("cpscanst");
+    const say=(cls,msg)=>{ if(st){ st.className="pstatus "+cls; st.textContent=msg; } };
+    try{
+      NDEF = NDEF || new NDEFReader();
+      try{ await NDEF.scan(); }
+      catch(e){ if(!/ongoing|progress|already/i.test(String(e.message))) throw e; }  // a live scan session is reusable — only the handler below matters
+      say("work","Hold the spool's tag to the phone…");
+      NDEF.onreading = async ev=>{
+        if(!ev.serialNumber) return;
+        NDEF.onreading = null;                        // one tag per press — no stray hijacks later
+        try{
+          const d=await post("/api/spools/resolve",{uid:ev.serialNumber});
+          if(d.known){
+            say("work","Loading "+(d.spool.color_name||("#"+d.spool.hex))+"…");
+            await loadSpoolIntoSlot(target.printer, target.slot, d.spool_id, d.spool);
+          } else {
+            // Unknown tag: bind it once in the Spools view — the pending
+            // target makes the load happen automatically right after.
+            PENDINGLOAD=target;
+            setView("spools");
+            await loadSpools();
+            $("scanstate").textContent="New tag — bind it once and it'll load straight into "+pendingLoadLabel()+".";
+            openBindPanel(d.uid);
+            window.scrollTo({top:0,behavior:"smooth"});
+          }
+        }catch(e){ say("err",e.message); }
+      };
+      NDEF.onreadingerror = ()=>say("err","Couldn't read that tag — try again.");
+    }catch(e){
+      say("err", location.protocol!=="https:" ? "Web NFC needs HTTPS — open the Hub via its tunnel URL." : ("NFC error: "+e.message));
+    }
+  });
 }
 function commitPick(){
   if(!PICKOPEN) return;
@@ -1773,12 +2589,63 @@ async function loadConfigUI(){
   try{
     const c=await (await fetch("/api/config")).json();
     $("setFolder").value=c.gcodeFolder||"";
+    if(Array.isArray(c.types)&&c.types.length) TYPES=c.types;
+    renderTypeRows();
     $("setPrinters").innerHTML="";
-    (c.printers||[]).forEach(p=>addPrinterRow(p.name,p.url,p.plug));
+    (c.printers||[]).forEach(p=>addPrinterRow(p.name,p.url,p.plug,p.type));
     if(!c.configured){ $("setup").classList.add("show"); $("setupmsg").textContent="welcome — add your printers to begin"; if(!$("setPrinters").children.length) addPrinterRow("",""); }
   }catch(e){}
 }
-function addPrinterRow(name,url,plug){
+// ---- Printer-type management (Settings) -------------------------------------
+// Two deliberately separate actions: "Add printer type" names a fleet class
+// (Hub makes the slug + folder + accent + tab, once per type); "Add printer"
+// puts a physical machine INTO a type. Type edits apply immediately via
+// /api/types — they're structural, not part of the Save button's config blob.
+function renderTypeRows(){
+  const wrap=$("setTypes"); wrap.innerHTML="";
+  TYPES.forEach(t=>{
+    const row=document.createElement("div");
+    row.innerHTML=`<div class="typerow">
+      <input type="color" class="taccent" value="${esc(t.accent||"#FFB200")}" title="Accent color for ${esc(t.label)}">
+      <input class="field tname" value="${esc(t.label)}" ${t.builtin?'title="Display label — the U1 type itself is built in"':""}>
+      <span class="tslug">${t.builtin?"built-in · flat base folder":"folder: "+esc(t.slug)+"/"}</span>
+      ${t.builtin?"":'<button class="rm" title="Delete type (gcode files are preserved)">×</button>'}
+    </div>`+(t.warning?`<div class="typewarnline">⚠ ${esc(t.warning)}</div>`:"");
+    const acc=row.querySelector(".taccent"), nm=row.querySelector(".tname");
+    acc.addEventListener("change",async ()=>{ try{ await post("/api/types/update",{slug:t.slug,accent:acc.value}); await loadTypes(); }catch(e){ alert(e.message); } });
+    nm.addEventListener("change",async ()=>{ try{ await post("/api/types/update",{slug:t.slug,label:nm.value}); await loadTypes(); refreshPrinterTypeSelects(); }catch(e){ alert(e.message); } });
+    const rm=row.querySelector(".rm");
+    if(rm) rm.addEventListener("click",async ()=>{
+      if(!confirm('Delete printer type "'+t.label+'"?\nIts folder and gcode files stay on disk — only the Hub binding is removed.')) return;
+      try{ await post("/api/types/delete",{slug:t.slug}); await loadTypes(); renderTypeRows(); refreshPrinterTypeSelects(); loadFiles(); }
+      catch(e){ alert(e.message); }
+    });
+    wrap.appendChild(row);
+  });
+}
+$("addType").addEventListener("click",async ()=>{
+  const nm=$("newTypeName").value.trim(), st=$("typeStatus");
+  if(!nm){ st.className="pstatus err"; st.textContent="Give the type a name first"; return; }
+  st.className="pstatus work"; st.textContent="Creating…";
+  try{
+    await post("/api/types",{label:nm});
+    st.className="pstatus ok"; st.textContent="Added — its folder and tab are ready";
+    $("newTypeName").value="";
+    await loadTypes(); renderTypeRows(); refreshPrinterTypeSelects();
+  }catch(e){ st.className="pstatus err"; st.textContent=e.message; }
+});
+function typeSelectHtml(sel){
+  return `<select class="field ptype" style="flex:none;width:150px" title="Printer type">`+
+    TYPES.map(t=>`<option value="${esc(t.slug)}"${t.slug===(sel||"u1")?" selected":""}>${esc(t.label)}</option>`).join("")+`</select>`;
+}
+function refreshPrinterTypeSelects(){
+  [...$("setPrinters").querySelectorAll(".ptype")].forEach(sel=>{
+    const cur=sel.value;
+    sel.innerHTML=TYPES.map(t=>`<option value="${esc(t.slug)}"${t.slug===cur?" selected":""}>${esc(t.label)}</option>`).join("");
+    if(!TYPES.find(t=>t.slug===sel.value)) sel.value="u1";
+  });
+}
+function addPrinterRow(name,url,plug,ptype){
   const t = (plug && plug.type) || "";
   const ip  = esc((plug && plug.ip)  || "");
   const on  = esc((plug && plug.on)  || "");
@@ -1787,7 +2654,8 @@ function addPrinterRow(name,url,plug){
   block.innerHTML=
     `<div class="prow">`+
       `<input class="field pname" placeholder="U1" value="${esc(name||"")}">`+
-      `<input class="field purl" placeholder="http://192.168.1.50" value="${esc(url||"")}">`+
+      typeSelectHtml(ptype)+
+      `<input class="field purl" placeholder="http://192.168.1.50 (U1) or http://192.168.1.60:7125 (stock Moonraker)" value="${esc(url||"")}">`+
       `<button class="rm" title="Remove">×</button>`+
     `</div>`+
     `<div class="plugrow">`+
@@ -1820,7 +2688,8 @@ function addPrinterRow(name,url,plug){
 }
 function gatherPrinters(){
   return [...$("setPrinters").querySelectorAll(".pblock")].map(b=>{
-    const rec={ name:b.querySelector(".pname").value.trim(), url:b.querySelector(".purl").value.trim() };
+    const rec={ name:b.querySelector(".pname").value.trim(), url:b.querySelector(".purl").value.trim(),
+                type:(b.querySelector(".ptype")||{}).value||"u1" };
     const t=b.querySelector(".plugtype").value;
     if(t==="shelly"){
       const ip=b.querySelector(".plugip").value.trim();

@@ -8,10 +8,10 @@
 <link rel="icon" href="/icon-192.png">
 <style>
   :root{
-    --chassis:#1A1C22; --panel:#23262E; --panel-2:#2B2F38;
-    --line:#353A45; --line-soft:#2E323B;
-    --ink:#ECEEF2; --ink-dim:#9AA0AC; --ink-faint:#6A7180;
-    --signal:#FFB200; --ok:#46C18C; --idle:#545B69; --bad:#E06A5C; --busy:#5B9BF0;
+    --chassis:#0F1115; --panel:#1D2027; --panel-2:#282C36;
+    --line:#3C4250; --line-soft:#313641;
+    --ink:#F4F6FA; --ink-dim:#AEB6C4; --ink-faint:#828B9A;
+    --signal:#FFB200; --ok:#3DD68C; --idle:#5C6474; --bad:#F26B5E; --busy:#6AACFF;
     --mono: ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
     --sans: ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
   }
@@ -120,6 +120,15 @@
     <div class="status" id="fileStatus"></div>
   </div>
 
+  <div class="card">
+    <h2>What should I load?</h2>
+    <div class="rowbtns" style="margin-top:0">
+      <button id="recBtn">Suggest spools from my library</button>
+    </div>
+    <div id="recResults"></div>
+    <p class="hint">Ranks 4-spool sets from your bound spool library (Spools tab) by the <em>worst</em> ΔE across every target above — the set whose hardest color still comes out best. Ideal CMYW is shown as a reference row. Tap "Load this set" to drop a suggestion into the spool slots.</p>
+  </div>
+
   <div class="rowbtns" style="margin-bottom:14px">
     <button class="primary" id="solveBtn" style="flex:1; padding:13px">Compute mixes</button>
   </div>
@@ -135,6 +144,19 @@ const $ = id => document.getElementById(id);
 const IDEAL = ["#FF00FF", "#00FFFF", "#FFFF00", "#FFFFFF"];
 let spools = IDEAL.slice();          // hex or null per slot (F1..F4)
 let targets = [];                    // {hex, parts|null, excluded}
+// A fetch that hits a tunnel/proxy error page (Cloudflare 502 while the Hub
+// restarts) gets HTML back, and r.json() dies with a cryptic token error.
+// Parse defensively and say what actually happened.
+async function safeJson(r){
+  const text = await r.text();
+  try { return JSON.parse(text); }
+  catch {
+    throw new Error(/<!DOCTYPE|<html/i.test(text)
+      ? "The Hub answered with a web page instead of data (HTTP " + r.status + ") — usually the tunnel or proxy replying while the Hub is down or restarting. Wait a moment and retry."
+      : "Unreadable response from the Hub (HTTP " + r.status + ").");
+  }
+}
+let uidStart = 0;                    // continue uid numbering after a project's existing mixes
 
 // ---- spools UI ----
 function renderSpools(){
@@ -163,7 +185,7 @@ $("cmywBtn").onclick = () => { spools = IDEAL.slice(); renderSpools(); };
 $("loadBtn").onclick = async () => {
   const btn = $("loadBtn"); btn.disabled = true; btn.textContent = "Loading…";
   try {
-    const fleet = await (await fetch("/api/fleet")).json();
+    const fleet = await safeJson(await fetch("/api/fleet"));
     const online = fleet.filter(p => p.online && p.heads);
     if (!online.length) throw new Error("No online printers");
     let pick = online[0];
@@ -215,18 +237,100 @@ const drop = $("drop");
 drop.addEventListener("drop", e => { const f = e.dataTransfer.files[0]; if (f) analyzeFile(f); });
 $("file").onchange = () => { const f = $("file").files[0]; if (f) analyzeFile(f); };
 
+// ---- Client-side 3MF member extraction (v2.9) --------------------------------
+// The analyzer only needs two small config members out of the 3MF (a ZIP).
+// FS projects can be hundreds of MB, and uploading the whole file over the
+// tunnel took minutes — or died on Cloudflare's ~100 MB request cap with an
+// HTML error page. So: read the ZIP central directory locally via File.slice,
+// inflate just those members with DecompressionStream, and post a few hundred
+// KB of text. Falls back to the raw-upload route on any snag (old browser,
+// ZIP64, odd archive).
+async function extract3mfConfigs(f){
+  if (typeof DecompressionStream === "undefined") return null;
+  const dv = async (off,len)=>new DataView(await f.slice(off, off+len).arrayBuffer());
+  // EOCD: scan backward through at most 64 KB of trailing comment.
+  const tailLen = Math.min(f.size, 65557);
+  const tail = await dv(f.size - tailLen, tailLen);
+  let eocd = -1;
+  for (let i = tail.byteLength - 22; i >= 0; i--)
+    if (tail.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  if (eocd < 0) return null;
+  const cdSize = tail.getUint32(eocd + 12, true), cdOff = tail.getUint32(eocd + 16, true);
+  if (cdOff === 0xFFFFFFFF || cdSize === 0xFFFFFFFF) return null;   // ZIP64 — fall back
+  const cd = await dv(cdOff, cdSize);
+  const td = new TextDecoder();
+  const want = {};   // name → {method,csize,lho}
+  for (let off = 0; off + 46 <= cd.byteLength; ) {
+    if (cd.getUint32(off, true) !== 0x02014b50) break;
+    const method = cd.getUint16(off+10,true), csize = cd.getUint32(off+20,true);
+    const nlen = cd.getUint16(off+28,true), elen = cd.getUint16(off+30,true), clen = cd.getUint16(off+32,true);
+    const lho = cd.getUint32(off+42,true);
+    const name = td.decode(new Uint8Array(cd.buffer, off+46, nlen));
+    if (/(^|\/)(project_settings|model_settings)\.config$/i.test(name))
+      want[name] = { method, csize, lho };
+    off += 46 + nlen + elen + clen;
+  }
+  const psName = Object.keys(want).find(n=>/project_settings/i.test(n));
+  if (!psName) return null;                                          // let the server produce its message via fallback
+  const readMember = async e => {
+    const lh = await dv(e.lho, 30);
+    if (lh.getUint32(0,true) !== 0x04034b50) throw 0;
+    const start = e.lho + 30 + lh.getUint16(26,true) + lh.getUint16(28,true);
+    const blob = f.slice(start, start + e.csize);
+    if (e.method === 0) return await blob.text();
+    if (e.method !== 8) throw 0;
+    return await new Response(blob.stream().pipeThrough(new DecompressionStream("deflate-raw"))).text();
+  };
+  const msName = Object.keys(want).find(n=>/model_settings/i.test(n));
+  return {
+    projectSettings: await readMember(want[psName]),
+    modelSettings: msName ? await readMember(want[msName]) : null
+  };
+}
+
 async function analyzeFile(f){
-  const st = $("fileStatus"); st.className = "status"; st.textContent = "Reading " + f.name + "…";
+  const st = $("fileStatus"); st.className = "status"; st.textContent = "Reading " + f.name + " locally…";
   try {
-    const r = await fetch("/api/fs-colors/analyze", { method:"POST", body: f });
-    const j = await r.json();
+    let r, j;
+    let parts = null;
+    try { parts = await extract3mfConfigs(f); } catch { parts = null; }
+    if (parts) {
+      st.textContent = "Analyzing " + f.name + "…";
+      r = await fetch("/api/fs-colors/analyze-parts", { method:"POST",
+        headers:{ "Content-Type":"application/json" }, body: JSON.stringify(parts) });
+    } else {
+      st.textContent = "Uploading " + f.name + " (" + (f.size/1048576).toFixed(1) + " MB — whole file, this browser can't extract locally)…";
+      r = await fetch("/api/fs-colors/analyze", { method:"POST", body: f });
+    }
+    j = await safeJson(r);
     if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
     targets = j.colors.map(c => ({ hex: c.hex, parts: j.hasUsage ? c.parts : null,
       excluded: j.hasUsage && c.parts === 0 }));
     renderTargets();
+    uidStart = j.maxUid || 0;
+    renderExisting(j.existingMixes || []);
     st.textContent = `${f.name}: ${j.filamentCount} filaments found` +
-      (j.hasUsage ? " (ranked by part count — tap a swatch to include/exclude)" : "");
+      (j.hasUsage ? " (ranked by part count — tap a swatch to include/exclude)" : "") +
+      (j.existingMixes && j.existingMixes.length ? ` · ${j.existingMixes.length} existing mix definition${j.existingMixes.length===1?"":"s"} decoded below` : "");
   } catch (e) { st.className = "status err"; st.textContent = e.message; }
+}
+
+// Orca-alignment reconciliation view: decode the fork's OWN definitions from
+// the project and show our predicted swatch for each. Compare these against
+// the fork's Mix Effect previews — if interpretation ever drifts, it shows
+// here first. (New definitions we compute continue uid numbering after these.)
+function renderExisting(mixes){
+  let card = $("existingCard");
+  if (!mixes.length) { if (card) card.remove(); return; }
+  if (!card) {
+    card = document.createElement("div");
+    card.id = "existingCard"; card.className = "card";
+    $("results").parentNode.insertBefore(card, $("results"));
+  }
+  card.innerHTML = "<h2>Existing mixes in this project</h2>" + mixes.map(m => `
+    <div class="alt"><span class="sw" style="background:${m.hex}"></span>
+      C${m.id} · ${m.label}<span class="de">predicted ${m.hex}</span></div>`).join("") +
+    `<p class="hint">Decoded from the project's <code>mixed_filament_definitions</code> with the Hub's blend model. Open the fork's Mix Effect preview for the same mixes — the swatches should match; a visible difference means the models have drifted and is worth reporting.</p>`;
 }
 
 // ---- solve ----
@@ -238,11 +342,11 @@ $("solveBtn").onclick = async () => {
   try {
     const r = await fetch("/api/fs-colors/solve", {
       method:"POST", headers:{ "Content-Type":"application/json" },
-      body: JSON.stringify({ spools, targets: live })
+      body: JSON.stringify({ spools, targets: live, uidStart })
     });
-    const j = await r.json();
+    const j = await safeJson(r);
     if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
-    renderResults(j.results);
+    renderResults(j.results, j.definitions);
   } catch (e) {
     host.innerHTML = `<div class="card"><p class="hint" style="color:var(--bad)">${e.message}</p></div>`;
   }
@@ -255,11 +359,24 @@ function badge(grade, dE){
   return `<span class="badge ${cls}">ΔE ${dE} · ${txt}</span>`;
 }
 
-function renderResults(results){
+function renderResults(results, definitions){
   const host = $("results");
   const card = document.createElement("div");
   card.className = "card";
   card.innerHTML = "<h2>Mix recipes</h2>";
+  // Paste-once export: the complete mixed_filament_definitions value for every
+  // recipe below, ';'-joined with non-colliding uids — one copy instead of N.
+  if (definitions) {
+    const d = document.createElement("div");
+    d.className = "defrow";
+    d.innerHTML = `<code>${definitions}</code><button id="copyAllDefs">copy ALL definitions</button>`;
+    d.querySelector("#copyAllDefs").onclick = () => {
+      navigator.clipboard.writeText(definitions);
+      const b = d.querySelector("#copyAllDefs");
+      b.textContent = "copied"; setTimeout(() => b.textContent = "copy ALL definitions", 1400);
+    };
+    card.appendChild(d);
+  }
   results.forEach(r => {
     const d = document.createElement("div");
     d.className = "recipe";
@@ -286,6 +403,69 @@ function renderResults(results){
     card.appendChild(d);
   });
   host.appendChild(card);
+}
+
+// ---- Base-set recommender ("what should I load?") ----
+// Candidates = the bound-spool library, so the suggestion names the physical
+// rolls on the shelf. Each set's number is the WORST target ΔE — the print's
+// hardest color is what decides whether a load-out works.
+$("recBtn").onclick = async () => {
+  const live = targets.filter(t => !t.excluded).map(t => t.hex);
+  const host = $("recResults");
+  if (!live.length) { host.innerHTML = `<p class="hint">Add target colors first (drop a 3MF above).</p>`; return; }
+  const btn = $("recBtn"); btn.disabled = true; btn.textContent = "Thinking…";
+  host.innerHTML = "";
+  try {
+    const spoolsLib = ((await safeJson(await fetch("/api/spools"))).spools || []);
+    // Multi-color spools (gradients, silk duals/tris) can't be blend bases —
+    // their extruded color is position-dependent, so they'd poison the solve.
+    const candidates = spoolsLib.filter(s => !(s.hexes && s.hexes.length >= 2)).map(s => ({
+      label: (s.color_name || ("#" + s.hex)) + (s.brand ? " · " + s.brand : ""),
+      hex: "#" + s.hex, spool_id: s.spool_id
+    }));
+    if (candidates.length < 4) {
+      host.innerHTML = `<p class="hint">Your spool library has ${candidates.length} bound spool${candidates.length===1?"":"s"} — the recommender needs at least 4 distinct colors. Bind spools in the <a href="/" style="color:var(--signal)">Spools tab</a> (scan a tag or QR label), then come back.</p>`;
+    } else {
+      const r = await fetch("/api/fs-colors/recommend", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ targets: live, candidates })
+      });
+      const j = await safeJson(r);
+      if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+      renderRecs(j);
+    }
+  } catch (e) { host.innerHTML = `<p class="hint" style="color:var(--bad)">${e.message}</p>`; }
+  btn.disabled = false; btn.textContent = "Suggest spools from my library";
+};
+
+function recRow(s, title) {
+  const sws = s.spools.map(x => `<span class="sw" style="background:${x.hex}" title="${x.label}"></span>`).join("");
+  const names = s.spools.map(x => x.label).join(" · ");
+  return `<div class="recipe"><div class="top">
+      <span style="display:flex;gap:4px">${sws}</span>
+      <div class="mix"><div class="label">${title}</div><div class="sub">${names}</div></div>
+      ${badge(s.worstGrade, s.worst)}
+      ${s.benchmark ? "" : `<button data-load='${JSON.stringify(s.spools.map(x=>x.hex))}'>Load this set</button>`}
+    </div>
+    <details><summary>per-target: worst ΔE ${s.worst} · avg ${s.avg}</summary>${
+      s.perTarget.map(p => `<div class="alt"><span class="sw" style="background:${p.target}"></span>${p.target} → <span class="sw" style="background:${p.mixHex}"></span><span class="de">ΔE ${p.dE} · ${p.grade}</span></div>`).join("")
+    }</details></div>`;
+}
+
+function renderRecs(j) {
+  const host = $("recResults");
+  let html = "";
+  j.sets.forEach((s, i) => { html += recRow(s, i === 0 ? "Best load-out from your spools" : "Alternative " + i); });
+  if (j.benchmark) html += recRow(j.benchmark, "Ideal CMYW (reference — not from your library)");
+  if (j.trimmed) html += `<p class="hint">${j.trimmed} near-duplicate or similar spools were left out of the search to keep it fast — the ${j.candidateCount} most distinct colors were considered.</p>`;
+  host.innerHTML = html;
+  host.querySelectorAll("button[data-load]").forEach(b => b.onclick = () => {
+    spools = JSON.parse(b.dataset.load);
+    while (spools.length < 4) spools.push(null);
+    renderSpools();
+    b.textContent = "Loaded ✓ — now Compute mixes"; setTimeout(() => b.textContent = "Load this set", 2000);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  });
 }
 
 renderSpools();

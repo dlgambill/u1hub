@@ -12,8 +12,13 @@ RUN npm pkg delete devDependencies \
  && npm install --omit=dev \
  && npm cache clean --force
 
-# App source.
-COPY server.js parser.js ./
+# App source. (Issue #1 fix: auth.js, fs-colors.js and tunnel.js were missing
+# from this COPY list, which broke the Docker install path on Pi/NAS while the
+# pkg binaries — which bundle everything — kept working. Every server-side
+# module server.js require()s MUST be listed here; rfid.js + the filament
+# snapshot + scripts/ are the v2.9 additions.)
+COPY server.js parser.js auth.js fs-colors.js tunnel.js rfid.js filament-swatches.json ./
+COPY scripts ./scripts
 COPY public ./public
 
 # config.json and gcode/ are expected to be mounted as volumes (see

@@ -2,7 +2,8 @@
 
 ![U1 Print Hub dashboard — farm view with live prints and the filament color picker](docs/dashboard.png)
 
-A small local dashboard for a farm of **Snapmaker U1** printers. From your phone or
+A small local dashboard for a farm of **Snapmaker U1** printers — and, in **beta**,
+any other Klipper/Moonraker printer you run beside them. From your phone or
 any browser — on your network, or **securely from anywhere** — you can:
 
 - Browse **every G-code file you have, wherever it lives** — the Hub's own library and
@@ -37,7 +38,14 @@ any browser — on your network, or **securely from anywhere** — you can:
   and reorder or remove entries with a tap.
 - **Plan Full Spectrum mixes from any 3MF** — drop a multi-color project on the FS Mix
   Planner and get the exact filament blend recipes to print it on 4 toolheads, solved
-  against the colors actually loaded on your machine.
+  against the colors actually loaded on your machine — or ask it **which 4 spools from
+  your shelf** to load in the first place.
+- **Give every spool an identity** — scan a spool's **RFID tag with your phone** (or a
+  printed **QR label**) and the Hub knows its brand, material, color — even dual-color
+  silks and gradients — and temps forever after. Scan again to **load it into a printer
+  slot in one motion**, head color set to match.
+- **Track what's loaded where** — every bound spool shows which machine and slot it's
+  physically sitting in, fleet-wide.
 - **Protect the Hub with a password** — optional single shared password with 30-day
   sessions, or hand auth to your reverse proxy (Authelia/Authentik supported).
 - **Reach it from outside your network** — the Hub can run a Cloudflare tunnel for you:
@@ -48,6 +56,89 @@ any browser — on your network, or **securely from anywhere** — you can:
 
 It talks straight to each printer's built-in Moonraker API. Nothing is installed on the
 printers, and nothing leaves your network unless you turn remote access on.
+
+---
+
+## New in 2.9 — the spools & beta-fleet release
+
+- **A spool registry you scan with your phone.** Stick an **NTAG RFID sticker** on a
+  spool (or use the RFID tag many spools already ship with — the Hub reads the tag's
+  **serial number only**, nothing proprietary is decoded) and scan it with **Android
+  Chrome** over the Hub's HTTPS tunnel. An unknown tag asks **once** what's on the
+  spool — search ~2,266 **colorimeter-measured swatches** from FilamentColors.xyz,
+  sample the color already loaded on a head, or describe it yourself — then resolves
+  **instantly forever after**. No phone NFC? **Print QR labels** from the Hub and scan
+  those with any camera, iPhone included. One spool can carry **both** its vendor tag
+  and a Hub sticker — attach the second tag to the same identity with a tap, no
+  duplicates.
+
+![The Spools tab — bound spools with brand, material, temps, tags, and where each one is loaded](docs/spools.png)
+![A new tag being bound — attach it to a spool you already have, search the swatch library, or describe it yourself](docs/bind-panel.png)
+
+- **Full identities, including the weird filaments.** The describe-it-yourself form
+  takes manufacturer, **material type** (PLA/PETG/ASA/…), **variant** (Matte, Silk,
+  Glow, CF…), print temps — and real **multi-color support**: dual- and tri-color
+  silks render as segmented swatches, gradients blend smoothly, everywhere the spool
+  appears. (Multi-color spools are automatically excluded from mix recipes — their
+  extruded color depends on position, so they'd poison a blend.)
+
+- **Scan-to-load: the killer loop.** Tap a head's color swatch on any printer card and
+  the picker now has **“📶 Scan spool → load here.”** Hold the spool's tag to your
+  phone: the Hub records **that spool is now in that slot** and pushes its measured
+  color onto the head in one motion — Spool Match instantly treats it like an official
+  RFID roll. Works the other direction too: scan a spool in the Spools tab and pick a
+  printer + slot from its card. A brand-new tag scanned at a printer bounces to the
+  bind panel and then **loads itself into the slot you started from**. Loadout state
+  survives restarts; forgetting a spool unloads it everywhere.
+
+![Scan-to-load — the head color picker with Scan spool, one tap from tag to loaded](docs/scan-to-load.png)
+![A scanned spool's card — load it into any printer and slot, head color set to match](docs/spool-scan.png)
+
+- **“What should I load?”** The FS Mix Planner's inverse solve: drop a 3MF and the
+  **base-set recommender** ranks 4-spool sets **from your bound-spool shelf** by
+  worst-case ΔE across every color the print needs — so the recommendation names your
+  actual physical rolls, not theoretical colors. An ideal-CMYW benchmark row shows how
+  close your shelf gets to the ceiling.
+
+![The recommender — ranked 4-spool sets from your own shelf, with per-target ΔE](docs/recommender.png)
+
+- **Orca-alignment for FS mixes.** The Hub's mix serialization is byte-exact against
+  the FS fork both directions — and a real bug got fixed on the way: **pair-style mix
+  definitions in sliced G-code were silently missing** from the FS preview. A
+  reconciliation view shows the fork's decoded mixes next to the Hub's predictions,
+  side by side.
+
+- **Other printers, in beta.** Add a **printer type** in Settings (it gets its own
+  folder, accent color, and switcher tab — U1 keeps its flat base folder), then add any
+  Klipper/Moonraker machine into it. The Hub detects capabilities **per printer** —
+  single-extruder machines get a clean single-head card, and a **class guard** refuses
+  multi-color jobs dropped on machines that can't print them. Non-U1 types wear a
+  **BETA** chip: they're fully harness-verified against mock printers, and real-hardware
+  reports are how they graduate.
+
+![Printer types in Settings — U1 grandfathered, new types in beta with their own folders and accents](docs/types-beta.png)
+
+- **Diagnostics bundle — beta reports that fix things.** ⚙ Settings → **Download
+  diagnostics** produces one JSON: Hub version, printer types + **detected**
+  capabilities, the recent in-memory Hub log, and the tail of each printer's
+  `klippy.log`/`moonraker.log`. **IPs are replaced with aliases and tokens are
+  scrubbed before the file is written**; auth and tunnel secrets are never read at
+  all. Nothing is ever sent anywhere — you review the file and attach it to a [GitHub
+  issue](https://github.com/dlgambill/u1hub/issues/new/choose) (there's a template that asks for it). The Hub still has **zero telemetry**.
+
+![Download diagnostics — one sanitized JSON for bug reports, generated only when you ask](docs/diagnostics.png)
+
+- **A UI worth using on a phone.** Higher-contrast theme (panels lift off a darker
+  chassis, brighter text, punchier status colors), a **sticky nav bar** so the view
+  tabs are always one tap away, bottom-sheet modals, 44 px touch targets, and inputs
+  sized so **iOS stops zooming the page** on every field. Two long-standing bugs died
+  in the process: file-row actions were **unreachable on touchscreens** (they only
+  appeared on hover), and taps sometimes needed two or three tries because the live
+  fleet stream could **rebuild the page mid-tap** — re-renders now wait for your
+  finger to lift, and identical updates don't redraw at all.
+
+- **Docker fix.** The image now ships every module it needs (Issue #1) — `docker
+  compose up -d` on a Pi or NAS works out of the box.
 
 ---
 
@@ -410,6 +501,22 @@ from its tile.
   the **front** of the bed.
 - The **▁▂▅ button** on each card opens live temperature sparklines, lifetime totals,
   and the last ten jobs. **Farm stats** at the bottom aggregates the whole fleet.
+- **Spools tab — give your filament identities.** Scanning needs **Android Chrome over
+  HTTPS** (open the Hub via its tunnel URL — Web NFC won't run on plain `http://`).
+  Scan a tag: unknown tags ask what's on the spool once; known tags show the identity
+  card with **Load to printer**. No NFC? **Print QR labels** (🏷 on any spool row) and
+  scan with any phone camera, iPhone included. Tag policy that works well: RFID
+  stickers for the durable core spools, QR labels for everything else, nothing on
+  truly disposable rolls — and when a spool dies, **re-bind** its tag to the
+  replacement roll instead of re-sticking.
+- **Loading filament?** Tap the head's swatch on the printer card → **Scan spool →
+  load here** → touch the tag. Loadout recorded, head color set, done. The spool's row
+  in the Spools tab shows **▸ where it lives** from then on.
+- **Adding a non-U1 printer (beta):** ⚙ Settings → **Printer types** → add a type
+  (e.g. “SV06”), then add the printer into it by IP (`http://<ip>:7125` for stock
+  Moonraker — U1s use port 80, which Discover already knows). The card adapts to what
+  the printer actually reports. If anything misbehaves, **Download diagnostics** and
+  open a [GitHub issue](https://github.com/dlgambill/u1hub/issues/new/choose) with the file attached — that's how beta types get verified.
 
 ### Keep your printer IPs from changing
 
@@ -438,6 +545,10 @@ addresses never move and you won't have to touch anything.
   metadata isn't available.
 - **Realtime** uses one websocket per printer plus a server-sent-events stream to the
   browser; both fall back to plain HTTP polling automatically if anything is in the way.
+- **Spool tags are serial numbers, nothing more.** The registry keys on a tag's freely
+  readable UID — no vendor payloads are decoded, ever. Identities live in `spools.json`
+  and loadout in `slots.json`, next to your config; QR labels encode an opaque
+  `u1spool:<id>` pointer back to them.
 - **Treat the hub like the printers it controls.** Turn on the password gate
   (⚙ Settings → Manage access) if anyone you don't fully trust can reach your network.
   For access from outside, **use the built-in tunnel and nothing else** — it's HTTPS
@@ -447,6 +558,14 @@ addresses never move and you won't have to touch anything.
   exists precisely so you never have to do that.
 
 ---
+
+## Credits
+
+- **[FilamentColors.xyz](https://filamentcolors.xyz)** (© Joe Kaufeld, MIT) — the
+  bundled library of colorimeter-measured filament swatches that makes search-to-bind
+  and honest ΔE math possible.
+- **jsQR** (Apache-2.0) and **qrcode-generator** (MIT) — vendored for QR label
+  scanning and generation, so the iPhone path works with no network dependency.
 
 ## Found this useful?
 
@@ -483,8 +602,8 @@ release, bump the version in `package.json` and the `VERSION` constants in `serv
 and `public/index.html`, then tag and push:
 
 ```
-git tag v2.8.0
-git push origin v2.8.0
+git tag v2.9.0
+git push origin v2.9.0
 ```
 
 `.github/workflows/release.yml` builds Linux, Windows, and Apple-Silicon macOS binaries
