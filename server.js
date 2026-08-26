@@ -3,8 +3,9 @@
 // and pushes the chosen file to the chosen printer via Moonraker (server-side,
 // so no browser CORS headaches).
 
-const VERSION = "2.9.0";
+const VERSION = "2.10.0";
 
+const crypto = require("crypto");
 const express = require("express");
 const fs = require("fs");
 const http = require("http");
@@ -183,6 +184,60 @@ function savePrintLog() { try { fs.writeFileSync(PRINTLOG_PATH, JSON.stringify(P
 let PRINTLOG = loadPrintLog();
 function plogOf(slug) { return PRINTLOG[slug] || (PRINTLOG[slug] = {}); }
 
+// --- print-file filament memory (v2.10) --------------------------------------
+// Remembers which physical spools (loadout snapshot) a file was printed with,
+// keyed on CONTENT, not filename — a partial hash of (size + first 1 MB +
+// last 1 MB). Rename-proof and cross-folder-proof by construction; re-slicing
+// the same project changes the bytes, so history correctly resets. Records
+// live under printlog.json's reserved "__filaments" key (printlog is already
+// on the never-commit list). "__filaments" is NOT a type slug: plogOf() is
+// only ever called with real slugs, and the flat-map v2.8 wrap check keys on
+// numeric values, which this object never has.
+const FMEM_KEY = "__filaments";
+function fmem() { return PRINTLOG[FMEM_KEY] || (PRINTLOG[FMEM_KEY] = {}); }
+function fileContentHash(fp) {
+  const st = fs.statSync(fp);
+  const CH = 1024 * 1024;                       // 1 MB head + 1 MB tail
+  const h = crypto.createHash("sha256");
+  h.update(String(st.size));
+  const fd = fs.openSync(fp, "r");
+  try {
+    const head = Buffer.alloc(Math.min(CH, st.size));
+    fs.readSync(fd, head, 0, head.length, 0);
+    h.update(head);
+    if (st.size > CH) {
+      const tail = Buffer.alloc(Math.min(CH, st.size - CH));
+      fs.readSync(fd, tail, 0, tail.length, st.size - tail.length);
+      h.update(tail);
+    }
+  } finally { fs.closeSync(fd); }
+  return "ph1-" + h.digest("hex").slice(0, 40);
+}
+// Loadout snapshot for one printer index, read straight from the state files
+// on disk (slots.json / spools.json are the source of truth and are rewritten
+// on every change by rfid.js — a read-only peek here keeps the modules
+// decoupled). Returns [] when nothing is loaded.
+function loadoutSnapshot(printerIdx) {
+  let slots = {}, spools = {};
+  try { slots = JSON.parse(fs.readFileSync(path.join(BASE_DIR, "slots.json"), "utf8")) || {}; } catch {}
+  try { spools = (JSON.parse(fs.readFileSync(path.join(BASE_DIR, "spools.json"), "utf8")) || {}).spools || {}; } catch {}
+  // slots.json keys on printer URL (survives config reorders) — mirror that.
+  const p = PRINTERS[printerIdx];
+  const mine = (p && slots[String(p.url)]) || {};
+  return Object.keys(mine).sort((a, b) => a - b).map(k => {
+    const sid = (mine[k] || {}).spool_id;
+    const sp = spools[sid] || {};
+    return { slot: Number(k), spool_id: sid || null,
+             hex: sp.hex || null, color_name: sp.color_name || null,
+             brand: sp.brand || null, material_variant: sp.material_variant || null };
+  }).filter(e => e.spool_id);
+}
+// Pending record per printer index: created when a genuine new start is
+// observed, promoted into __filaments only when that print COMPLETES (a
+// cancelled or failed print teaches nothing). Lost on hub restart mid-print —
+// acceptable: the next successful run of the same file re-records.
+const FMEM_PENDING = {};
+
 // --- print queue --------------------------------------------------------------
 // A single shared "up next" list (queue.json, array of {id, file, added}).
 // Reference-only by design: the Hub never auto-starts queued jobs — the U1
@@ -230,12 +285,41 @@ async function pollPrintStarts() {
     // it wasn't a pause. prev===undefined => first observation => boot-mid-print => skip.
     if (s.state === "printing" && prev !== undefined && prev !== "printing" && prev !== "paused") {
       const base = path.basename(s.filename || "");
-      if (base) { plogOf(PRINTERS[i].type || "u1")[base] = Date.now(); savePrintLog(); }
+      if (base) {
+        const slug = PRINTERS[i].type || "u1";
+        plogOf(slug)[base] = Date.now(); savePrintLog();
+        // v2.10 filament memory: hash the LOCAL copy of the started file and
+        // snapshot this printer's loadout. Touchscreen-started files that only
+        // exist printer-side simply skip (no local bytes to hash).
+        try {
+          const t = TYPES.find(x => x.slug === slug);
+          const fp = t && safeFile(base, t);
+          const spools = loadoutSnapshot(i);
+          if (fp && fs.existsSync(fp) && spools.length) {
+            FMEM_PENDING[i] = { hash: fileContentHash(fp), file: base, type: slug, spools };
+            hublog("info", "fmem: watching '" + base + "' on " + (PRINTERS[i].name || i) + " (" + spools.length + " spool" + (spools.length > 1 ? "s" : "") + " loaded)");
+          } else { delete FMEM_PENDING[i]; }
+        } catch { delete FMEM_PENDING[i]; }
+      }
+    }
+    // Promote on completion; drop the pending record on any other exit.
+    if (prev === "printing" && s.state !== "printing" && FMEM_PENDING[i]) {
+      if (s.state === "complete") {
+        const pnd = FMEM_PENDING[i];
+        fmem()[pnd.hash] = { file: pnd.file, type: pnd.type, ts: Date.now(), spools: pnd.spools };
+        savePrintLog();
+        hublog("info", "fmem: recorded '" + pnd.file + "' → " + pnd.spools.length + " spool loadout");
+        delete FMEM_PENDING[i];
+      } else if (s.state !== "paused") {         // paused keeps the watch alive
+        delete FMEM_PENDING[i];
+      }
     }
     LAST_STATE[i] = s.state;
   }
 }
-setInterval(pollPrintStarts, 15000);
+// Interval is env-tunable so the test harness can drive a full start→complete
+// lifecycle in seconds; production default stays 15 s.
+setInterval(pollPrintStarts, Math.max(250, parseInt(process.env.U1HUB_POLL_MS, 10) || 15000));
 pollPrintStarts();   // prime LAST_STATE at startup (won't stamp — prev is undefined)
 
 const app = express();
@@ -762,7 +846,12 @@ function paletteForFile(name, t) {
   let r = parseGcodeMap(text, { scanBody: false });
   if (r.noColors && st.size > TAIL) r = parseGcodeMap(fs.readFileSync(fp, "utf8"), { scanBody: true });
   const colors = (Array.isArray(r.palette) ? r.palette : []).filter(s => s && s.used && s.hex).map(s => s.hex);
-  const rec = { size: st.size, mtime: st.mtimeMs, colors,
+  // Per-palette-index hex, kept unfiltered: /api/print needs to ask "are these
+  // two logical tools actually the same color?" and the filtered `colors` array
+  // above has lost its index alignment.
+  const hexByIdx = {};
+  if (Array.isArray(r.palette)) for (const s of r.palette) if (s && s.hex != null && s.i != null) hexByIdx[s.i] = s.hex;
+  const rec = { size: st.size, mtime: st.mtimeMs, colors, hexByIdx,
     usedCount: (r.usedIdx || []).length, anyTC: !!r.anyTC,
     isFS: !!r.isFS, noColors: !!r.noColors };
   PAL_CACHE.set(key, rec);
@@ -832,6 +921,34 @@ function uploadWithProgress(base, fp, name, job) {
 const JOBS = new Map();   // jobId -> { phase, sent, total, done, error, result, ts }
 const newJobId = () => "j" + Date.now() + Math.random().toString(16).slice(2, 6);
 
+// v2.10 — filament memory recall. Hashes the local file's CONTENT and looks
+// up the last completed loadout for those bytes. Rename-proof: the same file
+// under any name (or in another type's folder after a manual move) still
+// matches. Spool details are re-read from the CURRENT bindings so the UI shows
+// live names/colors; a spool forgotten since is returned from the stored
+// snapshot with missing:true so the client can grey it out.
+app.get("/api/filament-memory", (req, res) => {
+  const t = reqTypeOf(req);
+  if (!t) return res.status(400).json({ error: "Unknown printer type" });
+  const fp = safeFile(String(req.query.file || ""), t);
+  if (!fp || !fs.existsSync(fp)) return res.status(404).json({ error: "File not found" });
+  let hash;
+  try { hash = fileContentHash(fp); }
+  catch (e) { return res.status(500).json({ error: "Could not hash file: " + e.message }); }
+  const rec = fmem()[hash];
+  if (!rec) return res.json({ known: false, hash });
+  let cur = {};
+  try { cur = (JSON.parse(fs.readFileSync(path.join(BASE_DIR, "spools.json"), "utf8")) || {}).spools || {}; } catch {}
+  const spools = (rec.spools || []).map(s => {
+    const live = cur[s.spool_id];
+    return live
+      ? { ...s, hex: live.hex || s.hex, color_name: live.color_name || s.color_name,
+          brand: live.brand || s.brand, material_variant: live.material_variant || s.material_variant, missing: false }
+      : { ...s, missing: true };
+  });
+  res.json({ known: true, hash, file: rec.file, ts: rec.ts, spools });
+});
+
 app.post("/api/print", async (req, res) => {
   const { file, printer, start, map, force } = req.body || {};
   const t = reqTypeOf(req);
@@ -846,13 +963,34 @@ app.post("/api/print", async (req, res) => {
   if ((p.type || "u1") !== t.slug)
     return res.status(400).json({ error: p.name + " belongs to a different printer type ('" + (p.type || "u1") + "') — switch to that type to send this file." });
 
-  // map is { logicalToolIndex: physicalHeadIndex }. Reject two tools → same head.
+  // map is { logicalToolIndex: physicalHeadIndex }. Two tools may legitimately
+  // share a head when the FILE gives them the same color: slicers that can't
+  // merge extruders (Orca, unlike Bambu/Snorca) leave you recoloring one tool to
+  // match another, and the resulting 4-tool file only needs 3 physical rolls.
+  // Refusing that blocked a print that would have been correct (field-found
+  // 2026-08-24). Genuinely different colors on one head still print wrong, so
+  // that stays a hard reject — the test is the palette hex, not the head count.
   let tools = [];
   if (map && Object.keys(map).length) {
     tools = Object.keys(map).map(Number).sort((a, b) => a - b);
-    const heads = tools.map(t => map[t]);
-    if (new Set(heads).size !== heads.length) {
-      return res.status(400).json({ error: "Two colors are mapped to the same head — give each its own head." });
+    const byHead = new Map();
+    for (const tool of tools) {
+      const h = map[tool];
+      if (!byHead.has(h)) byHead.set(h, []);
+      byHead.get(h).push(tool);
+    }
+    const shared = [...byHead.entries()].filter(([, ts]) => ts.length > 1);
+    if (shared.length) {
+      const hexByIdx = (paletteForFile(path.basename(fp), t) || {}).hexByIdx || {};
+      const norm = x => String(x == null ? "" : x).trim().replace(/^#/, "").slice(0, 6).toUpperCase();
+      for (const [head, ts] of shared) {
+        const hexes = ts.map(x => norm(hexByIdx[x]));
+        if (hexes.some(h => !h))                                  // unknown color — can't prove it's safe
+          return res.status(400).json({ error: "Two colors are mapped to T" + (Number(head) + 1) + " and the file's colors for them couldn't be read — give each its own head." });
+        if (new Set(hexes).size !== 1)
+          return res.status(400).json({ error: "T" + (Number(head) + 1) + " is mapped to different colors (" + hexes.map(h => "#" + h).join(" and ") + ") — one head prints one color, so give each its own head." });
+      }
+      hublog("info", "print: " + shared.map(([h, ts]) => ts.length + " same-color tools → T" + (Number(h) + 1)).join(", "));
     }
   }
 
@@ -901,7 +1039,9 @@ app.post("/api/print", async (req, res) => {
       if (tools.length) {                                 // 2) toolhead mapping macros
         job.phase = "mapping";
         const lines = tools.map(t => `SET_PRINT_EXTRUDER_MAP CONFIG_EXTRUDER=${t} MAP_EXTRUDER=${map[t]}`);
-        lines.push("SET_PRINT_USED_EXTRUDERS EXTRUDERS=" + tools.map(t => map[t]).join(","));
+        // USED_EXTRUDERS is a set of PHYSICAL heads: when two same-color tools
+        // share one head it must be listed once, not "3,3".
+        lines.push("SET_PRINT_USED_EXTRUDERS EXTRUDERS=" + [...new Set(tools.map(t => map[t]))].join(","));
         lines.push("SET_PRINT_PREFERENCES BED_LEVEL=0 FLOW_CALIBRATE=0 TIME_LAPSE_CAMERA=0");
         await gcode(lines.join("\n"));
       }
@@ -1873,11 +2013,147 @@ app.get("/api/inventory", async (req, res) => {
   res.json(out);
 });
 
+// ---- M110 label printing (v2.10) --------------------------------------------
+// The M110S takes print data over Bluetooth Classic SPP or USB — neither
+// reachable from a browser. Hardware-verified 2026-08-25 (Danny's unit, USB):
+// the corrected Phomemo byte sequence written RAW through the Windows print
+// spooler (winspool.drv, datatype RAW — the driver never touches the bytes)
+// feeds and prints. So the Hub server, running on the Windows box the printer
+// is plugged into, is the bridge: the browser rasterizes the label exactly as
+// before and POSTs the 1-bit raster here; the server owns the protocol bytes
+// and the spooler write. One protocol implementation, one place to fix it.
+// Any browser or phone can print — the server does the printing.
+//
+// No native dependency: the winspool call is P/Invoked from a tiny PowerShell
+// helper the server materializes into the OS temp dir and spawns per job.
+// @yao-pkg/pkg binaries stay clean across the whole release matrix; on
+// non-Windows platforms the endpoint refuses with a clear message instead of
+// half-working. (Topology limit, documented: the printer must hang off the
+// HUB machine — spooler queues that only exist inside an RDP session, or on
+// some other machine, are out of scope for 2.10.)
+//
+// Protocol (verified against marioPercivaldi/phomemo reference + live feed
+// test): ESC N 0D speed · ESC N 04 density · 1F 11 0A gap-paper · GS v 0
+// blocks of ≤240 lines at 48 bytes/line (384 dots, zero-padded) · footer
+// 1F F0 05 00 1F F0 03 00. NO ESC @ init. Bit set = black.
+//
+// The 40 mm label body rasters at 320 dots (40 bytes/row); the head is 384
+// dots wide, so rows are padded to 48 bytes with the image CENTERED (4 zero
+// bytes each side) on the assumption the label stock sits centered in the
+// guides. If the first real label prints shifted, LABEL_PAD_LEFT is the one
+// knob to turn.
+const LABEL_HEAD_BYTES = 48;          // 384-dot head — fixed by the hardware
+const LABEL_MAX_LINES_PER_BLOCK = 240;
+const LABEL_PAD_LEFT = 8;             // M110S: 40 mm stock sits RIGHT-ALIGNED on the 384-dot head
+                                      // (per the field-tested phomymo printer table), so a 40-byte
+                                      // row pads 8 zero bytes on the left. Matches labels.html's
+                                      // BLE path — a label is identical whichever route prints it.
+const LABEL_PS_HELPER = `param([Parameter(Mandatory=$true)][string]$Printer,[Parameter(Mandatory=$true)][string]$DataFile)
+$ErrorActionPreference = "Stop"
+$data = [System.IO.File]::ReadAllBytes($DataFile)
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class U1RawPrint {
+  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Ansi)]
+  public struct DOCINFO {
+    [MarshalAs(UnmanagedType.LPStr)] public string pDocName;
+    [MarshalAs(UnmanagedType.LPStr)] public string pOutputFile;
+    [MarshalAs(UnmanagedType.LPStr)] public string pDataType;
+  }
+  [DllImport("winspool.drv", CharSet=CharSet.Ansi, SetLastError=true)]
+  public static extern bool OpenPrinter(string name, out IntPtr h, IntPtr pd);
+  [DllImport("winspool.drv", SetLastError=true)] public static extern bool ClosePrinter(IntPtr h);
+  [DllImport("winspool.drv", CharSet=CharSet.Ansi, SetLastError=true)]
+  public static extern int StartDocPrinter(IntPtr h, int level, ref DOCINFO di);
+  [DllImport("winspool.drv", SetLastError=true)] public static extern bool EndDocPrinter(IntPtr h);
+  [DllImport("winspool.drv", SetLastError=true)] public static extern bool StartPagePrinter(IntPtr h);
+  [DllImport("winspool.drv", SetLastError=true)] public static extern bool EndPagePrinter(IntPtr h);
+  [DllImport("winspool.drv", SetLastError=true)]
+  public static extern bool WritePrinter(IntPtr h, byte[] data, int count, out int written);
+  public static string Send(string printer, byte[] data) {
+    IntPtr h;
+    if (!OpenPrinter(printer, out h, IntPtr.Zero)) return "ERR OpenPrinter " + Marshal.GetLastWin32Error() + " (queue name wrong or printer offline?)";
+    var di = new DOCINFO { pDocName = "U1 Hub spool label", pDataType = "RAW" };
+    if (StartDocPrinter(h, 1, ref di) == 0) { int e = Marshal.GetLastWin32Error(); ClosePrinter(h); return "ERR StartDocPrinter " + e; }
+    StartPagePrinter(h);
+    int w; bool ok = WritePrinter(h, data, data.Length, out w);
+    EndPagePrinter(h); EndDocPrinter(h); ClosePrinter(h);
+    return ok ? ("OK " + w) : ("ERR WritePrinter " + Marshal.GetLastWin32Error());
+  }
+}
+"@
+Write-Output ([U1RawPrint]::Send($Printer, $data))
+`;
+let LABEL_HELPER_PATH = null;   // materialized once per process
+function labelHelperPath() {
+  if (LABEL_HELPER_PATH && fs.existsSync(LABEL_HELPER_PATH)) return LABEL_HELPER_PATH;
+  const p = path.join(os.tmpdir(), "u1hub-label-print.ps1");
+  fs.writeFileSync(p, LABEL_PS_HELPER);
+  LABEL_HELPER_PATH = p;
+  return p;
+}
+// Build the full spooler payload from a 1-bit raster.
+function labelPacket(bits, rowBytes, lines) {
+  const speed = 3, density = 5;
+  const chunks = [Buffer.from([0x1b, 0x4e, 0x0d, speed, 0x1b, 0x4e, 0x04, density, 0x1f, 0x11, 0x0a])];
+  const w = LABEL_HEAD_BYTES;
+  const padL = rowBytes < w ? Math.min(LABEL_PAD_LEFT, w - rowBytes) : 0;
+  for (let y0 = 0; y0 < lines; y0 += LABEL_MAX_LINES_PER_BLOCK) {
+    const n = Math.min(LABEL_MAX_LINES_PER_BLOCK, lines - y0);
+    chunks.push(Buffer.from([0x1d, 0x76, 0x30, 0x00, w & 0xff, (w >> 8) & 0xff, n & 0xff, (n >> 8) & 0xff]));
+    const block = Buffer.alloc(w * n);           // zero = white
+    for (let y = 0; y < n; y++)
+      bits.copy(block, y * w + padL, (y0 + y) * rowBytes, (y0 + y) * rowBytes + Math.min(rowBytes, w - padL));
+    chunks.push(block);
+  }
+  chunks.push(Buffer.from([0x1f, 0xf0, 0x05, 0x00, 0x1f, 0xf0, 0x03, 0x00]));
+  return Buffer.concat(chunks);
+}
+app.post("/api/label/print", (req, res) => {
+  if (process.platform !== "win32")
+    return res.status(400).json({ error: "Direct M110 printing needs the Hub running on the Windows machine the printer is plugged into. Use the M110 40\u00d730 print format instead." });
+  const queue = (CFG.labelPrinter || "").trim();
+  if (!queue)
+    return res.status(400).json({ error: "No label printer configured \u2014 set the Windows print queue name in Settings (e.g. \"M110S Printer\")." });
+  const b = req.body || {};
+  const rowBytes = parseInt(b.rowBytes, 10), lines = parseInt(b.lines, 10);
+  if (!b.raster || !Number.isInteger(rowBytes) || !Number.isInteger(lines) ||
+      rowBytes < 1 || rowBytes > LABEL_HEAD_BYTES || lines < 1 || lines > 1200)
+    return res.status(400).json({ error: "Bad raster payload." });
+  let bits;
+  try { bits = Buffer.from(String(b.raster), "base64"); } catch { bits = null; }
+  if (!bits || bits.length !== rowBytes * lines)
+    return res.status(400).json({ error: "Raster size mismatch (" + (bits ? bits.length : 0) + " \u2260 " + rowBytes * lines + ")." });
+  const packet = labelPacket(bits, rowBytes, lines);
+  const tmp = path.join(os.tmpdir(), "u1hub-label-" + Date.now() + "-" + Math.random().toString(36).slice(2) + ".bin");
+  let helper;
+  try { fs.writeFileSync(tmp, packet); helper = labelHelperPath(); }
+  catch (e) { try { fs.unlinkSync(tmp); } catch {} return res.status(500).json({ error: "Could not stage label job: " + e.message }); }
+  const { execFile } = require("child_process");
+  execFile("powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", helper, "-Printer", queue, "-DataFile", tmp],
+    { timeout: 20000, windowsHide: true },
+    (err, stdout, stderr) => {
+      try { fs.unlinkSync(tmp); } catch {}
+      const out = String(stdout || "").trim();
+      if (!err && /^OK \d+$/.test(out)) {
+        hublog("info", "label printed to \"" + queue + "\" (" + packet.length + " bytes)");
+        return res.json({ ok: true, bytes: packet.length });
+      }
+      const detail = (err && err.killed)
+        ? "timed out after 20 s \u2014 queue \"" + queue + "\" not responding (printer offline?)"
+        : (out || String(stderr || "").trim() || (err && err.message) || "unknown failure");
+      hublog("error", "label print failed on \"" + queue + "\": " + detail);
+      res.status(502).json({ error: "Spooler write failed: " + detail });
+    });
+});
+
 // ---- Settings: read/write config from the UI (no file editing) ----
 function publicCfg() {
   return { gcodeFolder: CFG.gcodeFolder || "./gcode", folderResolved: FOLDER, printers: PRINTERS,
     types: TYPES.map(t => ({ slug: t.slug, label: t.label, accent: t.accent, builtin: !!t.builtin, warning: TYPE_WARNINGS[t.slug] || null })),
-    tip: CFG.tip || null, configured: PRINTERS.length > 0 };
+    tip: CFG.tip || null, labelPrinter: (CFG.labelPrinter || "").trim(), configured: PRINTERS.length > 0 };
 }
 app.get("/api/config", (req, res) => res.json(publicCfg()));
 app.get("/api/version", (req, res) => res.json({ version: VERSION }));
@@ -1950,7 +2226,7 @@ app.get("/api/diagnostics", async (req, res) => {
     tunnel: { configured: fs.existsSync(path.join(BASE_DIR, "tunnel.json")) }, // boolean only — contents never read
     types: TYPES.map(t => ({ slug: t.slug, label: t.label, builtin: !!t.builtin, beta: !t.builtin, warning: TYPE_WARNINGS[t.slug] || null, printerCount: PRINTERS.filter(p => (p.type || "u1") === t.slug).length })),
     printers,
-    counts: { queue: QUEUE.length, spoolsBound, slotsAssigned },
+    counts: { queue: QUEUE.length, spoolsBound, slotsAssigned, filamentMemories: Object.keys(fmem()).length },
     log: HUBLOG.slice(),
     klipperLogs: {}
   };
@@ -2010,7 +2286,10 @@ app.post("/api/config", (req, res) => {
           return rec;
         })
       : (CFG.printers || []),
-    tip: (b.tip && (b.tip.url || b.tip.label)) ? { label: String(b.tip.label || "Buy me a beer"), url: String(b.tip.url || "") } : (b.tip === null ? null : (CFG.tip || null))
+    tip: (b.tip && (b.tip.url || b.tip.label)) ? { label: String(b.tip.label || "Buy me a beer"), url: String(b.tip.url || "") } : (b.tip === null ? null : (CFG.tip || null)),
+    // Label printer queue name. String (even empty) sets it; field omitted =
+    // an older frontend that doesn't know about it — preserve what's there.
+    labelPrinter: (typeof b.labelPrinter === "string") ? b.labelPrinter.trim() : (CFG.labelPrinter || "")
   };
   try {
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(next, null, 2));

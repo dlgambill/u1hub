@@ -1,11 +1,32 @@
 <!DOCTYPE html>
-<!-- labels.html — printable QR spool labels (v2.9 QR adapter).
+<!-- labels.html — printable QR spool labels (v2.9 QR adapter · v2.10 M110).
      Each label encodes "u1spool:<spool_id>" — the Hub's OWN spool key, not the
      tag UID. That's the whole point of the spool_id indirection: a camera can't
      read an NFC UID, so QR rides the same engine by encoding the primary key
      directly. Scan with the Spools tab's "Scan QR label" (any camera, iOS
      included) → resolves exactly like an NFC tap.
      ?id=<spool_id> prints one label; no query prints every bound spool.
+
+     v2.10 M110 layers — how each phone/desktop gets a label out:
+       BLUETOOTH (Android Chrome over HTTPS, same envelope as Web NFC): direct
+         Web Bluetooth print. The first 2.10 beta wrongly concluded BLE was a
+         control-only channel — those attempts predated the corrected protocol
+         (no 1F 11 0A media-type byte, fabricated footer). Two independent
+         verifications later, the byte sequence below is settled: (1) it
+         printed on Danny's M110S over USB RAW (2026-08-25), and (2) it is
+         byte-identical to transcriptionstream/phomymo (MIT), a field-tested
+         web app that prints to M110/M110S over this exact BLE service/char
+         (0xFF00/0xFF02, 128 B chunks). Command cadence mirrors that working
+         reference deliberately — Rule #1: change nothing that works.
+       SHARE (iOS, or any phone without Web Bluetooth): 📤 renders a crisp
+         pre-thresholded 40×30 PNG (2× = 640×480, pure black/white so the
+         Phomemo app doesn't dither the QR) into the OS share sheet → Phomemo
+         app prints it over Bluetooth Classic. Desktop w/o share = download.
+       DRIVER ("M110 40×30" format): one label per 40×30 mm @page so the
+         sheet prints through any driver/app attached to the printer.
+     M110S quirk (from the phomymo printer table): the 40 mm label stock sits
+     RIGHT-ALIGNED on the 48 mm/384-dot head, so rows pad 8 zero bytes on the
+     LEFT. If a label prints shifted, PAD_LEFT is the knob.
      QR encoder: vendored qrcode-generator (MIT, © Kazuhiko Arase). -->
 <html lang="en">
 <head>
@@ -17,11 +38,16 @@
   :root{ --ink:#111; --line:#bbb; }
   *{box-sizing:border-box;}
   body{margin:0; font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; background:#fff; color:var(--ink); padding:18px;}
-  .bar{display:flex; align-items:center; gap:12px; margin-bottom:16px;}
+  .bar{display:flex; align-items:center; gap:12px; margin-bottom:10px; flex-wrap:wrap;}
   .bar h1{font-size:15px; margin:0;}
-  .bar button{font:inherit; font-size:13px; padding:8px 16px; border:1px solid #888; border-radius:7px; background:#f4f4f4; cursor:pointer;}
+  .bar button{font:inherit; font-size:13px; padding:8px 16px; border:1px solid #888; border-radius:7px; background:#f4f4f4; cursor:pointer; min-height:44px;}
   .bar a{font-size:12px; color:#555;}
-  .hint{font-size:12px; color:#666; margin:0 0 14px;}
+  .fmt{display:flex; gap:0; border:1px solid #888; border-radius:7px; overflow:hidden;}
+  .fmt button{border:0; border-radius:0; min-height:44px;}
+  .fmt button.on{background:#111; color:#fff;}
+  #btconnect{border-color:#1a5cd6; color:#1a5cd6; background:#fff;}
+  #btconnect.on{background:#1a5cd6; color:#fff;}
+  .hint{font-size:12px; color:#666; margin:0 0 14px; line-height:1.5;}
   .sheet{display:grid; grid-template-columns:repeat(auto-fill, 220px); gap:10px;}
   .label{border:1px dashed var(--line); border-radius:8px; padding:10px; display:flex; gap:10px; align-items:center; break-inside:avoid; page-break-inside:avoid;}
   .label .qr{width:96px; height:96px; flex:none;}
@@ -31,32 +57,83 @@
   .meta .nm{font-size:11.5px; font-weight:700; line-height:1.25; word-break:break-word;}
   .meta .sub{font-size:9.5px; color:#555; margin-top:3px; line-height:1.3; word-break:break-word;}
   .meta .sid{font-family:ui-monospace,Menlo,Consolas,monospace; font-size:8px; color:#888; margin-top:4px; word-break:break-all;}
+  .btns{display:flex; gap:6px; margin-top:6px; flex-wrap:wrap;}
+  .btns button{font-size:10.5px; padding:5px 8px; background:#fff; border-radius:6px; cursor:pointer;}
+  .btns button:disabled{opacity:.5; cursor:default;}
+  .btbtn{border:1px solid #1a5cd6; color:#1a5cd6;}
+  .sharebtn{border:1px solid #444; color:#333;}
   .empty{color:#666; font-size:13px;}
-  @media print{ .bar,.hint{display:none;} body{padding:0;} .sheet{gap:6px;} .label{border-color:#999;} }
+  /* --- M110 40×30 mm format: each label becomes its own physical page ------- */
+  body.m110 .sheet{display:block;}
+  body.m110 .label{width:40mm; height:30mm; margin:0 0 6mm; padding:1.5mm; gap:1.5mm; border-radius:0;}
+  body.m110 .label .qr{width:24mm; height:24mm;}
+  body.m110 .meta .sw{height:3mm; margin-bottom:1mm;}
+  body.m110 .meta .nm{font-size:7.5pt;}
+  body.m110 .meta .sub{font-size:5.5pt;}
+  body.m110 .meta .sid{font-size:4pt;}
+  body.m110 .btns{margin-top:1mm;}
+  body.m110 .btns button{font-size:6pt; padding:1mm 1.5mm;}
+  @media print{
+    .bar,.hint,.btns{display:none;}
+    body{padding:0;}
+    .sheet{gap:6px;}
+    .label{border-color:#999;}
+    body.m110 .label{border:0; margin:0; page-break-after:always;}
+  }
+  @page m110page{ size:40mm 30mm; margin:0; }
+  body.m110{ page:m110page; }
 </style>
 </head>
 <body>
 <div class="bar">
   <h1>Spool QR labels</h1>
+  <div class="fmt">
+    <button id="fmt-sheet" class="on">Sheet</button>
+    <button id="fmt-m110">M110 40×30</button>
+  </div>
   <button onclick="window.print()">Print</button>
+  <button id="btconnect" style="display:none">🔵 Connect M110</button>
   <a href="/">← dashboard</a>
 </div>
-<p class="hint">Stick each label on its spool. Scanning it in the Hub (Spools → Scan QR label) resolves the filament identity instantly — works on any phone with a camera, including iPhones. Labels survive dead NFC tags and spools that never had one.</p>
+<p class="hint" id="hint">Stick each label on its spool. Scanning it in the Hub (Spools → Scan QR label) resolves the filament identity instantly — works on any phone with a camera, including iPhones. Labels survive dead NFC tags and spools that never had one. <b>M110 40×30</b> lays each label out as its own 40×30&nbsp;mm page for thermal label printers.</p>
 <div class="sheet" id="sheet"><span class="empty">Loading…</span></div>
 <script src="/vendor/qrcode-generator.js"></script>
 <script>
 "use strict";
 const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+let SPOOLS = [];
+const HAS_BT = "bluetooth" in navigator;    // Android Chrome over HTTPS (Web NFC envelope)
+
+// ---- format toggle (sheet ↔ M110 40×30), sticky via ?format= ---------------
+function setFmt(m110){
+  document.body.classList.toggle("m110", m110);
+  document.getElementById("fmt-sheet").classList.toggle("on", !m110);
+  document.getElementById("fmt-m110").classList.toggle("on", m110);
+  const u = new URL(location); u.searchParams.set("format", m110 ? "m110" : "sheet");
+  history.replaceState(null, "", u);
+}
+document.getElementById("fmt-sheet").addEventListener("click", () => setFmt(false));
+document.getElementById("fmt-m110").addEventListener("click", () => setFmt(true));
+
 (async () => {
   const sheet = document.getElementById("sheet");
-  let spools = [];
-  try { spools = (await (await fetch("/api/spools")).json()).spools || []; }
+  try { SPOOLS = (await (await fetch("/api/spools")).json()).spools || []; }
   catch (e) { sheet.innerHTML = '<span class="empty">Could not load spools: ' + esc(e.message) + "</span>"; return; }
-  const only = new URLSearchParams(location.search).get("id");
-  if (only) spools = spools.filter(s => s.spool_id === only);
-  if (!spools.length) { sheet.innerHTML = '<span class="empty">No spools to label yet — bind one in the Spools tab first.</span>'; return; }
+  const qs = new URLSearchParams(location.search);
+  const only = qs.get("id");
+  if (only) SPOOLS = SPOOLS.filter(s => s.spool_id === only);
+  if (qs.get("format") === "m110") setFmt(true);
+  if (!SPOOLS.length) { sheet.innerHTML = '<span class="empty">No spools to label yet — bind one in the Spools tab first.</span>'; return; }
+  if (HAS_BT) {
+    document.getElementById("btconnect").style.display = "";
+    document.getElementById("hint").innerHTML +=
+      ' <b>🔵 Connect M110</b> pairs the printer over Bluetooth — then 🖨 on any label prints it straight from this phone. In the picker, your printer may show a serial-style name (e.g. Q450E…) rather than "M110"; close the Phomemo app first if it holds the connection.';
+  } else {
+    document.getElementById("hint").innerHTML +=
+      ' On a phone, <b>📤</b> shares a print-ready label image straight to the Phomemo app, which prints it over Bluetooth.';
+  }
   const mk = (typeof qrcode === "function") ? qrcode : (window.qrcode && window.qrcode.qrcode);
-  sheet.innerHTML = spools.map(s => {
+  sheet.innerHTML = SPOOLS.map(s => {
     const qr = mk(0, "M"); qr.addData("u1spool:" + s.spool_id); qr.make();
     const n = qr.getModuleCount(), Q = 2, sz = n + Q * 2;
     let rects = "";
@@ -69,9 +146,189 @@ const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">"
       + `<div class="sw" style="background:${esc((s.hexes&&s.hexes.length>=2)?(s.color_style==="gradient"?`linear-gradient(135deg,${s.hexes.map(h=>"#"+h).join(",")})`:`linear-gradient(135deg,${s.hexes.map((h,i)=>`#${h} ${Math.round(i*100/s.hexes.length)}% ${Math.round((i+1)*100/s.hexes.length)}%`).join(",")})`):("#"+s.hex))}"></div>`
       + `<div class="nm">${esc(s.color_name || ("#" + s.hex))}</div>`
       + (sub ? `<div class="sub">${esc(sub)}</div>` : "")
-      + `<div class="sid">${esc(s.spool_id)}</div></div></div>`;
+      + `<div class="sid">${esc(s.spool_id)}</div>`
+      + `<div class="btns">`
+      + (HAS_BT ? `<button class="btbtn" data-bt="${esc(s.spool_id)}" title="Print over Bluetooth (connect first)">🖨 Print</button>` : "")
+      + `<button class="sharebtn" data-share="${esc(s.spool_id)}" title="${CAN_SHARE ? "Share label image to the Phomemo app" : "Download label image"}">${CAN_SHARE ? "📤" : "⭳"}</button>`
+      + `</div></div></div>`;
   }).join("");
+  document.querySelectorAll("[data-bt]").forEach(b =>
+    b.addEventListener("click", () => btPrint(b.dataset.bt, b)));
+  document.querySelectorAll("[data-share]").forEach(b =>
+    b.addEventListener("click", () => shareLabel(b.dataset.share, b)));
 })();
+
+/* ======================= Label rendering (all paths) =======================
+   One layout routine at k× the native 320×240 dot grid feeds every output —
+   BLE raster (k=1), shared PNG (k=2) — so a label is pixel-identical
+   however it reaches the printer. =========================================== */
+const M110 = {
+  DPMM: 8, LABEL_W_MM: 40, LABEL_H_MM: 30,       // 203 dpi ≈ 8 dots/mm → 320×240
+  HEAD_BYTES: 48,                                 // 384-dot head — hardware fact
+  PAD_LEFT: 8,                                    // M110S: 40 mm stock sits right-aligned on the head
+  SPEED: 5, DENSITY: 10,                          // phomymo defaults for BLE M110
+  // BLE transport facts, mirrored from the working reference:
+  SERVICES: [0xff00, 0xffe0, 0xae30, "49535343-fe7d-4ae5-8fa9-9fafd205e455", "0000ff00-0000-1000-8000-00805f9b34fb"],
+  WRITE: 0xff02, NOTIFY: 0xff03,
+  CHUNK: 128, CHUNK_DELAY_MS: 20
+};
+
+function drawLabel(s, k) {
+  const W = M110.LABEL_W_MM * M110.DPMM * k, H = M110.LABEL_H_MM * M110.DPMM * k;
+  const cv = document.createElement("canvas"); cv.width = W; cv.height = H;
+  const g = cv.getContext("2d");
+  g.fillStyle = "#fff"; g.fillRect(0, 0, W, H);
+  const mk = (typeof qrcode === "function") ? qrcode : (window.qrcode && window.qrcode.qrcode);
+  const qr = mk(0, "M"); qr.addData("u1spool:" + s.spool_id); qr.make();
+  const n = qr.getModuleCount(), pad = 12 * k, qsz = H - pad * 2, cell = Math.floor(qsz / n);
+  const q0 = Math.floor((qsz - cell * n) / 2);
+  g.fillStyle = "#000";
+  for (let r = 0; r < n; r++) for (let c = 0; c < n; c++)
+    if (qr.isDark(r, c)) g.fillRect(pad + q0 + c * cell, pad + q0 + r * cell, cell, cell);
+  const tx = pad + q0 + cell * n + 10 * k;
+  g.fillStyle = "#000"; g.textBaseline = "top";
+  g.font = "bold " + 20 * k + "px sans-serif";
+  const name = s.color_name || ("#" + s.hex);
+  g.fillText(name.length > 11 ? name.slice(0, 10) + "…" : name, tx, 26 * k);
+  g.font = 14 * k + "px sans-serif";
+  if (s.brand) g.fillText(String(s.brand).slice(0, 14), tx, 56 * k);
+  if (s.material_variant) g.fillText(String(s.material_variant).slice(0, 14), tx, 78 * k);
+  if (s.hot_end_temp) g.fillText(s.hot_end_temp + "° / " + (s.bed_temp || "—") + "°", tx, 100 * k);
+  g.font = 10 * k + "px monospace";
+  g.fillText(String(s.spool_id).slice(0, 20), tx, H - 34 * k);
+  // threshold to pure black/white IN PLACE — thermal heads have no gray, and
+  // pre-thresholding stops downstream dithering from chewing up QR edges.
+  const id = g.getImageData(0, 0, W, H), img = id.data;
+  for (let i = 0; i < img.length; i += 4) {
+    const dark = (img[i] * 299 + img[i + 1] * 587 + img[i + 2] * 114) / 1000 < 160;
+    img[i] = img[i + 1] = img[i + 2] = dark ? 0 : 255; img[i + 3] = 255;
+  }
+  g.putImageData(id, 0, 0);
+  return cv;
+}
+
+// 1-bit raster (MSB first, bit set = black), rows padded to the 48-byte head
+// with the image right-aligned (PAD_LEFT zero bytes) per the M110S paper path.
+function rasterLabel(s) {
+  const cv = drawLabel(s, 1), W = cv.width, H = cv.height;
+  const img = cv.getContext("2d").getImageData(0, 0, W, H).data, rowBytes = W >> 3;
+  const bits = new Uint8Array(rowBytes * H);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++)
+    if (img[(y * W + x) * 4] === 0) bits[y * rowBytes + (x >> 3)] |= 0x80 >> (x & 7);
+  return { bits, rowBytes, H };
+}
+function padRaster(r) {
+  const w = M110.HEAD_BYTES, padL = Math.min(M110.PAD_LEFT, w - r.rowBytes);
+  const out = new Uint8Array(w * r.H);
+  for (let y = 0; y < r.H; y++) out.set(r.bits.subarray(y * r.rowBytes, (y + 1) * r.rowBytes), y * w + padL);
+  return out;
+}
+
+/* ==================== Bluetooth printing (Android Chrome) ==================
+   Protocol double-verified: printed on this project's M110S over USB RAW, and
+   byte-identical to transcriptionstream/phomymo's field-tested BLE path.
+   Cadence mirrors that reference exactly (separate command writes with short
+   settles, one raster header for the full image, 128 B data chunks, 300 ms
+   before the footer): Rule #1 — change nothing that works. ================= */
+let BTDEV = null, BTCHAR = null, BTBUSY = false;
+let BT_WITH_RESPONSE = false;   // decided once at connect; sticks after a wWoR failure
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+// CRITICAL detail from the working reference: every write copies its bytes
+// into a FRESH ArrayBuffer. Passing a subarray VIEW makes Chrome-on-Android
+// write from the underlying buffer, not the window — the printer then gets
+// garbage framing and silently prints nothing. Their comment: "Create a new
+// buffer with just this data (handles slices correctly)". Never pass views.
+async function btWrite(bytes) {
+  const buf = new Uint8Array(bytes).buffer;
+  if (BT_WITH_RESPONSE) { await BTCHAR.writeValue(buf); return; }
+  try { await BTCHAR.writeValueWithoutResponse(buf); }
+  catch (e) { BT_WITH_RESPONSE = true; await BTCHAR.writeValue(buf); }
+}
+document.getElementById("btconnect").addEventListener("click", async () => {
+  const btn = document.getElementById("btconnect");
+  if (BTCHAR) return;                      // already connected
+  try {
+    // Name-prefix filter keeps ghost/cached devices out of the picker; the
+    // M110S advertises a serial-style Q… name (reference-confirmed pattern).
+    // Fall back to the unfiltered picker if the filtered one errors.
+    const opts = { optionalServices: M110.SERVICES };
+    try {
+      BTDEV = await navigator.bluetooth.requestDevice({
+        filters: [{ namePrefix: "M" }, { namePrefix: "Q" }, { namePrefix: "T" }, { namePrefix: "Phomemo" }], ...opts });
+    } catch (fe) {
+      if (fe.name === "NotFoundError") throw fe;   // user cancelled — don't re-prompt
+      BTDEV = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, ...opts });
+    }
+    const gatt = await BTDEV.gatt.connect();
+    await sleep(100);                      // reference: settle before discovery
+    let svc = null;
+    for (const s of M110.SERVICES) { try { svc = await gatt.getPrimaryService(s); break; } catch {} }
+    if (!svc) throw new Error("no compatible service on " + (BTDEV.name || "device"));
+    BTCHAR = await svc.getCharacteristic(M110.WRITE);
+    BT_WITH_RESPONSE = !BTCHAR.properties.writeWithoutResponse && BTCHAR.properties.write;
+    // Notifications on 0xFF03 (status channel) — best-effort; some batches
+    // want the subscription for flow control, harmless when absent.
+    try { const nc = await svc.getCharacteristic(M110.NOTIFY); await nc.startNotifications(); } catch {}
+    BTDEV.addEventListener("gattserverdisconnected", () => {
+      BTCHAR = null; btn.classList.remove("on"); btn.textContent = "🔵 Connect M110";
+    });
+    btn.classList.add("on"); btn.textContent = "🔵 " + (BTDEV.name || "M110") + " ✓";
+  } catch (e) {
+    BTCHAR = null;
+    if (e.name !== "NotFoundError") alert("Bluetooth connect failed: " + e.message);
+  }
+});
+async function btPrint(sid, btn) {
+  if (!BTCHAR) { alert("Connect the M110 first (🔵 button in the top bar)."); return; }
+  if (BTBUSY) return;
+  const s = SPOOLS.find(x => x.spool_id === sid);
+  if (!s) return;
+  BTBUSY = true; btn.disabled = true; const old = btn.textContent; btn.textContent = "…";
+  try {
+    const data = padRaster(rasterLabel(s));
+    const w = M110.HEAD_BYTES, lines = data.length / w;
+    await btWrite([0x1b, 0x4e, 0x0d, M110.SPEED]);    await sleep(30);
+    await btWrite([0x1b, 0x4e, 0x04, M110.DENSITY]);  await sleep(30);
+    await btWrite([0x1f, 0x11, 0x0a]);                await sleep(30);   // gap labels
+    await btWrite([0x1d, 0x76, 0x30, 0x00, w & 0xff, (w >> 8) & 0xff, lines & 0xff, (lines >> 8) & 0xff]);
+    for (let o = 0; o < data.length; o += M110.CHUNK) {
+      await btWrite(data.subarray(o, o + M110.CHUNK));
+      await sleep(M110.CHUNK_DELAY_MS);
+    }
+    await sleep(300);
+    await btWrite([0x1f, 0xf0, 0x05, 0x00, 0x1f, 0xf0, 0x03, 0x00]);
+    await sleep(500);
+    btn.textContent = "✓";
+    setTimeout(() => { btn.textContent = old; btn.disabled = false; }, 1500);
+  } catch (e) {
+    btn.textContent = old; btn.disabled = false;
+    alert("Bluetooth print failed: " + e.message);
+  }
+  BTBUSY = false;
+}
+
+/* ==================== 📤 share-to-app (iOS & no-BT phones) ================= */
+const CAN_SHARE = !!(navigator.canShare && navigator.canShare({ files: [new File([""], "x.png", { type: "image/png" })] }));
+async function shareLabel(sid, btn) {
+  const s = SPOOLS.find(x => x.spool_id === sid);
+  if (!s) return;
+  btn.disabled = true; const old = btn.textContent;
+  try {
+    const blob = await new Promise((res, rej) => drawLabel(s, 2).toBlob(b2 => b2 ? res(b2) : rej(new Error("PNG encode failed")), "image/png"));
+    const file = new File([blob], "spool-label-" + sid + ".png", { type: "image/png" });
+    if (CAN_SHARE && navigator.canShare({ files: [file] })) {
+      await navigator.share({ files: [file], title: "Spool label" });
+    } else {
+      const u = URL.createObjectURL(blob), a = document.createElement("a");
+      a.href = u; a.download = file.name; a.click();
+      setTimeout(() => URL.revokeObjectURL(u), 5000);
+    }
+  } catch (e) {
+    if (e.name !== "AbortError") alert("Share failed: " + e.message);
+  }
+  btn.textContent = old; btn.disabled = false;
+}
+
 </script>
 </body>
 </html>

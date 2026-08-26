@@ -43,7 +43,11 @@ any browser — on your network, or **securely from anywhere** — you can:
 - **Give every spool an identity** — scan a spool's **RFID tag with your phone** (or a
   printed **QR label**) and the Hub knows its brand, material, color — even dual-color
   silks and gradients — and temps forever after. Scan again to **load it into a printer
-  slot in one motion**, head color set to match.
+  slot in one motion**, head color set to match. **Print the labels themselves from
+  your phone** straight to a Bluetooth label printer — no companion app needed.
+- **Reload a past print's exact filaments** — the Hub remembers which spools every
+  finished job used and offers them back next time you pick that file, with an honest,
+  printer-verified apply.
 - **Track what's loaded where** — every bound spool shows which machine and slot it's
   physically sitting in, fleet-wide.
 - **Protect the Hub with a password** — optional single shared password with 30-day
@@ -56,6 +60,64 @@ any browser — on your network, or **securely from anywhere** — you can:
 
 It talks straight to each printer's built-in Moonraker API. Nothing is installed on the
 printers, and nothing leaves your network unless you turn remote access on.
+
+---
+
+## New in 2.10 — the labels & replay release
+
+- **Print spool labels from your phone. No app.** Open the Labels page on **Android
+  Chrome**, tap **🔵 Connect M110**, pick your **Phomemo M110/M110S**, and tap **🖨
+  Print** on any spool label — it prints over **Bluetooth, straight from the
+  browser**. Labels carry the spool's QR code, color name, brand, material, and
+  temps; scan one later with any camera and the spool's full identity comes back.
+  Every device has a path to paper:
+  - **Android:** direct Web Bluetooth printing (same envelope as the Hub's NFC
+    scanning — Android Chrome over HTTPS).
+  - **iPhone & everything else:** **📤** hands a print-ready 40×30 label image to the
+    share sheet — pick the Phomemo app and it prints. The image is pre-thresholded to
+    pure black & white so QR codes stay crisp instead of getting dithered to mush.
+  - **Desktop:** the **M110 40×30** format lays each label out as its own
+    40×30 mm page for any driver, and **📥** downloads the label image.
+
+  The print protocol was verified on real hardware and cross-checked byte-for-byte
+  against **[transcriptionstream/phomymo](https://github.com/transcriptionstream/phomymo)**
+  (MIT) — if you want a full label *designer* rather than spool labels, go star it.
+
+- **The Hub remembers what every file printed with.** On job completion it records
+  which physical spools were loaded — keyed by file **content**, so the memory
+  survives renames and folder moves, and correctly resets when you re-slice. Pick
+  that file again and the Hub offers last time's filaments back.
+
+- **Loadout replay that tells the truth.** Replaying a past loadout is now
+  **spool-first**: for each spool the print used, pick which tray it's sitting in
+  *today* — the Hub preselects intelligently (its own records of where that spool is
+  loaded, then a tray already showing that color, then the historical slot **only if
+  that tray actually has filament**), empty trays can't be selected, and the
+  historical slot is just a "was T3" hint. Apply is verified against the machine:
+  colors are written through the same checked path as a manual change, and the final
+  count comes from **re-reading the printer** — a tray only counts if the machine
+  *now* reports filament in the remembered color. You'll see
+  "2/3 applied — T3 has no filament loaded" instead of a hopeful ✓.
+
+- **Two tools, one color, one head — now allowed.** Recolored two tools to the same
+  color in Orca (it can't merge extruders)? The Hub used to refuse mapping both to
+  one toolhead. It now **allows a shared head when every tool mapped to it has the
+  identical palette color**, still refuses when the colors differ (naming the exact
+  colors in conflict), and tells the printer about the shared head exactly once.
+  Default mappings got smarter too: a color with no free head reuses a head already
+  holding that identical color.
+
+- **Idle dashboard tabs no longer eat a CPU core.** The live fleet stream pushes
+  every ~300 ms during active prints, and the page was rebuilding every card on every
+  push — Chrome's "Page Unresponsive" on a background tab traced straight to it.
+  Renders now coalesce to once a second with a trailing render, so the newest
+  snapshot always paints and your laptop fan stays quiet.
+
+- **PWA install works over Cloudflare Access again** (the manifest is now fetched
+  with credentials), and the automated harness grew to **144 checks** — including a
+  regression guard for the exact Bluetooth bug that ate the first label, and a mock
+  printer that refuses color writes the way real firmware does, to prove the Hub
+  never claims success it didn't read back.
 
 ---
 
@@ -572,6 +634,11 @@ addresses never move and you won't have to touch anything.
   and honest ΔE math possible.
 - **jsQR** (Apache-2.0) and **qrcode-generator** (MIT) — vendored for QR label
   scanning and generation, so the iPhone path works with no network dependency.
+- **[transcriptionstream/phomymo](https://github.com/transcriptionstream/phomymo)** (MIT)
+  and **[marioPercivaldi/phomemo](https://github.com/marioPercivaldi/phomemo)** (MIT) —
+  the working references the M110 print protocol and Bluetooth transport were verified
+  against. The subtle stuff (the media-type byte, the footer, copying BLE chunks into
+  fresh buffers) came from their hard-won code.
 
 ## Found this useful?
 
@@ -608,8 +675,8 @@ release, bump the version in `package.json` and the `VERSION` constants in `serv
 and `public/index.html`, then tag and push:
 
 ```
-git tag v2.9.0
-git push origin v2.9.0
+git tag v2.10.0
+git push origin v2.10.0
 ```
 
 `.github/workflows/release.yml` builds Linux, Windows, and Apple-Silicon macOS binaries

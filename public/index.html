@@ -1,10 +1,10 @@
 <!DOCTYPE html>
-<!-- U1 Print Hub — index v2.9.0 -->
+<!-- U1 Print Hub — index v2.10.0 -->
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<link rel="manifest" href="/manifest.json">
+<link rel="manifest" href="/manifest.json" crossorigin="use-credentials">
 <meta name="theme-color" content="#0F1115">
 <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
 <link rel="apple-touch-icon" href="/icon-192.png">
@@ -140,6 +140,21 @@
   .sechead h2{font-size:12px; letter-spacing:.22em; text-transform:uppercase; color:var(--signal); margin:0; font-weight:700;}
   .sechead .count{font-family:var(--mono); font-size:11px; color:var(--ink-faint); letter-spacing:.04em;}
   .subnote{font-size:12.5px; color:var(--ink-dim); margin:8px 0 0; line-height:1.5;}
+  /* v2.10 filament-memory recall bar */
+  .fmembar{margin:10px 0 2px; padding:10px 12px; border:1px solid var(--line,#2a2f3a); border-radius:10px; background:rgba(255,178,0,.05);}
+  .fmembar .fmtitle{font-size:12.5px; color:var(--ink-dim); margin-bottom:8px; line-height:1.4;}
+  .fmembar .fmtitle b{color:var(--ink);}
+  .fmembar .fmchips{display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px;}
+  .fmembar .fmchip{display:inline-flex; align-items:center; gap:6px; font-size:12px; padding:5px 9px; border:1px solid var(--line,#2a2f3a); border-radius:999px;}
+  .fmembar .fmchip .sw{width:13px; height:13px; border-radius:4px; border:1px solid #0006; flex:none;}
+  .fmembar .fmchip.miss{opacity:.45; text-decoration:line-through;}
+  .fmembar .fmrow{display:flex; flex-wrap:wrap; gap:8px; align-items:center;}
+  .fmembar select{font:inherit; font-size:16px; padding:8px 10px; min-height:44px; border-radius:8px; background:var(--card,#161a22); color:var(--ink); border:1px solid var(--line,#2a2f3a);}
+  .fmembar button{font:inherit; font-size:13px; font-weight:600; padding:0 14px; min-height:44px; border-radius:8px; border:1px solid var(--accent,#FFB200); background:transparent; color:var(--accent,#FFB200); cursor:pointer;}
+  .fmembar .fmnote{font-size:12px; color:var(--ink-dim); width:100%;}
+  .fmembar .cmaprow{margin:7px 0;}
+  .fmembar .cmaprow .flab{width:auto; max-width:150px; font-family:inherit; font-size:12px; overflow:hidden; text-overflow:ellipsis;}
+  .fmembar .fmwas{font-size:10.5px; color:var(--ink-faint); flex:none; white-space:nowrap;}
   .subnote b{color:var(--ink);}
 
   /* selected job summary */
@@ -528,6 +543,9 @@
         <label class="fl">G-code folder <span class="hint">your Orca output folder (base — each printer type gets its own subfolder)</span></label>
         <input class="field" id="setFolder" placeholder="e.g. C:/Users/you/gcode" />
 
+        <label class="fl" style="margin-top:14px">Label printer <span class="hint">exact Windows print queue name of a Phomemo M110/M110S plugged into the Hub machine — enables 🖨 direct printing on the Labels page. Leave blank if you print labels another way.</span></label>
+        <input class="field" id="setLabelPrinter" placeholder='e.g. M110S Printer' style="max-width:320px" />
+
         <label class="fl" style="margin-top:14px">Printer types <span class="betachip">BETA</span> <span class="hint">a type owns a folder, an accent color and a switcher tab — U1 keeps the flat base folder. Non-U1 types are in beta: they work against stock Klipper/Moonraker in testing, and we're gathering real-hardware reports. Hit a problem? Use “Download diagnostics” below and attach the file to a <a href="https://github.com/dlgambill/u1hub/issues/new/choose" target="_blank" rel="noopener" style="color:var(--signal)">GitHub issue</a>.</span></label>
         <div id="setTypes"></div>
         <div class="row" style="margin-top:6px">
@@ -604,6 +622,11 @@
     </div>
     <p class="subnote" id="noselect">Pick a file from the queue to see the colors it needs, then push it to a machine below.</p>
 
+    <!-- v2.10 filament memory: "last time this file printed with…" recall bar.
+         Keyed on file CONTENT (server-side partial hash), so it survives
+         renames and folder moves; a re-slice resets it. -->
+    <div class="fmembar" id="fmembar" style="display:none"></div>
+
     <div class="sechead"><h2>Fleet</h2><span class="count" id="fleetcount"></span></div>
     <div class="fleet" id="fleet"></div>
 
@@ -653,7 +676,7 @@
 
 <script>
 const $ = id => document.getElementById(id);
-const VERSION = "2.9.0";
+const VERSION = "2.10.0";
 let FILES = [], SELECTED = null, MAP = null, FLEET = [], MAPSEL = {};
 let ONBOARD = [], ACT = null; // onboard = /api/printer-files cache; ACT = open per-printer action strip {name,pid}
 let SRCSEL = { hub:true, p:{} }; // source-filter checkboxes; p[pid]=false hides that printer (default: everything on)
@@ -700,7 +723,7 @@ function setActiveType(slug){
   if(slug===ACTIVETYPE) return;
   ACTIVETYPE=slug;
   try{ localStorage.setItem("u1.activeType", slug); }catch{}
-  SELECTED=null; MAP=null; MAPSEL={}; ACT=null; LIBPAL=null;
+  SELECTED=null; MAP=null; MAPSEL={}; ACT=null; LIBPAL=null; hideFmem();
   $("jobcard").classList.remove("show"); $("noselect").style.display="";
   applyAccent(); renderTypeBar();
   loadFiles(); loadQueue(); renderFleet(); loadPrinterFiles();
@@ -884,12 +907,12 @@ async function post(url,body){
 }
 async function libRename(name){
   const nn=prompt("Rename in Hub library:",name); if(!nn||nn===name) return;
-  try{ await post("/api/files/rename",{name,newName:nn,type:activeType().slug}); if(SELECTED===name) SELECTED=null; await loadFiles(); }
+  try{ await post("/api/files/rename",{name,newName:nn,type:activeType().slug}); if(SELECTED===name){ SELECTED=null; hideFmem(); } await loadFiles(); }
   catch(e){ alert("Rename failed: "+e.message); }
 }
 async function libDelete(name){
   if(!confirm('Delete "'+name+'" from the Hub library?\n(Copies on printer storage are not touched.)')) return;
-  try{ await post("/api/files/delete",{name,type:activeType().slug}); if(SELECTED===name) SELECTED=null; await loadFiles(); }
+  try{ await post("/api/files/delete",{name,type:activeType().slug}); if(SELECTED===name){ SELECTED=null; hideFmem(); } await loadFiles(); }
   catch(e){ alert("Delete failed: "+e.message); }
 }
 async function pRename(pid,pname,name){
@@ -1004,6 +1027,145 @@ async function selectFile(name){
     $("jobloading").classList.remove("show");
     if(m.error){ MAP=null; $("noselect").style.display=""; return; } MAP=m; renderJob(); renderFleet();
   }catch(e){ $("jobloading").classList.remove("show"); $("noselect").style.display=""; }
+  loadFmem(name);   // v2.10 recall — fire-and-forget, never blocks the job card
+}
+
+// --- v2.10 print-file filament memory (client) --------------------------------
+// "Last time these bytes printed, this loadout was in the machine." Content-
+// hashed server-side, so renames don't lose history and re-slices reset it.
+let FMEM=null;
+function hideFmem(){ FMEM=null; const b=$("fmembar"); if(b){ b.style.display="none"; b.innerHTML=""; } }
+function fmAgo(ts){
+  const s=Math.max(1,Math.round((Date.now()-ts)/1000));
+  if(s<3600) return Math.round(s/60)+" min ago";
+  if(s<86400) return Math.round(s/3600)+" h ago";
+  const d=Math.round(s/86400); return d===1?"yesterday":d+" days ago";
+}
+// The card remembers SPOOLS; the slot recorded at print time is only a hint.
+// Slots are per-printer physical reality — replaying "T3" onto a different
+// machine targeted an empty tray and reported success off the Hub-side map
+// write (field-found 2026-08-18, U7). Fix: per-spool tray picker (reuses the
+// print card's cmsw component), preselected by auto-detect → historical slot →
+// none; apply gates on filament-present, colors go through /api/setcolor's
+// existing write-then-verify, the slot-map binding is only recorded AFTER the
+// tray is confirmed real, and the final count comes from a fresh readback of
+// the printer — no ✓ without confirmed state.
+let FMEMSEL={};   // spool index in FMEM.spools -> chosen tray (0-3), or -1 = skip
+function fmHexEq(a,b){
+  if(!a||!b) return false;
+  return String(a).replace(/^#/,"").slice(0,6).toUpperCase()===String(b).replace(/^#/,"").slice(0,6).toUpperCase();
+}
+function fmHeads(printer){ const p=(FLEET||[]).find(x=>x.id===printer); return (p&&p.heads)||[]; }
+function fmPreselect(s, printer){
+  const heads=fmHeads(printer);
+  // 1. this printer's Hub slot map already holds this exact spool (and the tray has filament)
+  const pv=(SLOTVIEW||[]).find(x=>x.printer===printer);
+  if(pv&&pv.slots){
+    for(const [k,v] of Object.entries(pv.slots))
+      if(v && v.spool_id===s.spool_id && heads[+k] && heads[+k].loaded) return +k;
+  }
+  // 2. a loaded tray already reports this spool's color
+  for(let i=0;i<heads.length;i++)
+    if(heads[i] && heads[i].loaded && fmHexEq(heads[i].hex, s.hex)) return i;
+  // 3. the slot it printed from last time — only if that tray has filament here
+  if(heads[s.slot] && heads[s.slot].loaded) return s.slot;
+  return -1;
+}
+function fmRenderRows(printer){
+  const box=$("fmrows"); if(!box || !FMEM) return;
+  const heads=fmHeads(printer);
+  box.innerHTML=FMEM.spools.map((s,si)=>{
+    if(s.missing)
+      return `<div class="cmaprow"><span class="fsw" style="background:${s.hex?("#"+s.hex):"#3a3f49"};opacity:.4"></span>`+
+             `<span class="flab" style="opacity:.5;text-decoration:line-through">${esc(s.color_name||(s.hex?("#"+s.hex):"?"))}</span>`+
+             `<span class="fmwas">no longer in the library — skipped</span></div>`;
+    const sel=FMEMSEL[si];
+    const sws=[0,1,2,3].map(hi=>{
+      const h=heads[hi];
+      if(!h || !h.loaded)
+        return `<div class="cmsw empty" title="T${hi+1} · no filament loaded"><span class="cmswt">T${hi+1}</span></div>`;
+      const bg=(h.colors&&h.colors.length>1)?`linear-gradient(135deg, ${h.colors.join(", ")})`:(h.hex||'#3a3f49');
+      const tip=`T${hi+1}${h.hex?(" · "+h.hex):""}${h.official?" · official RFID (color locked)":""}`;
+      return `<button type="button" class="cmsw${sel===hi?" sel":""}" data-fmsi="${si}" data-hi="${hi}" style="background:${bg}" title="${esc(tip)}"><span class="cmswt">T${hi+1}</span></button>`;
+    }).join("");
+    return `<div class="cmaprow"><span class="fsw" style="background:${s.hex?("#"+s.hex):"#3a3f49"}"></span>`+
+           `<span class="flab" title="${esc(s.color_name||"")}">${esc(s.color_name||(s.hex?("#"+s.hex):"?"))}</span>`+
+           `<span class="fmwas">was T${s.slot+1}</span><span class="arrow">→</span>`+
+           `<div class="cmswatches">${sws}</div>`+
+           (sel===-1?`<span class="fmwas">skipped</span>`:"")+`</div>`;
+  }).join("");
+}
+async function loadFmem(name){
+  hideFmem();
+  let d=null;
+  try{ d=await (await fetch("/api/filament-memory?file="+encodeURIComponent(name)+"&"+tparam())).json(); }catch(e){ return; }
+  if(!d || !d.known || name!==SELECTED) return;
+  FMEM=d; FMEMSEL={};
+  try{ await loadSlotmap(); }catch(e){}
+  const bar=$("fmembar");
+  const avail=d.spools.filter(s=>!s.missing);
+  const online=(FLEET||[]).filter(p=>(p.ptype||"u1")===activeType().slug && p.online);
+  const opts=online.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join("");
+  if(!(avail.length && opts)){
+    bar.innerHTML=`<div class="fmtitle">🧵 Printed <b>${esc(fmAgo(d.ts))}</b> with this loadout.</div>`+
+      `<div class="fmnote">${!opts?"No online printer of this type to load onto.":"None of these spools are still in the library."}</div>`;
+    bar.style.display=""; return;
+  }
+  bar.innerHTML =
+    `<div class="fmtitle">🧵 Printed <b>${esc(fmAgo(d.ts))}</b> with this loadout${d.file!==name?` (as “${esc(d.file)}”)`:""} — pick a tray for each spool:</div>`+
+    `<div id="fmrows"></div>`+
+    `<div class="fmrow"><select id="fmprinter">${opts}</select>`+
+    `<button id="fmload">Load this set</button>`+
+    `<span class="fmnote" id="fmnote">Tap a tray to place a spool · tap again to skip it. Empty trays can't be targets.</span></div>`;
+  bar.style.display="";
+  const pick=()=>parseInt($("fmprinter").value,10);
+  const reselect=()=>{ const pr=pick(); FMEM.spools.forEach((s,si)=>{ if(!s.missing) FMEMSEL[si]=fmPreselect(s,pr); }); fmRenderRows(pr); };
+  reselect();
+  $("fmprinter").addEventListener("change", reselect);
+  bar.addEventListener("click", ev=>{
+    const b=ev.target.closest(".cmsw[data-fmsi]"); if(!b) return;
+    const si=+b.dataset.fmsi, hi=+b.dataset.hi;
+    FMEMSEL[si]=(FMEMSEL[si]===hi)?-1:hi;   // tap selected tray again = skip this spool
+    fmRenderRows(pick());
+  });
+  $("fmload").addEventListener("click", ()=>loadFmemSet(pick()));
+}
+async function loadFmemSet(printer){
+  if(!FMEM || isNaN(printer)) return;
+  const btn=$("fmload"), note=$("fmnote");
+  const jobs=FMEM.spools.map((s,si)=>({s, slot:FMEMSEL[si]})).filter(j=>!j.s.missing && j.slot>=0);
+  if(!jobs.length){ if(note) note.textContent="Nothing selected — every spool is set to skip."; return; }
+  if(new Set(jobs.map(j=>j.slot)).size!==jobs.length){
+    if(note) note.textContent="Two spools point at the same tray — give each its own."; return;
+  }
+  if(btn) btn.disabled=true;
+  if(note) note.textContent="Applying…";
+  const fails=[];
+  for(const j of jobs){
+    const head=fmHeads(printer)[j.slot];
+    const tn="T"+(j.slot+1);
+    if(!head || !head.loaded){ fails.push(tn+" has no filament loaded"); j.failed=true; continue; }
+    try{
+      // Color first (setcolor re-checks filament presence live and readback-
+      // verifies the write) — only a confirmed-real tray earns the slot-map binding.
+      if(!fmHexEq(head.hex, j.s.hex)) await post("/api/setcolor",{printer, slot:j.slot, hex:"#"+j.s.hex});
+      await post("/api/slots/assign",{printer, slot:j.slot, spool_id:j.s.spool_id});
+    }catch(e){ fails.push(tn+": "+(e.message||"failed")); j.failed=true; }
+  }
+  // Honest count: re-read the printer and only count trays that NOW report
+  // filament present in the remembered color. HTTP 200s don't count.
+  try{ FLEET=await (await fetch("/api/fleet")).json(); if(!fleetRenderBlocked()) renderFleet(); }catch(e){}
+  let applied=0;
+  for(const j of jobs){
+    if(j.failed) continue;
+    const h=fmHeads(printer)[j.slot];
+    if(h && h.loaded && fmHexEq(h.hex, j.s.hex)) applied++;
+    else fails.push("T"+(j.slot+1)+" readback mismatch — printer reports "+(h&&h.loaded?(h.hex||"a different color"):"no filament"));
+  }
+  if(note) note.textContent = applied+"/"+jobs.length+" applied"
+    +(fails.length?(" — "+fails.join(" · ")):"")
+    +((applied===jobs.length)?" ✓":"");
+  if(btn) btn.disabled=false;
 }
 
 function neededColors(){ return MAP ? MAP.palette.filter(s=>s.used) : []; }
@@ -1123,7 +1285,7 @@ async function loadFleet(){
 // a change, so cards update live instead of on the 5 s poll. If the stream
 // drops (server restart, proxy, old browser) ES_OK goes false and the classic
 // 5 s poll takes over automatically — worst case is exactly v2.3.0 behavior.
-let ES=null, ES_OK=false;
+let ES=null, ES_OK=false, ES_LAST_RENDER=0, ES_RENDER_T=null;
 function fleetRenderBlocked(){
   if(PUSHES>0 || PICKOPEN || INTERACTING) return true;
   const a=document.activeElement;
@@ -1159,8 +1321,24 @@ function startEvents(){
     const sig=JSON.stringify(d)+"|"+activeType().slug;   // data-driven renders only — UI-triggered renderFleet() calls bypass this
     if(sig===LAST_FLEET_SIG) return;
     LAST_FLEET_SIG=sig;
-    if(!fleetRenderBlocked()) renderFleet();
-    else FLEET_DIRTY=true;
+    // Throttle push-driven renders to at most one per second. During active
+    // prints the server legitimately broadcasts every ~300 ms (file position
+    // moves constantly); rebuilding every card on each push pegged the main
+    // thread at ~99% CPU and Chrome eventually declared the page unresponsive.
+    // FLEET is already updated above, so the coalesced render always paints
+    // the newest snapshot — nothing is lost, only intermediate repaints.
+    const now=Date.now();
+    if(now-ES_LAST_RENDER>=1000){
+      ES_LAST_RENDER=now;
+      if(!fleetRenderBlocked()) renderFleet();
+      else FLEET_DIRTY=true;
+    } else if(!ES_RENDER_T){
+      ES_RENDER_T=setTimeout(()=>{
+        ES_RENDER_T=null; ES_LAST_RENDER=Date.now();
+        if(!fleetRenderBlocked()) renderFleet();
+        else FLEET_DIRTY=true;
+      }, 1000-(now-ES_LAST_RENDER));
+    }
   };
   ES.onerror=()=>{ ES_OK=false; };
 }
@@ -1180,8 +1358,14 @@ function hexRGB(h){ if(!h) return null; const m=/^#?([0-9a-f]{6})$/i.exec(h.trim
   const n=parseInt(m[1],16); return [(n>>16)&255,(n>>8)&255,n&255]; }
 
 // greedy: assign each needed color to its nearest still-free loaded head
+// Second pass: a color the greedy pass couldn't place reuses the head already
+// holding an IDENTICAL color rather than going unmapped. Files with two tools
+// recolored to the same value (the Orca workaround for un-mergeable extruders)
+// need fewer physical rolls than they have tools, and the server now allows
+// same-color tools to share a head.
 function defaultMapping(need, heads){
   const taken=new Set(), map={};
+  const normh=x=>String(x==null?"":x).trim().replace(/^#/,"").slice(0,6).toUpperCase();
   need.forEach(n=>{
     let bestD=1e9, bestIdx=-1;
     heads.forEach((h,hi)=>{
@@ -1190,6 +1374,11 @@ function defaultMapping(need, heads){
       if(d<bestD){ bestD=d; bestIdx=hi; }
     });
     if(bestIdx>=0){ map[n.i]=bestIdx; taken.add(bestIdx); }
+  });
+  need.forEach(n=>{
+    if(map[n.i]!=null || !n.hex) return;
+    const twin=need.find(o=>o!==n && map[o.i]!=null && normh(o.hex)===normh(n.hex));
+    if(twin) map[n.i]=map[twin.i];
   });
   return map;
 }
@@ -2589,6 +2778,7 @@ async function loadConfigUI(){
   try{
     const c=await (await fetch("/api/config")).json();
     $("setFolder").value=c.gcodeFolder||"";
+    $("setLabelPrinter").value=c.labelPrinter||"";
     if(Array.isArray(c.types)&&c.types.length) TYPES=c.types;
     renderTypeRows();
     $("setPrinters").innerHTML="";
@@ -2727,7 +2917,7 @@ async function runDiscover(){
 }
 async function saveConfig(){
   const s=$("cfgStatus"); s.className="pstatus work"; s.textContent="Saving…";
-  const body={ gcodeFolder:$("setFolder").value.trim(), printers:gatherPrinters() };
+  const body={ gcodeFolder:$("setFolder").value.trim(), labelPrinter:$("setLabelPrinter").value.trim(), printers:gatherPrinters() };
   try{
     const c=await (await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})).json();
     if(c.error) throw new Error(c.error);

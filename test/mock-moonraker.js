@@ -23,7 +23,10 @@ function createMock(profile) {
     filename: "",
     uploads: [],                   // { filename, bytes }
     gcodeScripts: [],              // raw scripts received
-    files: []                      // onboard listing
+    files: [],                     // onboard listing
+    dropColorWrites: false         // v2.10: simulate firmware silently refusing a
+                                   // color write, so the Hub's read-back-verify
+                                   // honesty can be proven (it must 502, not lie)
   };
 
   const objectsList = profile === "u1"
@@ -40,6 +43,7 @@ function createMock(profile) {
     filament_sku: [null, 900002, null, null],
     filament_edit: [true, false, true, true]
   };
+  state.ptc = ptc;                 // v2.10: let the harness inspect/verify live
 
   const server = http.createServer((req, res) => {
     const u = new URL(req.url, "http://x");
@@ -82,6 +86,19 @@ function createMock(profile) {
     if (u.pathname === "/printer/gcode/script" && req.method === "POST") {
       const script = u.searchParams.get("script") || "";
       state.gcodeScripts.push(script);
+      // v2.10: apply color writes to print_task_config the way the firmware
+      // does — empty trays and official (color-locked) spools silently refuse,
+      // and the dropColorWrites knob refuses everything. The Hub must catch
+      // every refusal via its read-back, never by trusting the write.
+      if (profile === "u1" && /SET_PRINT_FILAMENT_CONFIG/.test(script)) {
+        const im = /CONFIG_EXTRUDER='?(\d)'?/.exec(script);
+        const cm = /FILAMENT_COLOR_RGBA='?([0-9A-Fa-f]{8})'?/.exec(script);
+        if (im && cm && !state.dropColorWrites) {
+          const i = Number(im[1]);
+          if (ptc.filament_exist[i] && ptc.filament_edit[i] !== false)
+            ptc.filament_color_rgba[i] = cm[1].toUpperCase();
+        }
+      }
       if (/^SDCARD_PRINT_FILE/.test(script)) {
         state.printState = "printing";
         const fm = /FILENAME="([^"]+)"/.exec(script);

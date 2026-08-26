@@ -1,4 +1,4 @@
-// test/run-tests.js — v2.9 harness verification.
+// test/run-tests.js — v2.10 harness verification.
 //
 // Boots the REAL server (staged with exactly the Docker COPY file set, so a
 // pass here also proves Issue #1's fix ships every module the server needs)
@@ -143,6 +143,9 @@ async function stopHub() {
 }
 
 (async () => {
+  // v2.10: run the print-start/complete watcher at 400 ms so the filament-
+  // memory section can drive a full lifecycle in seconds (production: 15 s).
+  process.env.U1HUB_POLL_MS = "400";
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "u1hub-test-"));
   const hubDir = path.join(tmp, "app");
   stageHub(hubDir);
@@ -171,7 +174,7 @@ async function stopHub() {
   console.log("\n== B: boot from the Docker COPY file set ==");
   await startHub(hubDir);
   let r = await jget("/api/version");
-  ok(r.body && r.body.version === "2.9.0", "server boots from Docker file set, reports 2.9.0", r.body);
+  ok(r.body && r.body.version === "2.10.0", "server boots from Docker file set, reports 2.10.0", r.body);
   r = await fetch(HUB + "/"); ok(r.ok, "serves index.html");
   r = await fetch(HUB + "/fs-colors.html"); ok(r.ok, "serves fs-colors.html (fs-colors.js present)");
   r = await jget("/api/auth/status"); ok(r.status === 200, "auth.js mounted", r.status);
@@ -456,6 +459,164 @@ async function stopHub() {
     ok(r.status === 422, "fewer than 4 distinct candidates → clear 422", r.body);
   }
 
+  console.log("\n== M: print-file filament memory (v2.10, content-hashed) ==");
+  {
+    // Earlier routing checks may have left the mock mid-"print"; settle it to
+    // standby and let a poll observe that, so the next start is a genuine
+    // standby→printing transition.
+    mockU1.state.printState = "standby"; mockU1.state.filename = "";
+    await sleep(1000);
+    // Own spool + loadout so the snapshot has something to remember. SPID is
+    // parked in T3 for the restart section — T1 is free.
+    r = await jpost("/api/spools/bind", { identity: { hex: "#C0FFEE", color_name: "Memory Mint", brand: "TestCo" } });
+    const FMID = r.body.spool_id;
+    await jpost("/api/slots/assign", { printer: 0, slot: 0, spool_id: FMID });
+    // A file with unique bytes — the memory key is CONTENT, not the name.
+    const FMBODY = GCODE_SINGLE + "\n; fmem fixture " + Date.now();
+    fs.writeFileSync(path.join(gcodeDir, "fmemtest.gcode"), FMBODY);
+    r = await jget("/api/filament-memory?file=fmemtest.gcode&type=u1");
+    ok(r.status === 200 && r.body.known === false && r.body.hash, "never-printed file → known:false (with its content hash)", r.body);
+    // Start → the watcher snapshots {hash, loadout}; complete → it records.
+    r = await jpost("/api/print", { file: "fmemtest.gcode", printer: 0, start: true, type: "u1" });
+    ok(r.status === 200 && r.body.jobId, "print kicked off for the fixture", r.body);
+    await sleep(1200);
+    ok(mockU1.state.printState === "printing", "mock is printing the fixture", mockU1.state.printState);
+    mockU1.state.printState = "complete";
+    await sleep(1200);
+    r = await jget("/api/filament-memory?file=fmemtest.gcode&type=u1");
+    ok(r.body.known === true && r.body.spools.length === 2,
+      "completed print recorded the full loadout (T1 fixture spool + parked T3)", r.body.spools);
+    const remT1 = (r.body.spools || []).find(s => s.slot === 0);
+    ok(remT1 && remT1.spool_id === FMID && remT1.hex === "C0FFEE" && remT1.missing === false,
+      "remembered slot names the physical roll with live identity", remT1);
+    // Rename-proof: same bytes under a new name still recall the same record.
+    await jpost("/api/files/rename", { name: "fmemtest.gcode", newName: "totally-different-name.gcode", type: "u1" });
+    r = await jget("/api/filament-memory?file=totally-different-name.gcode&type=u1");
+    ok(r.body.known === true, "rename-proof: memory keys on content, not filename", r.body);
+    // Forgotten spool degrades gracefully: returned from the snapshot, flagged.
+    await jpost("/api/spools/forget", { spool_id: FMID });
+    r = await jget("/api/filament-memory?file=totally-different-name.gcode&type=u1");
+    ok(r.body.known === true && r.body.spools.find(s => s.slot === 0).missing === true,
+      "spool forgotten since → still shown, flagged missing", r.body.spools);
+    // Re-slice reset: different bytes = different job = clean history.
+    fs.writeFileSync(path.join(gcodeDir, "totally-different-name.gcode"), FMBODY + "\nG1 X99 ; re-sliced");
+    r = await jget("/api/filament-memory?file=totally-different-name.gcode&type=u1");
+    ok(r.body.known === false, "re-sliced file (new bytes) correctly starts with no history", r.body);
+    // The record itself lives in printlog.json (never-commit list) on disk.
+    const plraw = JSON.parse(fs.readFileSync(path.join(hubDir, "printlog.json"), "utf8"));
+    ok(plraw.__filaments && Object.keys(plraw.__filaments).length >= 1,
+      "memory persisted under printlog.json's reserved __filaments key", Object.keys(plraw.__filaments || {}));
+    ok(plraw.u1 && plraw.u1["fmemtest.gcode"] === undefined && typeof plraw.u1["totally-different-name.gcode"] === "number",
+      "last-printed stamp migrated with the rename, untouched by fmem sharing the file", Object.keys(plraw.u1 || {}));
+    r = await jget("/api/diagnostics?logs=0");
+    ok(r.body.counts && r.body.counts.filamentMemories >= 1, "diagnostics bundle counts filament memories", r.body.counts);
+    // Tidy: settle the mock and drop the fixture so later sections see the
+    // same world they always did.
+    mockU1.state.printState = "standby"; mockU1.state.filename = "";
+    await sleep(1000);
+    await jpost("/api/files/delete", { name: "totally-different-name.gcode", type: "u1" });
+  }
+
+  console.log("\n== M: Phomemo M110 label layers (v2.10, hardware-verified 2026-08-25) ==");
+  {
+    r = await fetch(HUB + "/labels.html"); const lbl = await r.text();
+    ok(r.ok && /M110 40×30/.test(lbl), "labels page carries the M110 40×30 mm format toggle");
+    ok(/@page m110page\{ size:40mm 30mm/.test(lbl), "M110 format sizes each label as its own 40×30 mm page");
+    ok(/"bluetooth" in navigator/.test(lbl) && /data-bt=/.test(lbl),
+      "Web Bluetooth layer feature-detected with per-label print buttons");
+    // The double-verified protocol, byte for byte (USB RAW print on the real
+    // M110S + byte-identical to the field-tested phomymo reference):
+    ok(/0x1b, 0x4e, 0x0d/.test(lbl) && /0x1b, 0x4e, 0x04/.test(lbl) && /0x1f, 0x11, 0x0a/.test(lbl)
+      && /0x1d, 0x76, 0x30, 0x00/.test(lbl) && /0x1f, 0xf0, 0x05, 0x00/.test(lbl) && !/0x1b, 0x40/.test(lbl),
+      "verified protocol bytes: speed/density/gap-media header, GS v 0 raster, 1F F0 footer, NO ESC @");
+    ok(/new Uint8Array\(bytes\)\.buffer/.test(lbl),
+      "regression guard: BLE writes copy into a fresh buffer (the subarray-view bug that ate the first print)");
+    ok(/PAD_LEFT: 8/.test(lbl), "M110S right-aligned paper path: rows pad 8 zero bytes left");
+    ok(/navigator\.share/.test(lbl) && /toBlob/.test(lbl) && /image\/png/.test(lbl),
+      "\ud83d\udce4 share-to-app layer present (iOS path): pre-thresholded PNG into the OS share sheet");
+    ok(!/api\/label/.test(lbl) && !/labelPrinter/.test(lbl),
+      "bridge fully dropped: no server print endpoint or queue config referenced anywhere");
+  }
+
+  console.log("\n== M2: duplicate-color tool mapping (v2.10) ==");
+  {
+    // A 4-tool file where two tools carry the SAME palette hex (Orca can't
+    // merge extruders; the user recolored T1 and T3 both to white).
+    fs.writeFileSync(path.join(gcodeDir, "dup4.gcode"), [
+      "; generated by OrcaSlicer",
+      "G28", "T0", "G1 X1", "T1", "G1 X2", "T2", "G1 X3", "T3", "G1 X4",
+      "; filament_colour = #FF0000;#FFFFFF;#0000FF;#FFFFFF",
+      "; filament_type = PLA;PLA;PLA;PLA",
+      "; filament used [g] = 10.0;2.0;3.2;2.0",
+      "; estimated printing time (normal mode) = 1h"
+    ].join("\n"));
+    // DIFFERENT colors on one head must still refuse — and the message must
+    // name the exact per-index hexes, which is also the hexByIdx alignment
+    // proof (misaligned indices would surface the wrong colors here).
+    r = await jpost("/api/print", { file: "dup4.gcode", printer: 0, type: "u1", map: { 0: 0, 1: 2, 2: 2, 3: 3 } });
+    ok(r.status === 400 && /#FFFFFF/.test(r.body.error) && /#0000FF/.test(r.body.error) && /T3/.test(r.body.error),
+      "different colors sharing a head → refused, naming T3 and both exact hexes (hexByIdx aligned)", r.body);
+    // A hex the file can't prove → refuse (never assume safety).
+    fs.writeFileSync(path.join(gcodeDir, "dup3.gcode"), [
+      "; generated by OrcaSlicer",
+      "G28", "T0", "G1 X1", "T1", "G1 X2", "T2", "G1 X3", "T3", "G1 X4",
+      "; filament_colour = #FF0000;#00FF00;#0000FF",
+      "; filament_type = PLA;PLA;PLA",
+      "; filament used [g] = 1;1;1",
+      "; estimated printing time (normal mode) = 1h"
+    ].join("\n"));
+    r = await jpost("/api/print", { file: "dup3.gcode", printer: 0, type: "u1", map: { 2: 1, 3: 1 } });
+    ok(r.status === 400 && /couldn't be read/.test(r.body.error),
+      "unreadable palette hex on a shared head → refused (can't prove it's safe)", r.body);
+    // IDENTICAL colors sharing a head → allowed, and the printer must be told
+    // about the physical head ONCE. Assert on what the mock actually received.
+    mockU1.state.gcodeScripts.length = 0;
+    r = await jpost("/api/print", { file: "dup4.gcode", printer: 0, type: "u1", map: { 0: 0, 1: 3, 2: 2, 3: 3 } });
+    ok(r.status === 200 && r.body.jobId, "identical colors sharing a head → accepted", r.body);
+    let job = null;
+    for (let i = 0; i < 40 && !(job && job.done); i++) { await sleep(250); job = (await jget("/api/print-status?job=" + r.body.jobId)).body; }
+    ok(job && job.done && !job.error && job.result && job.result.mapped === 4,
+      "mapping job completed, all 4 tools mapped", job);
+    const mapScript = mockU1.state.gcodeScripts.find(s => /SET_PRINT_USED_EXTRUDERS/.test(s)) || "";
+    const used = (/SET_PRINT_USED_EXTRUDERS EXTRUDERS=([\d,]+)/.exec(mapScript) || [])[1];
+    ok(used === "0,3,2", "USED_EXTRUDERS deduped as received by the printer (0,3,2 — not 0,3,2,3)", used);
+    ok(/SET_PRINT_EXTRUDER_MAP CONFIG_EXTRUDER=1 MAP_EXTRUDER=3/.test(mapScript)
+      && /SET_PRINT_EXTRUDER_MAP CONFIG_EXTRUDER=3 MAP_EXTRUDER=3/.test(mapScript),
+      "both white tools mapped to the same physical head in the macros", mapScript.split("\n"));
+    await jpost("/api/files/delete", { name: "dup4.gcode", type: "u1" });
+    await jpost("/api/files/delete", { name: "dup3.gcode", type: "u1" });
+  }
+
+  console.log("\n== R: loadout replay, server half — setcolor honesty (v2.10) ==");
+  {
+    // The spool-first replay UI lives client-side; its hardware gate (cross-
+    // slot replay on a real printer) stays live per Rule #1. What the harness
+    // CAN prove is the server half every replay Apply rides on: presence
+    // checks, the official-spool lock, and — the 2.10 point — that success is
+    // only ever claimed off the printer's own read-back.
+    r = await jpost("/api/setcolor", { printer: 0, slot: 0, hex: "#123ABC" });
+    ok(r.status === 200 && r.body.ok === true && mockU1.state.ptc.filament_color_rgba[0] === "123ABCFF",
+      "writable tray: color written AND the printer itself reports it", r.body);
+    r = await jpost("/api/setcolor", { printer: 0, slot: 2, hex: "#123ABC" });
+    ok(r.status === 409 && /No filament loaded in slot T3/.test(r.body.error),
+      "empty tray → refused before any write (replay's honest-apply precondition)", r.body);
+    r = await jpost("/api/setcolor", { printer: 0, slot: 1, hex: "#123ABC" });
+    ok(r.status === 409 && /official/.test(r.body.error),
+      "official RFID spool → friendly color-locked refusal", r.body);
+    // Firmware silently refuses → the Hub must surface it, never claim success.
+    mockU1.state.dropColorWrites = true;
+    r = await jpost("/api/setcolor", { printer: 0, slot: 0, hex: "#654321" });
+    ok(r.status === 502 && /not confirmed/.test(r.body.error) && mockU1.state.ptc.filament_color_rgba[0] === "123ABCFF",
+      "silently-dropped write → 502 'not confirmed' off the read-back — no false ✓", r.body);
+    mockU1.state.dropColorWrites = false;
+    // Mid-print, colors are untouchable — replay must refuse, not queue.
+    mockU1.state.printState = "printing";
+    r = await jpost("/api/setcolor", { printer: 0, slot: 0, hex: "#0F0F0F" });
+    ok(r.status === 409 && /printing/.test(r.body.error), "printing → refused (replay can't fire mid-print)", r.body);
+    mockU1.state.printState = "standby"; mockU1.state.filename = "";
+    await sleep(600);
+  }
+
   console.log("\n== A+C: persistence across restart ==");
   // Also plant a missing-folder scenario for the boot warning check.
   await jpost("/api/types", { label: "Ghost Type" });
@@ -510,7 +671,7 @@ async function stopHub() {
   r = await fetch(HUB + "/api/diagnostics");
   const diagRaw = await r.text();
   const diag = JSON.parse(diagRaw);
-  ok(r.ok && diag.hub && diag.hub.version === "2.9.0", "diagnostics bundle reports hub version", diag.hub);
+  ok(r.ok && diag.hub && diag.hub.version === "2.10.0", "diagnostics bundle reports hub version", diag.hub);
   ok(Array.isArray(diag.log) && diag.log.some(l => /caps\[/.test(l.msg)),
     "ring buffer captured capability-detection events", (diag.log || []).slice(-3));
   ok(diag.log.some(l => /loadout:/.test(l.msg)), "ring buffer captured loadout events", (diag.log || []).slice(-3));
@@ -529,7 +690,7 @@ async function stopHub() {
   const vUi = /const VERSION = "([^"]+)"/.exec(fs.readFileSync(path.join(REPO, "public", "index.html"), "utf8"))[1];
   const vPkg = JSON.parse(fs.readFileSync(path.join(REPO, "package.json"), "utf8")).version;
   ok(vSrv === vUi && vUi === vPkg, "server.js / index.html / package.json versions match (" + [vSrv, vUi, vPkg].join(" / ") + ")");
-  ok(vSrv === "2.9.0", "version is 2.9.0");
+  ok(vSrv === "2.10.0", "version is 2.10.0");
   const all = ["server.js", "public/index.html", "package.json", "Dockerfile", "docker-compose.yml", "rfid.js"].map(f => fs.readFileSync(path.join(REPO, f), "utf8")).join("");
   ok(!/2\.8\.2/.test(all), "no dead 2.8.2 version string anywhere");
 
