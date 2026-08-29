@@ -3,7 +3,7 @@
 // and pushes the chosen file to the chosen printer via Moonraker (server-side,
 // so no browser CORS headaches).
 
-const VERSION = "2.10.0";
+const VERSION = "2.11.0";
 
 const crypto = require("crypto");
 const express = require("express");
@@ -114,9 +114,49 @@ function saveConfigFile() {
   try { fs.writeFileSync(CONFIG_PATH, JSON.stringify(CFG, null, 2)); } catch {}
 }
 
+// ---- Feature modules (v2.11): what's core vs. optional ----------------------
+// Core = monitor the fleet and print files. Everything else is a module that a
+// `features` block in config.json can switch off — and the Lite build is
+// nothing more than a profile of these flags (one repo, two downloads, no
+// fork). Default is everything ON: an untouched config behaves exactly like
+// 2.10. U1HUB_PROFILE=lite (the Lite binary's baked-in default) flips the
+// Lite set off unless config.json explicitly says otherwise.
+const MODULE_DEFAULTS = { power: true, camera: true, spools: true, match: true, mixer: true, "types-beta": true, dispatch: true };
+const LITE_OFF = ["spools", "match", "mixer", "types-beta"];  // Lite = core + camera + power + dispatch
+let FEATURES = { ...MODULE_DEFAULTS };
+let FEATURES_LOCKED = false;
+function computeFeatures() {
+  // Lite is (a) U1HUB_PROFILE=lite in the env, or (b) a packaged binary whose
+  // FILENAME contains "lite" — the Lite downloads are the same executables,
+  // renamed. No fork, no second build, one repo.
+  const exeName = path.basename(process.execPath || "").toLowerCase();
+  const lite = String(process.env.U1HUB_PROFILE || "").toLowerCase() === "lite"
+            || (typeof IS_PKG !== "undefined" && IS_PKG && exeName.includes("lite"));
+  const f = { ...MODULE_DEFAULTS };
+  if (lite) for (const k of LITE_OFF) if (k in f) f[k] = false;
+  const user = (CFG && typeof CFG.features === "object" && CFG.features) || {};
+  for (const k of Object.keys(user)) if (k in f) f[k] = user[k] !== false;
+  return f;
+}
+
+// In-place module gating (v2.11): some flag-controlled features reassign core
+// state (TYPES/QUEUE) or lean on core closures — splitting their few routes
+// into files would need a state-setter surface wider than the routes
+// themselves. They stay in this file, wrapped in onModule(): the registration
+// runs at loader time only when the feature is enabled. Same flag semantics
+// as file modules; only the packaging differs.
+const INPLACE_MODULES = [];
+function onModule(name, fn) { INPLACE_MODULES.push({ name, fn }); }
+
 function loadConfig() {
   try { CFG = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8")); }
   catch { CFG = { ...DEFAULT_CFG }; }
+  // Features are computed ONCE, at boot. Config saves during runtime update
+  // config.json (featuresConfig in /api/config shows the pending state) but
+  // never the live map — module routes mount at boot, so a live flip would
+  // claim a change that hasn't actually happened. Restart applies it, exactly
+  // as the Settings panel says.
+  if (!FEATURES_LOCKED) { FEATURES = computeFeatures(); FEATURES_LOCKED = true; }
   FOLDER = path.resolve(BASE_DIR, CFG.gcodeFolder || "./gcode");
   PRINTERS = Array.isArray(CFG.printers) ? CFG.printers : [];
   try { fs.mkdirSync(FOLDER, { recursive: true }); } catch {}   // base dir: today's behavior, unchanged
@@ -330,13 +370,43 @@ require("./auth.js")(app, express, BASE_DIR, ASSET_DIR);
 // Remote access — Hub-managed Cloudflare tunnel (see tunnel.js design notes).
 // Mounted after the gate so every /api/tunnel/* route requires login.
 require("./tunnel.js")(app, express, BASE_DIR, PORT);
-app.use(express.static(path.join(ASSET_DIR, "public")));
-// Explicit index route so the UI is served even when running from a packaged
-// binary (where express.static from the snapshot can be unreliable).
-app.get("/", (req, res) => {
-  try { res.type("html").send(fs.readFileSync(path.join(ASSET_DIR, "public", "index.html"), "utf8")); }
-  catch (e) { res.status(500).send("index.html not found"); }
-});
+// v2.11: the dashboard is served through a tiny feature-aware transform.
+// Three jobs, all textual, no template engine:
+//   1. Inject the live feature map as window.HUB_FEATURES (race-free — the
+//      client never has to fetch before knowing what exists).
+//   2. Strip the nav for disabled client features (Spool Match / Spools tabs,
+//      the FS Mixer link) so a gated feature isn't a dead button — the served
+//      page simply doesn't have it. The Lite profile is this, applied.
+//   3. Inject <script> tags for client module files (CLIENT_TABLE) — the
+//      browser-side twin of MODULE_TABLE. Dispatch is its first entry; the
+//      list is static for the same pkg reason as the server table.
+const CLIENT_TABLE = {
+  dispatch: "/modules/dispatch-ui.js"   // public/modules/dispatch-ui.js, static-served
+  // (named -ui deliberately: the server module is modules/dispatch.js, and two
+  //  same-named files in different folders is a foot-gun during deploys)
+};
+function serveIndex(req, res) {
+  try {
+    let html = fs.readFileSync(path.join(ASSET_DIR, "public", "index.html"), "utf8");
+    html = html.replace("<!-- @hub-features -->",
+      "<script>window.HUB_FEATURES = " + JSON.stringify(FEATURES) + ";</script>");
+    if (FEATURES.match === false)
+      html = html.replace(/<button class="vtab" data-view="match">[^<]*<\/button>/g, "");
+    if (FEATURES.spools === false)
+      html = html.replace(/<button class="vtab" data-view="spools">[^<]*<\/button>/g, "");
+    if (FEATURES.mixer === false)
+      html = html.replace(/<a class="gear" href="\/fs-colors\.html"[^>]*>[^<]*<\/a>/g, "");
+    const tags = Object.entries(CLIENT_TABLE)
+      .filter(([name]) => FEATURES[name] !== false)
+      .map(([, src2]) => '<script src="' + src2 + '"></script>').join("\n");
+    html = html.replace("<!-- @client-modules -->", tags);
+    res.type("html").send(html);
+  } catch (e) { res.status(500).send("index.html not found"); }
+}
+app.get("/", serveIndex);
+app.get("/index.html", serveIndex);   // close the raw-file side door too
+
+app.use(express.static(path.join(ASSET_DIR, "public"), { index: false }));
 // FS mix planner: same explicit-route treatment for the packaged binary, then
 // the module mounts /api/fs-colors/analyze and /api/fs-colors/solve.
 app.get("/fs-colors.html", (req, res) => {
@@ -348,17 +418,14 @@ app.get("/labels.html", (req, res) => {
   try { res.type("html").send(fs.readFileSync(path.join(ASSET_DIR, "public", "labels.html"), "utf8")); }
   catch (e) { res.status(500).send("labels.html not found"); }
 });
-require("./fs-colors.js")(app, express);
+// fs-colors mount moved to modules/mixer.js (v2.11). The fs-colors.html PAGE
+// stays core-served (express.static covers it anyway); only the /api/fs-colors
+// routes are feature-gated.
 // RFID / spool identity (v2.9): hub-side tag scanning → spool_id → filament
 // identity, backed by the bundled FilamentColors.xyz snapshot. Printers never
 // read tags for this feature; see rfid.js design notes.
-require("./rfid.js")(app, express, BASE_DIR, ASSET_DIR, {
-  getPrinters: () => PRINTERS,
-  // v2.9 loadout: slot-range validation wants detected head counts (Rule-of-
-  // capability, not type labels). null while unknown — validation stays lenient.
-  getCaps: (idx) => detectCaps(idx),
-  log: hublog
-});
+// rfid mount moved to modules/spools.js (v2.11). Same page-vs-API split:
+// labels.html stays served, /api/spools + /api/slots exist only when enabled.
 
 // Resolve a requested filename safely INSIDE a type's bound folder (no
 // traversal). Same basename-only discipline as always — the type only selects
@@ -395,6 +462,7 @@ app.get("/api/types", (req, res) => {
 // "Add printer type" — deliberately separate from "Add printer": the user only
 // names it; the Hub generates the immutable slug, creates <base>/<slug>/,
 // assigns the next preset accent, and the switcher tab appears. Done once.
+onModule("types-beta", () => {
 app.post("/api/types", (req, res) => {
   const label = String((req.body || {}).label || "").trim();
   if (!label) return res.status(400).json({ error: "Type needs a name" });
@@ -442,6 +510,7 @@ app.post("/api/types/delete", (req, res) => {
   saveConfigFile();
   res.json({ ok: true, note: "Folder and gcode files were preserved on disk." });
 });
+}); // end onModule("types-beta")
 
 app.get("/api/printers", (req, res) => {
   res.json(PRINTERS.map((p, i) => ({ id: i, name: p.name, type: p.type || "u1" })));
@@ -857,6 +926,7 @@ function paletteForFile(name, t) {
   PAL_CACHE.set(key, rec);
   return rec;
 }
+onModule("match", () => {
 app.get("/api/library-palettes", (req, res) => {
   const t = reqTypeOf(req);
   if (!t) return res.status(400).json({ error: "Unknown printer type" });
@@ -873,6 +943,7 @@ app.get("/api/library-palettes", (req, res) => {
     res.json({ files: out });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
+}); // end onModule("match")
 
 // Rewrite the file's palette colors so each chosen color exactly equals the
 // target head's loaded color. The U1 matches file-colors to loaded heads, so an
@@ -1392,68 +1463,7 @@ async function diskPoll() {
 setInterval(diskPoll, 60000);
 setTimeout(diskPoll, 3000);
 
-// ---- Chamber camera (Snapmaker camera.* plugin) ----------------------------
-// Hardware-verified 2026-08-05 (.88/.83): the U1's built-in chamber cam is NOT on
-// any standard Moonraker webcam interface (/server/webcams/list empty, /webcam/
-// 502, :8080 refused). It streams through Snapmaker's own plugin:
-// camera.start_monitor {domain:"lan", interval:0} makes the plugin write ~1 fps
-// JPEGs to /server/files/camera/monitor.jpg (fetched over plain HTTP);
-// camera.stop_monitor ends it. Stream test confirmed continuous frames, first
-// frame ~1.1s after start.
-//
-// The monitor must run on a DEDICATED socket — issuing start_monitor on the
-// shared fleet-subscription socket does NOT take (verified: frames never
-// advanced). So each printer gets its own lazy camera socket, opened on first
-// snapshot request and closed by the idle reaper when no card is watching.
-const CAM = new Map(); // idx -> { ws, open, monitoring, lastReq, startedAt, cooldownUntil }
-const CAM_COOLDOWN_MS = 5000;   // plugin misbehaves if start_monitor is hammered
-const CAM_IDLE_MS = 60000;      // stop the stream after this long with no viewers
-const CAM_WARMUP_MS = 1400;     // first frame lands ~1.1s after start
-
-function camConnect(idx) {
-  const p = PRINTERS[idx];
-  if (!p || typeof WebSocket === "undefined") return null;
-  let c = CAM.get(idx);
-  if (c && c.ws && (c.ws.readyState === 0 || c.ws.readyState === 1)) return c; // connecting/open
-  if (c && Date.now() < c.cooldownUntil) return c;                              // throttle reconnect
-  c = c || { ws: null, open: false, monitoring: false, lastReq: 0, startedAt: 0, cooldownUntil: 0 };
-  const wsUrl = String(p.url).replace(/\/+$/, "").replace(/^http/, "ws") + "/websocket";
-  let ws;
-  try { ws = new WebSocket(wsUrl); } catch { c.cooldownUntil = Date.now() + CAM_COOLDOWN_MS; CAM.set(idx, c); return c; }
-  c.ws = ws; c.open = false; c.monitoring = false; c.cooldownUntil = Date.now() + CAM_COOLDOWN_MS;
-  ws.onopen = () => {
-    c.open = true; c.startedAt = Date.now();
-    try { ws.send(JSON.stringify({ jsonrpc: "2.0", method: "camera.start_monitor", params: { domain: "lan", interval: 0 }, id: 900 })); c.monitoring = true; } catch {}
-  };
-  ws.onmessage = (ev) => {
-    let j; try { j = JSON.parse(ev.data); } catch { return; }
-    if (j.method === "notify_camera_status_change" && Array.isArray(j.params) && j.params[0]) c.monitoring = !!j.params[0].monitoring;
-  };
-  ws.onerror = () => {};
-  ws.onclose = () => { c.open = false; c.monitoring = false; };
-  CAM.set(idx, c);
-  return c;
-}
-// Ensure a live stream; returns true if this call had to (re)start it (cold).
-function camEnsure(idx) {
-  const prev = CAM.get(idx);
-  const cold = !(prev && prev.open && prev.monitoring);
-  const c = camConnect(idx);
-  if (c) c.lastReq = Date.now();
-  return cold;
-}
-function camStop(idx) {
-  const c = CAM.get(idx);
-  if (!c || !c.ws) return;
-  try { if (c.open) c.ws.send(JSON.stringify({ jsonrpc: "2.0", method: "camera.stop_monitor", params: { domain: "lan" }, id: 901 })); } catch {}
-  try { c.ws.close(); } catch {}
-  c.open = false; c.monitoring = false; c.ws = null;
-}
-// Idle reaper: drop any camera socket nobody has watched for CAM_IDLE_MS.
-setInterval(() => {
-  const now = Date.now();
-  for (const [idx, c] of CAM) if (c.ws && now - c.lastReq > CAM_IDLE_MS) camStop(idx);
-}, 15000);
+// ---- Chamber camera: extracted to modules/camera.js (v2.11) ----------------
 
 // One fleet-card record per printer: fresh socket data shapes instantly with
 // zero HTTP; otherwise fall back to the classic HTTP probe with a short cache
@@ -1489,7 +1499,7 @@ async function fleetSnapshot() {
   // exactly when you'd want to switch it on. Only the type is exposed; the plug
   // IP stays server-side (the browser drives it through /api/power?id=N).
   return Promise.all((PRINTERS || []).map((p, i) =>
-    probeCached(p, i).then(r => ({ id: i, ptype: p.type || "u1", plug: p.plug ? { type: p.plug.type } : null, ...r }))));
+    probeCached(p, i).then(r => ({ id: i, ptype: p.type || "u1", plug: (FEATURES.power && p.plug) ? { type: p.plug.type } : null, ...r }))));
 }
 
 app.get("/api/fleet", async (req, res) => {
@@ -1508,7 +1518,7 @@ app.get("/api/events", (req, res) => {
 let SSE_LAST = "", SSE_TIMER = null, SSE_BUSY = false;
 function farmMarkDirty() {
   if (SSE_TIMER) return;                    // debounce: batch bursts into one push
-  SSE_TIMER = setTimeout(sseBroadcast, 300);
+  SSE_TIMER = setTimeout(sseBroadcast, 1000);   // v2.11: was 300 — client renders 1/s anyway
 }
 async function sseBroadcast() {
   SSE_TIMER = null;
@@ -1764,39 +1774,6 @@ app.get("/api/pthumb", async (req, res) => {
   } catch { res.status(404).end(); }
 });
 
-// ---- Live chamber snapshot -------------------------------------------------
-// The browser polls this per printer on a staggered interval and points an <img>
-// at it. Ensures the plugin's monitor is running (starting it on first request),
-// then proxies the latest frame. A cold start needs ~1s for the first frame, so
-// we retry monitor.jpg once on a miss. Returns 503 (not 500) when there's simply
-// no frame yet, so the UI can show a retryable placeholder rather than an error.
-app.get("/api/camera", async (req, res) => {
-  const idx = +req.query.id;
-  const p = PRINTERS[idx];
-  if (!p) return res.status(400).end();
-  if (typeof WebSocket === "undefined") return res.status(503).json({ error: "no WebSocket client" });
-  const cold = camEnsure(idx);   // opens the dedicated camera socket if needed
-  const base = String(p.url).replace(/\/+$/, "");
-  const grab = async () => {
-    const ctrl = new AbortController();
-    const to = setTimeout(() => ctrl.abort(), 3500);
-    try {
-      const r = await fetch(base + "/server/files/camera/monitor.jpg", { signal: ctrl.signal });
-      clearTimeout(to);
-      if (!r.ok) return null;
-      const b = Buffer.from(await r.arrayBuffer());
-      return (b.length > 2 && b[0] === 0xff && b[1] === 0xd8) ? b : null; // valid JPEG SOI
-    } catch { clearTimeout(to); return null; }
-  };
-  // On a cold start the stream needs ~1.1s to write its first frame; without the
-  // wait we'd serve the stale monitor.jpg left on disk. Warm streams skip this.
-  if (cold) await new Promise(r => setTimeout(r, CAM_WARMUP_MS));
-  let jpg = await grab();
-  if (!jpg) { await new Promise(r => setTimeout(r, 800)); jpg = await grab(); }
-  if (!jpg) return res.status(503).json({ error: "no frame" });
-  res.set("Cache-Control", "no-store").type("jpeg").send(jpg);
-});
-
 // ---- Filament color: set a slot's color from the Hub -----------------------
 // Verified live 2026-07-03: the touchscreen itself issues this exact gcode
 // (captured in /server/gcode_store when a color was changed on-screen):
@@ -1848,130 +1825,7 @@ app.post("/api/setcolor", async (req, res) => {
   }
 });
 
-// ---- Smart power control: switch a printer's plug on/off + read draw -------
-// Each printer MAY carry a typed `plug` descriptor in config.json:
-//   "plug": { "type":"shelly", "ip":"192.168.12.235" }                  // metered on/off
-//   "plug": { "type":"url", "on":"http://x/on", "off":"http://x/off" }  // any local-HTTP plug, on/off only
-// Hardware-verified on a Shelly Plug US Gen4 (model S4PL-00116US, gen 4):
-//   GET /rpc/Shelly.GetDeviceInfo  -> reachable, auth-optional (auth_en:false)
-//   GET /rpc/Switch.GetStatus?id=0 -> { output, apower, voltage, aenergy:{total}, temperature:{tC} }
-//   GET /rpc/Switch.Set?id=0&on=<bool> -> { was_on }
-// The `shelly` driver reads live draw + energy; the generic `url` driver just
-// fires the configured on/off URL (covers Tasmota, ESPHome, HA webhooks, DIY
-// ESP32 — anything with a local HTTP endpoint) with no metering.
-// SAFETY: turning a plug OFF is hard-blocked while its printer is printing or
-// paused — a live print_stats query gates every off (same pattern as the file-
-// management active-print guard). If we can't confirm the printer is idle, the
-// off is refused (fail safe). Turning ON is always allowed. NOTE: this guard
-// only covers the Hub's own Off button — the physical button, the Shelly app,
-// and power outages are outside the Hub's reach.
-
-async function plugRead(plug) {
-  if (!plug || !plug.type) throw new Error("no plug configured");
-  if (plug.type === "shelly") {
-    const ip = String(plug.ip || "").trim();
-    if (!ip) throw new Error("shelly plug missing 'ip'");
-    const ctrl = new AbortController();
-    const to = setTimeout(() => ctrl.abort(), 3000);
-    try {
-      const r = await fetch("http://" + ip + "/rpc/Switch.GetStatus?id=0", { signal: ctrl.signal });
-      if (!r.ok) throw new Error("plug HTTP " + r.status);
-      const s = await r.json();
-      const ae = s.aenergy || {};
-      const t = s.temperature || {};
-      return {
-        on: !!s.output,
-        watts: typeof s.apower === "number" ? s.apower : null,
-        volts: typeof s.voltage === "number" ? s.voltage : null,
-        energyWh: typeof ae.total === "number" ? ae.total : null,
-        tempC: typeof t.tC === "number" ? t.tC : null,
-        metered: true
-      };
-    } finally { clearTimeout(to); }
-  }
-  if (plug.type === "url") {
-    // generic plug: on/off only, no reliable status read
-    return { on: null, watts: null, volts: null, energyWh: null, tempC: null, metered: false };
-  }
-  throw new Error("unknown plug type '" + plug.type + "'");
-}
-
-async function plugSet(plug, on) {
-  if (!plug || !plug.type) throw new Error("no plug configured");
-  if (plug.type === "shelly") {
-    const ip = String(plug.ip || "").trim();
-    if (!ip) throw new Error("shelly plug missing 'ip'");
-    const ctrl = new AbortController();
-    const to = setTimeout(() => ctrl.abort(), 3000);
-    try {
-      const r = await fetch("http://" + ip + "/rpc/Switch.Set?id=0&on=" + (on ? "true" : "false"), { signal: ctrl.signal });
-      if (!r.ok) throw new Error("plug HTTP " + r.status);
-      await r.json().catch(() => ({}));
-    } finally { clearTimeout(to); }
-    return;
-  }
-  if (plug.type === "url") {
-    const target = on ? plug.on : plug.off;
-    if (!target) throw new Error("url plug missing '" + (on ? "on" : "off") + "' endpoint");
-    const ctrl = new AbortController();
-    const to = setTimeout(() => ctrl.abort(), 3000);
-    try {
-      const r = await fetch(String(target), { signal: ctrl.signal });
-      if (!r.ok) throw new Error("plug HTTP " + r.status);
-    } finally { clearTimeout(to); }
-    return;
-  }
-  throw new Error("unknown plug type '" + plug.type + "'");
-}
-
-// Live print state for the off-guard (mirrors the file-management guard helper).
-async function plugGuardState(base) {
-  const ctrl = new AbortController();
-  const to = setTimeout(() => ctrl.abort(), 3000);
-  try {
-    const r = await fetch(base + "/printer/objects/query?print_stats", { signal: ctrl.signal });
-    if (!r.ok) throw new Error("Moonraker " + r.status);
-    const ps = ((((await r.json()).result) || {}).status || {}).print_stats || {};
-    return ps.state || "unknown";
-  } finally { clearTimeout(to); }
-}
-
-app.get("/api/power", async (req, res) => {
-  const p = PRINTERS[req.query.id];
-  if (!p) return res.status(400).json({ error: "Unknown printer" });
-  if (!p.plug) return res.status(404).json({ error: "No plug configured for " + (p.name || "printer") });
-  try {
-    const st = await plugRead(p.plug);
-    res.json({ id: Number(req.query.id), type: p.plug.type, ...st });
-  } catch (e) {
-    res.status(502).json({ error: "Plug unreachable: " + e.message });
-  }
-});
-
-app.post("/api/power", async (req, res) => {
-  const b = req.body || {};
-  const p = PRINTERS[b.id];
-  if (!p) return res.status(400).json({ error: "Unknown printer" });
-  if (!p.plug) return res.status(404).json({ error: "No plug configured for " + (p.name || "printer") });
-  if (typeof b.on !== "boolean") return res.status(400).json({ error: "Body needs { id, on: true|false }" });
-  // SAFETY: never cut power to a printer that is printing or paused.
-  if (b.on === false) {
-    const base = String(p.url).replace(/\/+$/, "");
-    let state;
-    try { state = await plugGuardState(base); }
-    catch (e) { return res.status(502).json({ error: "Can't confirm " + p.name + " is idle (" + e.message + ") — refusing to power off." }); }
-    if (state === "printing" || state === "paused")
-      return res.status(409).json({ error: "REFUSED: " + p.name + " is " + state + " — the Hub won't cut power mid-print." });
-  }
-  try {
-    await plugSet(p.plug, b.on);
-    let st = null;
-    try { st = await plugRead(p.plug); } catch {}
-    res.json({ ok: true, id: Number(b.id), on: b.on, type: p.plug.type, ...(st || {}) });
-  } catch (e) {
-    res.status(502).json({ error: "Plug command failed: " + e.message });
-  }
-});
+// ---- Smart power control: extracted to modules/power.js (v2.11) ------------
 
 // ---- Network inventory: name / IP / MAC / serial, for DHCP reservations ----
 function pickIface(net) {
@@ -2013,147 +1867,14 @@ app.get("/api/inventory", async (req, res) => {
   res.json(out);
 });
 
-// ---- M110 label printing (v2.10) --------------------------------------------
-// The M110S takes print data over Bluetooth Classic SPP or USB — neither
-// reachable from a browser. Hardware-verified 2026-08-25 (Danny's unit, USB):
-// the corrected Phomemo byte sequence written RAW through the Windows print
-// spooler (winspool.drv, datatype RAW — the driver never touches the bytes)
-// feeds and prints. So the Hub server, running on the Windows box the printer
-// is plugged into, is the bridge: the browser rasterizes the label exactly as
-// before and POSTs the 1-bit raster here; the server owns the protocol bytes
-// and the spooler write. One protocol implementation, one place to fix it.
-// Any browser or phone can print — the server does the printing.
-//
-// No native dependency: the winspool call is P/Invoked from a tiny PowerShell
-// helper the server materializes into the OS temp dir and spawns per job.
-// @yao-pkg/pkg binaries stay clean across the whole release matrix; on
-// non-Windows platforms the endpoint refuses with a clear message instead of
-// half-working. (Topology limit, documented: the printer must hang off the
-// HUB machine — spooler queues that only exist inside an RDP session, or on
-// some other machine, are out of scope for 2.10.)
-//
-// Protocol (verified against marioPercivaldi/phomemo reference + live feed
-// test): ESC N 0D speed · ESC N 04 density · 1F 11 0A gap-paper · GS v 0
-// blocks of ≤240 lines at 48 bytes/line (384 dots, zero-padded) · footer
-// 1F F0 05 00 1F F0 03 00. NO ESC @ init. Bit set = black.
-//
-// The 40 mm label body rasters at 320 dots (40 bytes/row); the head is 384
-// dots wide, so rows are padded to 48 bytes with the image CENTERED (4 zero
-// bytes each side) on the assumption the label stock sits centered in the
-// guides. If the first real label prints shifted, LABEL_PAD_LEFT is the one
-// knob to turn.
-const LABEL_HEAD_BYTES = 48;          // 384-dot head — fixed by the hardware
-const LABEL_MAX_LINES_PER_BLOCK = 240;
-const LABEL_PAD_LEFT = 8;             // M110S: 40 mm stock sits RIGHT-ALIGNED on the 384-dot head
-                                      // (per the field-tested phomymo printer table), so a 40-byte
-                                      // row pads 8 zero bytes on the left. Matches labels.html's
-                                      // BLE path — a label is identical whichever route prints it.
-const LABEL_PS_HELPER = `param([Parameter(Mandatory=$true)][string]$Printer,[Parameter(Mandatory=$true)][string]$DataFile)
-$ErrorActionPreference = "Stop"
-$data = [System.IO.File]::ReadAllBytes($DataFile)
-Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-public class U1RawPrint {
-  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Ansi)]
-  public struct DOCINFO {
-    [MarshalAs(UnmanagedType.LPStr)] public string pDocName;
-    [MarshalAs(UnmanagedType.LPStr)] public string pOutputFile;
-    [MarshalAs(UnmanagedType.LPStr)] public string pDataType;
-  }
-  [DllImport("winspool.drv", CharSet=CharSet.Ansi, SetLastError=true)]
-  public static extern bool OpenPrinter(string name, out IntPtr h, IntPtr pd);
-  [DllImport("winspool.drv", SetLastError=true)] public static extern bool ClosePrinter(IntPtr h);
-  [DllImport("winspool.drv", CharSet=CharSet.Ansi, SetLastError=true)]
-  public static extern int StartDocPrinter(IntPtr h, int level, ref DOCINFO di);
-  [DllImport("winspool.drv", SetLastError=true)] public static extern bool EndDocPrinter(IntPtr h);
-  [DllImport("winspool.drv", SetLastError=true)] public static extern bool StartPagePrinter(IntPtr h);
-  [DllImport("winspool.drv", SetLastError=true)] public static extern bool EndPagePrinter(IntPtr h);
-  [DllImport("winspool.drv", SetLastError=true)]
-  public static extern bool WritePrinter(IntPtr h, byte[] data, int count, out int written);
-  public static string Send(string printer, byte[] data) {
-    IntPtr h;
-    if (!OpenPrinter(printer, out h, IntPtr.Zero)) return "ERR OpenPrinter " + Marshal.GetLastWin32Error() + " (queue name wrong or printer offline?)";
-    var di = new DOCINFO { pDocName = "U1 Hub spool label", pDataType = "RAW" };
-    if (StartDocPrinter(h, 1, ref di) == 0) { int e = Marshal.GetLastWin32Error(); ClosePrinter(h); return "ERR StartDocPrinter " + e; }
-    StartPagePrinter(h);
-    int w; bool ok = WritePrinter(h, data, data.Length, out w);
-    EndPagePrinter(h); EndDocPrinter(h); ClosePrinter(h);
-    return ok ? ("OK " + w) : ("ERR WritePrinter " + Marshal.GetLastWin32Error());
-  }
-}
-"@
-Write-Output ([U1RawPrint]::Send($Printer, $data))
-`;
-let LABEL_HELPER_PATH = null;   // materialized once per process
-function labelHelperPath() {
-  if (LABEL_HELPER_PATH && fs.existsSync(LABEL_HELPER_PATH)) return LABEL_HELPER_PATH;
-  const p = path.join(os.tmpdir(), "u1hub-label-print.ps1");
-  fs.writeFileSync(p, LABEL_PS_HELPER);
-  LABEL_HELPER_PATH = p;
-  return p;
-}
-// Build the full spooler payload from a 1-bit raster.
-function labelPacket(bits, rowBytes, lines) {
-  const speed = 3, density = 5;
-  const chunks = [Buffer.from([0x1b, 0x4e, 0x0d, speed, 0x1b, 0x4e, 0x04, density, 0x1f, 0x11, 0x0a])];
-  const w = LABEL_HEAD_BYTES;
-  const padL = rowBytes < w ? Math.min(LABEL_PAD_LEFT, w - rowBytes) : 0;
-  for (let y0 = 0; y0 < lines; y0 += LABEL_MAX_LINES_PER_BLOCK) {
-    const n = Math.min(LABEL_MAX_LINES_PER_BLOCK, lines - y0);
-    chunks.push(Buffer.from([0x1d, 0x76, 0x30, 0x00, w & 0xff, (w >> 8) & 0xff, n & 0xff, (n >> 8) & 0xff]));
-    const block = Buffer.alloc(w * n);           // zero = white
-    for (let y = 0; y < n; y++)
-      bits.copy(block, y * w + padL, (y0 + y) * rowBytes, (y0 + y) * rowBytes + Math.min(rowBytes, w - padL));
-    chunks.push(block);
-  }
-  chunks.push(Buffer.from([0x1f, 0xf0, 0x05, 0x00, 0x1f, 0xf0, 0x03, 0x00]));
-  return Buffer.concat(chunks);
-}
-app.post("/api/label/print", (req, res) => {
-  if (process.platform !== "win32")
-    return res.status(400).json({ error: "Direct M110 printing needs the Hub running on the Windows machine the printer is plugged into. Use the M110 40\u00d730 print format instead." });
-  const queue = (CFG.labelPrinter || "").trim();
-  if (!queue)
-    return res.status(400).json({ error: "No label printer configured \u2014 set the Windows print queue name in Settings (e.g. \"M110S Printer\")." });
-  const b = req.body || {};
-  const rowBytes = parseInt(b.rowBytes, 10), lines = parseInt(b.lines, 10);
-  if (!b.raster || !Number.isInteger(rowBytes) || !Number.isInteger(lines) ||
-      rowBytes < 1 || rowBytes > LABEL_HEAD_BYTES || lines < 1 || lines > 1200)
-    return res.status(400).json({ error: "Bad raster payload." });
-  let bits;
-  try { bits = Buffer.from(String(b.raster), "base64"); } catch { bits = null; }
-  if (!bits || bits.length !== rowBytes * lines)
-    return res.status(400).json({ error: "Raster size mismatch (" + (bits ? bits.length : 0) + " \u2260 " + rowBytes * lines + ")." });
-  const packet = labelPacket(bits, rowBytes, lines);
-  const tmp = path.join(os.tmpdir(), "u1hub-label-" + Date.now() + "-" + Math.random().toString(36).slice(2) + ".bin");
-  let helper;
-  try { fs.writeFileSync(tmp, packet); helper = labelHelperPath(); }
-  catch (e) { try { fs.unlinkSync(tmp); } catch {} return res.status(500).json({ error: "Could not stage label job: " + e.message }); }
-  const { execFile } = require("child_process");
-  execFile("powershell.exe",
-    ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", helper, "-Printer", queue, "-DataFile", tmp],
-    { timeout: 20000, windowsHide: true },
-    (err, stdout, stderr) => {
-      try { fs.unlinkSync(tmp); } catch {}
-      const out = String(stdout || "").trim();
-      if (!err && /^OK \d+$/.test(out)) {
-        hublog("info", "label printed to \"" + queue + "\" (" + packet.length + " bytes)");
-        return res.json({ ok: true, bytes: packet.length });
-      }
-      const detail = (err && err.killed)
-        ? "timed out after 20 s \u2014 queue \"" + queue + "\" not responding (printer offline?)"
-        : (out || String(stderr || "").trim() || (err && err.message) || "unknown failure");
-      hublog("error", "label print failed on \"" + queue + "\": " + detail);
-      res.status(502).json({ error: "Spooler write failed: " + detail });
-    });
-});
-
 // ---- Settings: read/write config from the UI (no file editing) ----
 function publicCfg() {
   return { gcodeFolder: CFG.gcodeFolder || "./gcode", folderResolved: FOLDER, printers: PRINTERS,
     types: TYPES.map(t => ({ slug: t.slug, label: t.label, accent: t.accent, builtin: !!t.builtin, warning: TYPE_WARNINGS[t.slug] || null })),
-    tip: CFG.tip || null, labelPrinter: (CFG.labelPrinter || "").trim(), configured: PRINTERS.length > 0 };
+    tip: CFG.tip || null, features: { ...FEATURES },
+    // what config.json ASKS for - differs from `features` until a restart
+    featuresConfig: { ...MODULE_DEFAULTS, ...((CFG.features && typeof CFG.features === "object") ? CFG.features : {}) },
+    configured: PRINTERS.length > 0 };
 }
 app.get("/api/config", (req, res) => res.json(publicCfg()));
 app.get("/api/version", (req, res) => res.json({ version: VERSION }));
@@ -2209,7 +1930,7 @@ app.get("/api/diagnostics", async (req, res) => {
     alias: "printer-" + (i + 1),
     name: p.name, type: p.type || "u1",
     caps: (await detectCaps(i)) || null,
-    plug: (p.plug && p.plug.type) || null
+    plug: (FEATURES.power && p.plug && p.plug.type) || null
   })));
 
   let spoolsBound = 0, slotsAssigned = 0;
@@ -2287,9 +2008,12 @@ app.post("/api/config", (req, res) => {
         })
       : (CFG.printers || []),
     tip: (b.tip && (b.tip.url || b.tip.label)) ? { label: String(b.tip.label || "Buy me a beer"), url: String(b.tip.url || "") } : (b.tip === null ? null : (CFG.tip || null)),
-    // Label printer queue name. String (even empty) sets it; field omitted =
-    // an older frontend that doesn't know about it — preserve what's there.
-    labelPrinter: (typeof b.labelPrinter === "string") ? b.labelPrinter.trim() : (CFG.labelPrinter || "")
+    // Feature flags from the Settings UI. Only known module names, booleans
+    // only; field omitted = older frontend - preserve. Modules mount at
+    // boot, so changes take effect on the next restart (the UI says so).
+    features: (b.features && typeof b.features === "object")
+      ? Object.fromEntries(Object.keys(MODULE_DEFAULTS).filter(k => k in b.features).map(k => [k, b.features[k] !== false]))
+      : (CFG.features || undefined)
   };
   try {
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(next, null, 2));
@@ -2450,6 +2174,86 @@ app.get("/api/debug/ws/stop", (req, res) => {
   WSDBG.delete(idx);
   res.json({ ok: true, buffered: s.buf.length, procStatSkipped: s.procStatSkipped });
 });
+
+// ---- Feature module loader (v2.11) ------------------------------------------
+// Modules are plain files in modules/, each exporting register(ctx). The
+// require table is STATIC on purpose: @yao-pkg/pkg follows static requires
+// into the binary; a dynamic directory scan would ship broken executables.
+// The ctx is the ONLY door a module gets — CFG/PRINTERS/TYPES are reassigned
+// on every config save, so ctx exposes live getters, never captured
+// references. Cross-module needs go through provide()/use(): the owning
+// module publishes a capability, consumers cope with undefined when it's off.
+const MODULE_TABLE = {
+  power: require("./modules/power.js"),
+  camera: require("./modules/camera.js"),
+  spools: require("./modules/spools.js"),
+  mixer: require("./modules/mixer.js"),
+  dispatch: require("./modules/dispatch.js")
+};
+const CAPS_PROVIDED = new Map();
+// Parse "estimated printing time (normal mode) = 1d 2h 3m" from gcode text.
+function parseEstMinutes(text) {
+  const m = /estimated printing time[^=]*=\s*([^\n;]+)/i.exec(text || "");
+  if (!m) return null;
+  const s = m[1]; let mins = 0, hit = false;
+  const take = (re, mult) => { const x = re.exec(s); if (x) { mins += (+x[1]) * mult; hit = true; } };
+  take(/(\d+)\s*d/, 1440); take(/(\d+)\s*h/, 60); take(/(\d+)\s*m/, 1);
+  const ss = /(\d+)\s*s/.exec(s); if (ss) { mins += Math.ceil((+ss[1]) / 60); hit = true; }
+  return hit ? mins : null;
+}
+// One-call file facts for modules (dispatch): colors + class + time estimate.
+// Reads the same cached palette as /api/print; the estimate comes from a
+// bounded read (Orca writes it in the config tail, our fixtures likewise).
+function fileInfoForModules(name, typeSlug) {
+  const t = typeBySlug(String(typeSlug || "u1")) || typeBySlug("u1");
+  const fp = safeFile(name, t);
+  if (!fp || !fs.existsSync(fp)) return { exists: false };
+  const pal = paletteForFile(name, t) || {};
+  let est = null;
+  try {
+    const st = fs.statSync(fp);
+    const CH = 262144;
+    const fd = fs.openSync(fp, "r");
+    try {
+      const head = Buffer.alloc(Math.min(CH, st.size));
+      fs.readSync(fd, head, 0, head.length, 0);
+      est = parseEstMinutes(head.toString("utf8"));
+      if (est === null && st.size > CH) {
+        const tail = Buffer.alloc(CH);
+        fs.readSync(fd, tail, 0, CH, st.size - CH);
+        est = parseEstMinutes(tail.toString("utf8"));
+      }
+    } finally { fs.closeSync(fd); }
+  } catch {}
+  return { exists: true, colors: pal.colors || [], estMinutes: est,
+           multi: !!(pal.isFS || (pal.usedCount || 0) > 1) };
+}
+
+const MODULE_CTX = Object.freeze({
+  app, express, hublog,
+  baseDir: BASE_DIR, assetDir: ASSET_DIR,
+  detectCaps: (idx) => detectCaps(idx),
+  fileInfo: (name, typeSlug) => fileInfoForModules(name, typeSlug),
+  loadout: (idx) => loadoutSnapshot(idx),
+  spoolShelf: () => { try { return (JSON.parse(fs.readFileSync(path.join(BASE_DIR, "spools.json"), "utf8")) || {}).spools || {}; } catch { return {}; } },
+  fleet: () => fleetSnapshot(),
+  get cfg() { return CFG; },
+  get printers() { return PRINTERS; },
+  get types() { return TYPES; },
+  get features() { return FEATURES; },
+  provide: (key, fn) => CAPS_PROVIDED.set(key, fn),
+  use: key => CAPS_PROVIDED.get(key)
+});
+for (const [name, mod] of Object.entries(MODULE_TABLE)) {
+  if (FEATURES[name] === false) { hublog("info", "module '" + name + "' disabled by profile/config"); continue; }
+  try { mod.register(MODULE_CTX); hublog("info", "module '" + name + "' registered"); }
+  catch (e) { hublog("error", "module '" + name + "' failed to register: " + e.message); }
+}
+for (const { name, fn } of INPLACE_MODULES) {
+  if (FEATURES[name] === false) { hublog("info", "module '" + name + "' (in-place) disabled by profile/config"); continue; }
+  try { fn(); hublog("info", "module '" + name + "' (in-place) registered"); }
+  catch (e) { hublog("error", "module '" + name + "' failed to register: " + e.message); }
+}
 
 app.listen(PORT, () => {
   const url = "http://localhost:" + PORT;

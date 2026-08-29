@@ -36,6 +36,9 @@ any browser — on your network, or **securely from anywhere** — you can:
   plugs, and a guard that refuses to cut power to a machine that's mid-print.
 - **Queue jobs "up next"** — build a shared print queue that survives Hub restarts,
   and reorder or remove entries with a tap.
+- **Plan your whole printing day** — **Dispatch** schedules jobs across every printer
+  against the hours you're actually home, adopts prints already running, flags spool
+  conflicts, and hands each start back to you for a bed-clear confirmation.
 - **Plan Full Spectrum mixes from any 3MF** — drop a multi-color project on the FS Mix
   Planner and get the exact filament blend recipes to print it on 4 toolheads, solved
   against the colors actually loaded on your machine — or ask it **which 4 spools from
@@ -62,6 +65,78 @@ It talks straight to each printer's built-in Moonraker API. Nothing is installed
 printers, and nothing leaves your network unless you turn remote access on.
 
 ---
+
+## New in 2.11 — the scheduler & Lite release
+
+- **The Hub now plans your printing day.** Drop jobs into **Dispatch** and it schedules
+  them across the whole farm: a timeline lane for **every** printer — idle machines
+  included, because an invisible idle printer is exactly the problem a scheduler
+  exists to surface. Tap any block for the full story (times, runtime, deadline,
+  colors, mounts, a Move dropdown), drag jobs between machines, set per-job
+  quantities with steppers, or tap **📋 Send to Dispatch** next to any file — the
+  phone path, since touchscreens never fire drag events.
+
+![Dispatch — every printer gets a timeline lane, planned jobs and idle machines alike](docs/dispatch.png)
+
+- **It knows when you're actually home.** Set attended hours as your **real week** —
+  multiple blocks per day ("home 8–11, out, back 5–10") and one-off overrides for
+  *this week only*. Attended hours gate when a job may **start**; prints run
+  unattended, because that's just printing. The planner models the real consequence
+  instead: a job ending at 3am blocks that machine until your next window, and the
+  Hub reports that idle time honestly (**💤**) rather than pretending it away. Want
+  to catch every removal? A strict finish policy flips the rule — and under it, a
+  job too long for any window is honestly **unplannable**, never given a fake slot.
+
+![Attended hours — your week as it actually is, multiple blocks per day](docs/attended-hours.png)
+
+- **Plans that survive contact with reality.** Dispatch **adopts** prints the farm is
+  already running (**⤓**, and automatically in the background) so it stops planning
+  duplicates of work in flight; **⛓ release** detaches a wrong claim and re-adopts
+  against what the printers actually report. A paused print keeps its machine and
+  its filament, so it counts as occupied. And jobs stay **pinned** to their assigned
+  printer across replans — starting the next job no longer reshuffles the fleet.
+
+![A tapped block — full details, idle wait, and a spool clash called out in a full sentence](docs/dispatch-detail.png)
+
+- **One roll per color, honestly handled.** The Hub doesn't track inventory, so it
+  assumes what's true on most shelves: one spool per distinct color. Two overlapping
+  jobs that need the same filament get a visible **⚠** naming the color, the other
+  printer, the file, and until when — never a silent reshuffle.
+
+- **Print a folder of plates as one job.** Multi-plate **bundles** share a single
+  deadline, are created atomically (a missing file refuses the whole bundle), and the
+  scheduler tightens the plan to hit it.
+
+- **You still press the button.** Auto-start is **refused by design** — a bed nobody
+  cleared is a bed nobody printed on. "Bed cleared → start next" jumps to that
+  printer's card, where the same tool-mapping confirmation you already trust (with
+  2.10's duplicate-color rules) starts the job. Dispatch never grows its own way to
+  start a machine.
+
+- **Hub Lite — for the single-color farm.** Every release now ships a second **Lite**
+  binary for every platform with spool matching, the mixer, and beta printer types
+  switched off — just files, fleet, queue, and Dispatch. On the full build, toggle
+  any module yourself in **Settings → Features** (applies on restart, and the panel
+  says so). A disabled feature disappears **entirely** — nav tab, pages, and APIs —
+  not a dead button.
+
+![Settings → Features — whole modules on or off, with an honest restart note](docs/features-panel.png)
+
+- **A fresh look.** A new typeface (Outfit, self-hosted — the Hub still renders
+  identically on a LAN with no internet), real depth and elevation on every panel,
+  motion on every button and tab, accent-glow focus rings, and themed scrollbars.
+  The whole treatment follows each printer type's accent color at runtime, so your
+  beta types stay *theirs*. One stylesheet, loaded last — the dashboard you know,
+  sharpened.
+
+- **Also:** long filament names now shrink-to-fit on printed labels ("PLA
+  Translucent" prints whole), busy fleets paint smoother (server-side event
+  debounce), and the automated harness grew to **236 checks** — including a mock
+  printer that drops color writes the way a flaky machine would, to prove the Hub
+  never claims a write it didn't read back.
+
+---
+
 
 ## New in 2.10 — the labels & replay release
 

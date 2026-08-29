@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- U1 Print Hub — index v2.10.0 -->
+<!-- U1 Print Hub — index v2.11.0 -->
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
@@ -8,6 +8,7 @@
 <meta name="theme-color" content="#0F1115">
 <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
 <link rel="apple-touch-icon" href="/icon-192.png">
+<!-- @hub-features -->
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <title>U1 Print Hub</title>
@@ -505,6 +506,7 @@
     *, *::before, *::after{animation-duration:.01ms !important; transition-duration:.01ms !important;}
   }
 </style>
+<link rel="stylesheet" href="gold.css">
 </head>
 <body>
 <div class="shell">
@@ -543,8 +545,10 @@
         <label class="fl">G-code folder <span class="hint">your Orca output folder (base — each printer type gets its own subfolder)</span></label>
         <input class="field" id="setFolder" placeholder="e.g. C:/Users/you/gcode" />
 
-        <label class="fl" style="margin-top:14px">Label printer <span class="hint">exact Windows print queue name of a Phomemo M110/M110S plugged into the Hub machine — enables 🖨 direct printing on the Labels page. Leave blank if you print labels another way.</span></label>
-        <input class="field" id="setLabelPrinter" placeholder='e.g. M110S Printer' style="max-width:320px" />
+        <label class="fl" style="margin-top:14px">Features <span class="hint">switch whole feature modules on or off — the nav, pages, and APIs of a disabled module disappear entirely. Changes apply on the next Hub restart.</span></label>
+        <div class="row" id="setFeatures" style="flex-wrap:wrap;gap:10px"></div>
+        <div class="hint" id="setFeaturesNote" style="display:none;color:#d6a832">Feature changes saved — restart the Hub to apply them.</div>
+
 
         <label class="fl" style="margin-top:14px">Printer types <span class="betachip">BETA</span> <span class="hint">a type owns a folder, an accent color and a switcher tab — U1 keeps the flat base folder. Non-U1 types are in beta: they work against stock Klipper/Moonraker in testing, and we're gathering real-hardware reports. Hit a problem? Use “Download diagnostics” below and attach the file to a <a href="https://github.com/dlgambill/u1hub/issues/new/choose" target="_blank" rel="noopener" style="color:var(--signal)">GitHub issue</a>.</span></label>
         <div id="setTypes"></div>
@@ -613,7 +617,7 @@
     <div class="jobcard" id="jobcard">
       <div class="jt" id="jt"></div>
       <div class="jmeta" id="jmeta"></div>
-      <div style="margin:2px 0 4px"><button class="btn ghost" id="qadd" style="font-size:12px; padding:5px 11px">＋ Add to queue</button></div>
+      <div style="margin:2px 0 4px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn ghost" id="qadd" style="font-size:12px; padding:5px 11px">＋ Add to queue</button><button class="btn ghost" id="dispadd" style="font-size:12px; padding:5px 11px; display:none">📋 Send to Dispatch</button></div>
       <div class="jthumb-wrap" id="jthumbwrap"><img id="jthumb" alt="plate preview"></div>
       <div class="needstrip" id="needstrip"></div>
       <div class="nohint" id="nohint"></div>
@@ -676,7 +680,7 @@
 
 <script>
 const $ = id => document.getElementById(id);
-const VERSION = "2.10.0";
+const VERSION = "2.11.0";
 let FILES = [], SELECTED = null, MAP = null, FLEET = [], MAPSEL = {};
 let ONBOARD = [], ACT = null; // onboard = /api/printer-files cache; ACT = open per-printer action strip {name,pid}
 let SRCSEL = { hub:true, p:{} }; // source-filter checkboxes; p[pid]=false hides that printer (default: everything on)
@@ -740,6 +744,18 @@ async function init(){ await checkVersion(); await loadTypes(); await loadConfig
   $("platemodal").addEventListener("click", e=>{ if(e.target===$("platemodal")) closePlate(); });
   $("qhead").addEventListener("click", ()=>{ QOPEN=!QOPEN; renderQueue(); });
   $("qadd").addEventListener("click", ()=>{ if(SELECTED) addQueue(SELECTED); });
+  // v2.11: modules can claim the selected file (Dispatch does). Drag-and-drop
+  // never fires on touch, so this button is the phone/tablet path — and core
+  // stays ignorant of what the module actually does with it.
+  $("dispadd").addEventListener("click", async ()=>{
+    if(!SELECTED) return;
+    const mod = HubModules.fileAction();
+    if(!mod) return;
+    const btn = $("dispadd"), old2 = btn.textContent;
+    try { await mod.run(SELECTED, activeType().slug); btn.textContent = "✓ sent"; }
+    catch(e){ btn.textContent = "failed"; }
+    setTimeout(()=>{ btn.textContent = old2; }, 1200);
+  });
   // The 15s list refreshes also rebuild rows (file Print buttons, queue
   // actions) — same mid-tap hazard, same guard.
   setInterval(()=>{ if(!INTERACTING) loadFiles(); }, 15000);
@@ -861,7 +877,17 @@ function renderList(){
       `<span class="jtxt"><div class="jn">${esc(f.name)}</div><div class="jm">${fmtTime(f.mtime)} · ${fmtSize(f.size)}${f.src==="onboard"?" · printer storage":""}</div>`+
       (f.lastPrinted?`<div class="jm jprinted">Printed ${fmtTime(f.lastPrinted)}</div>`:"")+chips+`</span>`+
       (f.src==="lib"?`<span class="jact"><span class="ab" role="button" data-act="ren" title="Rename in Hub library">✎</span><span class="ab" role="button" data-act="del" title="Delete from Hub library">🗑</span></span>`:"");
-    if(f.src==="lib") b.addEventListener("click",()=>selectFile(f.name));
+    if(f.src==="lib"){
+      b.addEventListener("click",()=>selectFile(f.name));
+      // v2.11: library rows are draggable; modules (Dispatch) accept the drop.
+      b.draggable=true;
+      b.addEventListener("dragstart",e=>{
+        const payload=JSON.stringify({file:f.name, type:activeType().slug});
+        e.dataTransfer.setData("application/x-u1hub-file",payload);
+        e.dataTransfer.setData("text/plain",f.name);
+        e.dataTransfer.effectAllowed="copy";
+      });
+    }
     else b.addEventListener("click",()=>toggleAct(f.name, f.locs[0].pid));
     b.querySelectorAll(".chip.act").forEach(ch=>ch.addEventListener("click",e=>{ e.stopPropagation(); toggleAct(f.name, +ch.dataset.pid); }));
     b.querySelectorAll(".ab").forEach(ab=>ab.addEventListener("click",e=>{ e.stopPropagation(); ab.dataset.act==="ren"?libRename(f.name):libDelete(f.name); }));
@@ -1154,7 +1180,7 @@ async function loadFmemSet(printer){
   }
   // Honest count: re-read the printer and only count trays that NOW report
   // filament present in the remembered color. HTTP 200s don't count.
-  try{ FLEET=await (await fetch("/api/fleet")).json(); if(!fleetRenderBlocked()) renderFleet(); }catch(e){}
+  try{ FLEET=await (await fetch("/api/fleet")).json(); HubModules.fleetTick(FLEET); if(!fleetRenderBlocked()) renderFleet(); }catch(e){}
   let applied=0;
   for(const j of jobs){
     if(j.failed) continue;
@@ -1276,7 +1302,7 @@ async function fetchCardStats(id){
 setInterval(()=>{ STATSOPEN.forEach(id=>fetchCardStats(id)); }, 15000);
 
 async function loadFleet(){
-  try{ FLEET=await (await fetch("/api/fleet")).json(); renderFleet(); }
+  try{ FLEET=await (await fetch("/api/fleet")).json(); HubModules.fleetTick(FLEET); renderFleet(); }
   catch(e){ $("fleet").innerHTML='<p class="subnote">Fleet unreachable.</p>'; }
 }
 
@@ -1317,7 +1343,7 @@ function startEvents(){
   ES.onmessage=e=>{
     ES_OK=true;
     let d; try{ d=JSON.parse(e.data); }catch{ return; }
-    FLEET=d;
+    FLEET=d; HubModules.fleetTick(FLEET);
     const sig=JSON.stringify(d)+"|"+activeType().slug;   // data-driven renders only — UI-triggered renderFleet() calls bypass this
     if(sig===LAST_FLEET_SIG) return;
     LAST_FLEET_SIG=sig;
@@ -1600,14 +1626,64 @@ async function matchPrint(file, pid){
   });
 }
 function setView(v){
+  // Feature-gated views can't normally be reached (their tabs are stripped
+  // server-side), but deep links / stale state fall back to the dashboard.
+  const HF = window.HUB_FEATURES || {};
+  if ((v==="match" && HF.match===false) || (v==="spools" && HF.spools===false)) v = "dash";
+  if (HubModules._mods[v] === undefined && v!=="dash" && v!=="match" && v!=="spools") v = "dash";
   document.querySelectorAll(".vtab").forEach(t=>t.classList.toggle("on", t.dataset.view===v));
   const dash=$("dashview"), match=$("matchview"), spool=$("spoolview");
   dash.style.display = v==="dash" ? "" : "none";
   match.style.display = v==="match" ? "" : "none";
   spool.style.display = v==="spools" ? "" : "none";
+  for (const [name, def] of Object.entries(HubModules._mods))
+    if (def.el) def.el.style.display = v===name ? "" : "none";
   if(v==="match") renderMatch();
   if(v==="spools") renderSpoolView();
+  const md = HubModules._mods[v];
+  if (md && md.onShow) { try { md.onShow(); } catch(e) { console.error("module '"+v+"' onShow failed", e); } }
 }
+
+// ---- Client module registry (v2.11) -----------------------------------------
+// Browser-side twin of the server's module loader. A client module file
+// (injected by the server only when its feature is enabled) calls
+//   HubModules.register("dispatch", { tab:"Dispatch", mount(el){..}, onShow(){..}, onFleet(f){..} })
+// and gets a nav tab, a view container wired into setView, and fleet pushes.
+// Dispatch is the first user; core views may migrate onto this later.
+window.HubModules = {
+  _mods: {},
+  feature(n){ return !((window.HUB_FEATURES||{})[n]===false); },
+  register(name, def){
+    if (!this.feature(name)) return;
+    this._mods[name] = def;
+    const el = document.createElement("div");
+    el.id = "modview-" + name; el.style.display = "none";
+    $("dashview").parentNode.appendChild(el);
+    def.el = el;
+    if (def.tab) document.querySelectorAll(".viewtabs").forEach(tabs => {
+      const b = document.createElement("button");
+      b.className = "vtab"; b.dataset.view = name; b.textContent = def.tab;
+      b.addEventListener("click", () => setView(name));
+      tabs.appendChild(b);
+    });
+    if (def.mount) { try { def.mount(el); } catch(e) { console.error("module '"+name+"' mount failed", e); } }
+    if (def.fileAction) {
+      const b = document.getElementById("dispadd");
+      if (b) { b.textContent = def.fileLabel || ("Send to " + name); b.style.display = ""; }
+    }
+  },
+  fleetTick(fleet){
+    for (const def of Object.values(this._mods))
+      if (def.onFleet) { try { def.onFleet(fleet); } catch(e){} }
+  },
+  // A module may claim the currently-selected file ("Send to X"). First one
+  // wins; core shows the button only when something offers it.
+  fileAction(){
+    for (const [name, def] of Object.entries(this._mods))
+      if (def.fileAction) return { name, label: def.fileLabel || ("Send to " + name), run: def.fileAction };
+    return null;
+  }
+};
 document.querySelectorAll(".vtab").forEach(t=>t.addEventListener("click",()=>{
   if(t.dataset.view==="match") LIBPAL=null;   // refresh palettes on entry (cheap; server-cached)
   setView(t.dataset.view);
@@ -2052,6 +2128,7 @@ async function bindSpool(body){
   }catch(e){ if(st){ st.className="pstatus err"; st.textContent=e.message; } }
 }
 async function loadSpools(){
+  if (window.HUB_FEATURES && window.HUB_FEATURES.spools === false) { SPOOLS = []; return; }
   await loadSlotmap();   // loadout renders inline on the rows — fetch first
   try{ SPOOLS=(await (await fetch("/api/spools")).json()).spools||[]; }catch(e){ SPOOLS=[]; }
   $("spoolcount").textContent=SPOOLS.length+" bound";
@@ -2778,7 +2855,14 @@ async function loadConfigUI(){
   try{
     const c=await (await fetch("/api/config")).json();
     $("setFolder").value=c.gcodeFolder||"";
-    $("setLabelPrinter").value=c.labelPrinter||"";
+    (function(){
+      const LBL={power:"Smart plugs",camera:"Chamber cameras",spools:"Spools & RFID",match:"Spool Match",mixer:"FS Mixer","types-beta":"Printer types (beta)",dispatch:"Dispatch scheduler"};
+      const cfgF=c.featuresConfig||c.features||{}, liveF=c.features||{};
+      const box=$("setFeatures");
+      box.innerHTML=Object.keys(cfgF).map(k=>
+        `<label style="display:flex;align-items:center;gap:6px;font-size:13px;border:1px solid #333;border-radius:7px;padding:6px 10px"><input type="checkbox" data-feat="${k}" ${cfgF[k]!==false?"checked":""}> ${LBL[k]||k}</label>`).join("");
+      $("setFeaturesNote").style.display = Object.keys(cfgF).some(k=>(cfgF[k]!==false)!==(liveF[k]!==false)) ? "" : "none";
+    })();
     if(Array.isArray(c.types)&&c.types.length) TYPES=c.types;
     renderTypeRows();
     $("setPrinters").innerHTML="";
@@ -2917,7 +3001,8 @@ async function runDiscover(){
 }
 async function saveConfig(){
   const s=$("cfgStatus"); s.className="pstatus work"; s.textContent="Saving…";
-  const body={ gcodeFolder:$("setFolder").value.trim(), labelPrinter:$("setLabelPrinter").value.trim(), printers:gatherPrinters() };
+  const feats={}; document.querySelectorAll("#setFeatures [data-feat]").forEach(cb=>feats[cb.dataset.feat]=cb.checked);
+  const body={ gcodeFolder:$("setFolder").value.trim(), features:feats, printers:gatherPrinters() };
   try{
     const c=await (await fetch("/api/config",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})).json();
     if(c.error) throw new Error(c.error);
@@ -2927,5 +3012,6 @@ async function saveConfig(){
   }catch(e){ s.className="pstatus err"; s.textContent=e.message; }
 }
 </script>
+<!-- @client-modules -->
 </body>
 </html>

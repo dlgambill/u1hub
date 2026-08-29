@@ -17,3 +17,22 @@ cloudflared.exe
 
 # v2.9 loadout state — never commit
 slots.json
+
+# v2.11: Dispatch state (never commit — schedules, deadlines, job history)
+dispatch.json
+
+# local debris that should never ride along (v2.11 sweep)
+*.exe
+bridge.log
+capture-*.log
+run_bridge.cmd
+sf3d_hub_bridge.py
+claude/
+after-color.json
+baseline.json
+db-list.json
+fp-after.json
+fp-before.json
+gstore*.json
+u3-check.json
+fix-v*-versions.txt

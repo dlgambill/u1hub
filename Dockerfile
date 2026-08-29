@@ -19,6 +19,7 @@ RUN npm pkg delete devDependencies \
 # snapshot + scripts/ are the v2.9 additions.)
 COPY server.js parser.js auth.js fs-colors.js tunnel.js rfid.js filament-swatches.json ./
 COPY scripts ./scripts
+COPY modules ./modules
 COPY public ./public
 
 # config.json and gcode/ are expected to be mounted as volumes (see

@@ -6,11 +6,17 @@ name: release
 # "base binary not in remote cache" failure and lets macOS ad-hoc signing happen
 # on real macOS.
 #
+# Every platform publishes TWO artifacts from ONE build: the full Hub, and a
+# "Lite" copy that is byte-identical — the Hub detects "lite" in its own
+# filename at boot and switches off spools / match / mixer / beta types
+# (U1HUB_PROFILE=lite does the same thing for any binary). No second compile,
+# no fork, nothing to drift.
+#
 # The three reliable targets (Linux, Windows, Apple-Silicon mac) build and publish
 # the release promptly. Intel-Mac is a SEPARATE best-effort job: GitHub's free
 # macos-13 runners are often unavailable for a long time, so it must NOT block the
-# release. It attaches its binary to the already-published release if/when it runs;
-# if it never gets a runner, the release still ships with the other three.
+# release. It attaches its binaries to the already-published release if/when it
+# runs; if it never gets a runner, the release still ships with the other six.
 #
 #   git tag v1.5.2 && git push origin v1.5.2
 
@@ -31,9 +37,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { runner: ubuntu-latest,  target: node22-linux-x64,    out: U1-Print-Hub-Linux-x64 }
-          - { runner: windows-latest, target: node22-win-x64,      out: U1-Print-Hub-Windows-x64.exe }
-          - { runner: macos-14,       target: node22-macos-arm64,  out: U1-Print-Hub-macOS-AppleSilicon }
+          - { runner: ubuntu-latest,  target: node22-linux-x64,    out: U1-Print-Hub-Linux-x64,             lite: U1-Print-Hub-Lite-Linux-x64 }
+          - { runner: windows-latest, target: node22-win-x64,      out: U1-Print-Hub-Windows-x64.exe,       lite: U1-Print-Hub-Lite-Windows-x64.exe }
+          - { runner: macos-14,       target: node22-macos-arm64,  out: U1-Print-Hub-macOS-AppleSilicon,    lite: U1-Print-Hub-Lite-macOS-AppleSilicon }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -46,11 +52,19 @@ jobs:
         run: npm install
       - name: Build executable
         run: npx @yao-pkg/pkg . --targets ${{ matrix.target }} --output dist/${{ matrix.out }}
+      - name: Make Lite copy (same binary — the Hub keys off "lite" in its filename)
+        run: cp dist/${{ matrix.out }} dist/${{ matrix.lite }}
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.out }}
           path: dist/${{ matrix.out }}
+          if-no-files-found: error
+      - name: Upload Lite artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.lite }}
+          path: dist/${{ matrix.lite }}
           if-no-files-found: error
 
   release:
@@ -77,16 +91,23 @@ jobs:
             no Node.js needed. A browser opens to the dashboard; use **Settings**
             to add your printers.
 
+            **Full or Lite?** Each platform has two downloads built from the same
+            binary. **Lite** starts with spool tracking, Spool Match, the FS
+            Mixer, and beta printer types switched off — just files, fleet,
+            queue, and Dispatch, for the single-color farm. You can turn any
+            feature on or off later in **Settings → Features**, so neither
+            choice is permanent.
+
             **First-launch security warning (the apps are unsigned):**
             - **Windows:** SmartScreen may say "Windows protected your PC" -> **More info -> Run anyway**.
             - **macOS:** right-click the file -> **Open** (or run `xattr -dr com.apple.quarantine <file>` once).
 
             If something on the default port 4545 is already running, close it first.
 
-            _(Intel-Mac build is best-effort and may attach a few minutes after the rest.)_
+            _(Intel-Mac builds are best-effort and may attach a few minutes after the rest.)_
 
   # Best-effort Intel-Mac build. Runs after the release exists and appends its
-  # binary to it. continue-on-error so a stuck/unavailable macos-13 runner never
+  # binaries to it. continue-on-error so a stuck/unavailable macos-13 runner never
   # fails the overall release.
   build-intel:
     name: build U1-Print-Hub-macOS-Intel (best effort)
@@ -103,7 +124,11 @@ jobs:
         run: npm install
       - name: Build executable
         run: npx @yao-pkg/pkg . --targets node22-macos-x64 --output dist/U1-Print-Hub-macOS-Intel
+      - name: Make Lite copy (same binary — the Hub keys off "lite" in its filename)
+        run: cp dist/U1-Print-Hub-macOS-Intel dist/U1-Print-Hub-Lite-macOS-Intel
       - name: Attach to release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/U1-Print-Hub-macOS-Intel
+          files: |
+            dist/U1-Print-Hub-macOS-Intel
+            dist/U1-Print-Hub-Lite-macOS-Intel
