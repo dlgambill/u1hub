@@ -32,6 +32,10 @@ const path = require("path");
 const { createMock } = require("./mock-moonraker.js");
 
 const REPO = path.join(__dirname, "..");
+// v2.12: the version bump is back to THREE files — the harness reads the
+// expected version from package.json once and asserts everything else
+// (server.js, index.html, live routes) against it.
+const EXPECTED_VERSION = JSON.parse(fs.readFileSync(path.join(REPO, "package.json"), "utf8")).version;
 const HUB_PORT = 45990;
 const HUB = "http://127.0.0.1:" + HUB_PORT;
 
@@ -186,7 +190,7 @@ async function stopHub() {
   console.log("\n== B: boot from the Docker COPY file set ==");
   await startHub(hubDir);
   let r = await jget("/api/version");
-  ok(r.body && r.body.version === "2.11.0", "server boots from Docker file set, reports 2.11.0", r.body);
+  ok(r.body && r.body.version === EXPECTED_VERSION, "server boots from Docker file set, reports " + EXPECTED_VERSION, r.body);
   r = await fetch(HUB + "/"); ok(r.ok, "serves index.html");
   r = await fetch(HUB + "/fs-colors.html"); ok(r.ok, "serves fs-colors.html (fs-colors.js present)");
   r = await jget("/api/auth/status"); ok(r.status === 200, "auth.js mounted", r.status);
@@ -374,6 +378,56 @@ async function stopHub() {
   await jpost("/api/spools/forget", { spool_id: SPID2 });
   // Park SPID in U1 T3 — the restart section asserts this survives.
   await jpost("/api/slots/assign", { printer: 0, slot: 2, spool_id: SPID });
+
+  console.log("\n== C: spool edit in place (v2.12) ==");
+  {
+    // Bind a catalog-shaped spool manually (with lab, like a measured pick).
+    r = await jpost("/api/spools/bind", { identity: { hex: "112233", color_name: "Edit Me", brand: "TestCo", material_variant: "PLA Basic", hot_end_temp: 210, bed_temp: 60, lab: [20, 5, -10] } });
+    ok(r.status === 200 && r.body.ok, "bind a spool to edit", r.body);
+    const esid = r.body.spool_id, boundAt0 = r.body.spool.boundAt;
+    // Attach a tag so we can prove edits don't disturb the binding.
+    r = await jpost("/api/spools/bind", { spool_id: esid, uid: "04:ed:17:aa:bb:cc" });
+    ok(r.status === 200 && r.body.attached, "tag attached to it", r.body);
+    // Cosmetic edit: brand + temps change, measured color data survives.
+    r = await jpost("/api/spools/update", { spool_id: esid, patch: { brand: "RefillCo", hot_end_temp: 220 } });
+    ok(r.status === 200 && r.body.spool.brand === "RefillCo" && r.body.spool.hot_end_temp === 220, "partial patch lands", r.body.spool);
+    ok(r.body.spool.color_name === "Edit Me" && r.body.spool.bed_temp === 60, "unpatched fields untouched", r.body.spool);
+    ok(Array.isArray(r.body.spool.lab) && r.body.spool.boundAt === boundAt0, "cosmetic edit keeps measured LAB + boundAt (history preserved)", { lab: r.body.spool.lab, boundAt: r.body.spool.boundAt });
+    // Color edit: measured data no longer describes the spool — dropped.
+    r = await jpost("/api/spools/update", { spool_id: esid, patch: { hex: "#aabbcc" } });
+    ok(r.status === 200 && r.body.spool.hex === "AABBCC", "hex edit lands (normalized upper, # tolerated)", r.body.spool);
+    ok(r.body.spool.lab === null && r.body.spool.swatch_id === null && r.body.spool.color_source === "user", "hex change drops LAB + swatch_id, provenance → user", r.body.spool);
+    // Tag still resolves to the SAME spool_id — the edit never touched identity.
+    r = await jpost("/api/spools/resolve", { uid: "04ed17aabbcc" });
+    ok(r.status === 200 && r.body.known && r.body.spool_id === esid && r.body.spool.hex === "AABBCC", "tag still resolves to the same spool_id after edits", r.body);
+    // Guard rails.
+    r = await jpost("/api/spools/update", { spool_id: esid, patch: { hex: "nope" } });
+    ok(r.status === 400, "bad hex refused", r.status);
+    r = await jpost("/api/spools/update", { spool_id: "sp_nothere", patch: { brand: "x" } });
+    ok(r.status === 404, "unknown spool → 404", r.status);
+    r = await jpost("/api/spools/update", { spool_id: esid });
+    ok(r.status === 400, "missing patch → 400", r.status);
+    await jpost("/api/spools/forget", { spool_id: esid });
+  }
+
+  console.log("\n== IP: duplicate-printer guard (v2.12) ==");
+  {
+    const cfg0 = (await jget("/api/config")).body;
+    const keep = cfg0.printers.map(p => ({ name: p.name, url: p.url, type: p.type }));
+    // Same origin twice → 409 naming both, and NOTHING is written.
+    r = await jpost("/api/config", { printers: [{ name: "Alpha", url: "http://192.168.12.88" }, { name: "Bravo", url: "http://192.168.12.88/" }] });
+    ok(r.status === 409, "same IP twice → 409, save refused", r.status);
+    ok(r.body && /Alpha/.test(r.body.error) && /Bravo/.test(r.body.error), "error names both printers", r.body);
+    let now = (await jget("/api/config")).body;
+    ok(now.printers.length === keep.length && now.printers.every((p, i) => p.url === keep[i].url), "refused save wrote nothing — config unchanged", now.printers.map(p => p.url));
+    // Same IP, different ports → legal (multi-instance Klipper host).
+    r = await jpost("/api/config", { printers: [{ name: "PiA", url: "http://10.0.0.5:7125" }, { name: "PiB", url: "http://10.0.0.5:7126" }] });
+    ok(r.status === 200 && r.body.ok, "same IP on different ports allowed (multi-instance host)", r.status);
+    // Restore the mocks for everything downstream.
+    r = await jpost("/api/config", { printers: keep });
+    now = (await jget("/api/config")).body;
+    ok(r.status === 200 && now.printers.length === keep.length && now.printers.every((p, i) => p.url === keep[i].url), "original printers restored", now.printers.map(p => p.url));
+  }
 
   console.log("\n== FS: Orca alignment (byte-exact serialization round trip) ==");
   {
@@ -683,7 +737,7 @@ async function stopHub() {
   r = await fetch(HUB + "/api/diagnostics");
   const diagRaw = await r.text();
   const diag = JSON.parse(diagRaw);
-  ok(r.ok && diag.hub && diag.hub.version === "2.11.0", "diagnostics bundle reports hub version", diag.hub);
+  ok(r.ok && diag.hub && diag.hub.version === EXPECTED_VERSION, "diagnostics bundle reports hub version", diag.hub);
   ok(Array.isArray(diag.log) && diag.log.some(l => /caps\[/.test(l.msg)),
     "ring buffer captured capability-detection events", (diag.log || []).slice(-3));
   ok(diag.log.some(l => /loadout:/.test(l.msg)), "ring buffer captured loadout events", (diag.log || []).slice(-3));
@@ -696,13 +750,14 @@ async function stopHub() {
   ok(diag.klipperLogs["printer-1"] && diag.klipperLogs["printer-1"].klippy.ok === false && diag.klipperLogs["printer-1"].klippy.note,
     "missing printer log → tolerant note, export still succeeds (Rule #1: fork path unverified)", diag.klipperLogs["printer-1"]);
   ok(/slots\.json/.test(fs.readFileSync(path.join(REPO, ".gitignore"), "utf8")), "slots.json on the never-commit list");
+  ok(/test-out\.txt/.test(fs.readFileSync(path.join(REPO, ".gitignore"), "utf8")), "test-out.txt on the ignore list (v2.12 — rode into the repo untracked once)");
 
   console.log("\n== V: version discipline ==");
   const vSrv = /const VERSION = "([^"]+)"/.exec(fs.readFileSync(path.join(REPO, "server.js"), "utf8"))[1];
   const vUi = /const VERSION = "([^"]+)"/.exec(fs.readFileSync(path.join(REPO, "public", "index.html"), "utf8"))[1];
   const vPkg = JSON.parse(fs.readFileSync(path.join(REPO, "package.json"), "utf8")).version;
   ok(vSrv === vUi && vUi === vPkg, "server.js / index.html / package.json versions match (" + [vSrv, vUi, vPkg].join(" / ") + ")");
-  ok(vSrv === "2.11.0", "version is 2.11.0");
+  ok(/^2\.\d+\.\d+$/.test(EXPECTED_VERSION), "package.json version is sane (" + EXPECTED_VERSION + ")");
   const all = ["server.js", "public/index.html", "package.json", "Dockerfile", "docker-compose.yml", "rfid.js"].map(f => fs.readFileSync(path.join(REPO, f), "utf8")).join("");
   ok(!/2\.8\.2/.test(all), "no dead 2.8.2 version string anywhere");
 
@@ -774,7 +829,7 @@ async function stopHub() {
     r = await jget("/api/files?type=u1");     ok(r.status === 200, "file library serves", r.status);
     r = await fetch(HUB + "/labels.html");    ok(r.ok, "labels page still served (pages are core, APIs are the gate)");
     r = await fetch(HUB + "/fs-colors.html"); ok(r.ok, "mixer page still served");
-    r = await jget("/api/version");           ok(r.status === 200 && r.body.version === "2.11.0", "version route alive", r.body);
+    r = await jget("/api/version");           ok(r.status === 200 && r.body.version === EXPECTED_VERSION, "version route alive", r.body);
     // The dormant 2.10 bridge is gone for real:
     r = await jpost("/api/label/print", {});  ok(r.status === 404 && r.body === null, "M110 server bridge deleted (labels are client-only by design)", r.status);
   }
@@ -1082,6 +1137,49 @@ async function stopHub() {
       ok(r.status === 400, "assignment to a nonexistent printer refused", r.status);
       for (const id of idsA) await jpost("/api/dispatch/jobs/remove", { id });
     }
+    // REPLAN AFTER A MOVE (field-found 2026-08-30, Danny). Freeing a printer
+    // must actually free it. v2.11 wrote every planner choice into the same map
+    // as the user's explicit Move, so after one plan() run nothing could ever
+    // migrate: move a print off a machine, hit Replan, and the machine stayed
+    // idle. The same conflation keyed the pin per JOB while reading it per
+    // COPY, so every copy of a multi-copy job piled onto whichever lane copy 1
+    // happened to win.
+    {
+      const laneOf = (slots, id) => (slots.find(s => s.job_id === id && !s.unplannable) || {}).printer;
+      r = await jpost("/api/dispatch/jobs", { file: "long.gcode", type: "u1", qty: 1 });
+      const BLOCKER = r.body.job.id;
+      r = await jpost("/api/dispatch/jobs", { file: "single.gcode", type: "u1", qty: 1 });
+      const MOVER = r.body.job.id;
+      r = await jget("/api/dispatch/plan");
+      const lB = laneOf(r.body.slots || [], BLOCKER), lM = laneOf(r.body.slots || [], MOVER);
+      ok(lB !== undefined && lM !== undefined && lB !== lM,
+        "precondition: two independent jobs start on two different printers", { blocker: lB, mover: lM });
+      // The user drags the 10 h print onto the mover's machine. The mover's own
+      // printer is now empty — it must not sit queued behind 10 hours of work.
+      await jpost("/api/dispatch/jobs/assign", { id: BLOCKER, printer: lM });
+      r = await jget("/api/dispatch/plan");
+      const after = (r.body.slots || []).filter(s => !s.unplannable);
+      ok(after.some(s => s.printer === lB) && laneOf(after, MOVER) === lB,
+        "replan after a move fills the freed printer (a planner choice is not a user pin)",
+        after.map(s => ({ file: s.file, p: s.printer, pinned: !!s.pinned })));
+      await jpost("/api/dispatch/jobs/remove", { id: BLOCKER });
+      await jpost("/api/dispatch/jobs/remove", { id: MOVER });
+      // Placement is per COPY: a qty-2 job with two idle machines must use both.
+      // Two genuinely idle machines are the whole point here, so park whatever
+      // earlier sections left in the queue for the duration and restore it.
+      r = await jpost("/api/dispatch/jobs", { file: "single.gcode", type: "u1", qty: 2 });
+      const PAIR = r.body.job.id;
+      const parked = ((await jget("/api/dispatch")).body.jobs || [])
+        .filter(j => j.id !== PAIR && j.state !== "done" && j.state !== "paused").map(j => j.id);
+      for (const id of parked) await jpost("/api/dispatch/jobs/update", { id, state: "paused" });
+      r = await jget("/api/dispatch/plan");
+      const pair = (r.body.slots || []).filter(s => s.job_id === PAIR && !s.unplannable);
+      ok(pair.length === 2 && new Set(pair.map(s => s.printer)).size === 2,
+        "two copies of one job spread across two idle printers (placement is per copy)",
+        pair.map(s => ({ copy: s.copy, p: s.printerName })));
+      for (const id of parked) await jpost("/api/dispatch/jobs/update", { id, state: "queued" });
+      await jpost("/api/dispatch/jobs/remove", { id: PAIR });
+    }
     // ADOPTION (field-found 2026-08-28): the farm is usually ALREADY printing
     // when Dispatch arrives. Those prints must be claimed, or the planner
     // schedules copies of work in progress.
@@ -1118,6 +1216,12 @@ async function stopHub() {
       r = await jget("/api/dispatch");
       let rj = (r.body.jobs || []).find(j => j.id === RID);
       ok(rj && rj.printing_on === 0, "job attached to a printer", rj && rj.printing_on);
+      // Quiet the mock BEFORE releasing, not after. The executor's tick runs
+      // every EXEC_TICK_MS (10 s) and legitimately re-adopts any printing file
+      // whose job has printing_on == null — which is exactly what release just
+      // produced. Asserting across that live timer made this check flaky: it
+      // failed once on Windows and passed on re-run (2026-08-30, MISTAKES.md).
+      mockU1.state.printState = "standby"; mockU1.state.filename = "";
       r = await jpost("/api/dispatch/jobs/release", { id: RID });
       ok(r.status === 200 && r.body.released_from === 0, "release detaches it from that printer", r.body);
       r = await jget("/api/dispatch");
@@ -1126,7 +1230,6 @@ async function stopHub() {
         "released job is free to be claimed against reality again", rj && { on: rj.printing_on, s: rj.state });
       r = await jpost("/api/dispatch/jobs/release", { id: "nope" });
       ok(r.status === 404, "releasing an unknown job refused", r.status);
-      mockU1.state.printState = "standby"; mockU1.state.filename = "";
       await jpost("/api/dispatch/jobs/remove", { id: RID });
     }
     // Multi-plate prints: two files as ONE bundle, atomically.
@@ -1189,6 +1292,192 @@ async function stopHub() {
     // flip it back for a clean final state
     r = await jget("/api/config");
     await jpost("/api/config", { gcodeFolder: "./gcode", printers: r.body.printers, features: { camera: true } });
+  }
+
+  console.log("\n== SLICE: U1-ify transplant + /api/slice queue (v2.12) ==");
+  {
+    // Real-bytes fixtures are REQUIRED (deterministic count): copy
+    // cube-u1.3mf + ag-u1o.3mf into test/fixtures/ (gitignored — ~4 MB).
+    const FIXDIR = path.join(__dirname, "fixtures");
+    const FIXC = path.join(FIXDIR, "cube-u1.3mf"), FIXA = path.join(FIXDIR, "ag-u1o.3mf");
+    if (!fs.existsSync(FIXC) || !fs.existsSync(FIXA))
+      throw new Error("SLICE fixtures missing — copy cube-u1.3mf and ag-u1o.3mf into test/fixtures/ (kept out of git)");
+    const SL = require(path.join(hubDir, "modules", "slicing.js"));
+    const crypto = require("crypto");
+    const sha = b => crypto.createHash("sha256").update(b).digest("hex");
+    const cubeB = fs.readFileSync(FIXC), agB = fs.readFileSync(FIXA);
+
+    // -- engine, pure, on real bytes --
+    const dc = SL.detect3mf(SL.zipRead(cubeB)), da = SL.detect3mf(SL.zipRead(agB));
+    ok(dc.native === true, "engine: cube-u1 detected native", dc.reasons);
+    ok(da.native === false && da.reasons.some(x => /embedded project preset/.test(x)),
+      "engine: ag-u1o detected poisoned (embedded presets) despite printer_model=U1", da.reasons);
+    const tr = SL.u1ify(agB, cubeB);
+    const outE = SL.zipRead(tr.buffer), inE = SL.zipRead(agB);
+    const byN = a => new Map(a.map(e => [e.name, e]));
+    const O = byN(outE), I = byN(inE);
+    const wantPs = JSON.stringify(SL.padFilamentArrays(JSON.parse(SL.zipEntryContent(
+      SL.zipRead(cubeB).find(e => e.name === "Metadata/project_settings.config")).toString("utf8"))), null, 4);
+    ok(SL.zipEntryContent(O.get("Metadata/project_settings.config")).toString("utf8") === wantPs,
+      "engine: project_settings replaced with template settings byte-exact, filament arrays ×4");
+    const geoN = inE.map(e => e.name).find(n => n.startsWith("3D/Objects/"));
+    ok(sha(O.get(geoN).raw) === sha(I.get(geoN).raw) && O.get(geoN).crc === I.get(geoN).crc,
+      "engine: geometry passes through byte-verbatim (no recompress)");
+    ok(sha(SL.u1ify(tr.buffer, cubeB).buffer) === sha(SL.u1ify(tr.buffer, cubeB).buffer) &&
+       SL.zipRead(SL.u1ify(tr.buffer, cubeB).buffer).every(e => sha(e.raw) === sha(byN(outE).get(e.name).raw)),
+      "engine: transplant idempotent (second pass is a per-member byte no-op)");
+
+    // -- queue against the mock CLI, on the REAL booted hub --
+    await stopHub();
+    const cfgPath = path.join(hubDir, "config.json");
+    const cfgNow = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+    const modeFile = path.join(hubDir, "slice-mock-mode.txt");
+    fs.writeFileSync(modeFile, "ok");
+    cfgNow.slicer = { exe: process.execPath, prefixArgs: [path.join(__dirname, "mock-orca-cli.js")], timeoutMs: 30000 };
+    // State the precondition instead of inheriting it. Slicing ships DISABLED
+    // in v2.12 (MODULE_DEFAULTS), so this section must switch it on explicitly
+    // — it used to `delete cfgNow.features` and rely on the shipping default,
+    // which meant flipping that default silently broke 30 checks.
+    cfgNow.features = { slicing: true };
+    fs.writeFileSync(cfgPath, JSON.stringify(cfgNow, null, 2));
+    fs.mkdirSync(path.join(hubDir, "3mf"), { recursive: true });
+    fs.copyFileSync(FIXC, path.join(hubDir, "3mf", "cube.3mf"));
+    fs.copyFileSync(FIXA, path.join(hubDir, "3mf", "ag.3mf"));
+    fs.copyFileSync(FIXC, path.join(hubDir, "slicer-template.3mf"));
+    await startHub(hubDir, { U1SLICE_MOCK_MODE_FILE: modeFile });
+    const waitJob = async id => { for (let i = 0; i < 100; i++) { const rr = await jget("/api/slice/jobs");
+      const jj = ((rr.body || {}).jobs || []).find(x => x.id === id);
+      if (jj && (jj.state === "done" || jj.state === "error")) return jj; await sleep(150); }
+      throw new Error("slice job " + id + " never settled"); };
+
+    r = await jget("/api/slice/status");
+    ok(r.status === 200 && r.body.exeFound && r.body.templateFound, "status: exe + template found", r.body);
+    r = await jget("/api/slice/files");
+    ok(r.status === 200 && r.body.files.length === 2, "library lists both fixtures", r.body.files);
+    r = await jget("/api/slice/inspect?file=ag.3mf");
+    ok(r.status === 200 && r.body.native === false, "inspect: ag flagged for transplant");
+
+    r = await jpost("/api/slice", { file: "cube.3mf", type: "u1" });
+    let sj = await waitJob(r.body.job.id);
+    ok(sj.state === "done" && sj.transplanted === false && sj.estMinutes === 90 &&
+       fs.existsSync(path.join(hubDir, "gcode", sj.gcodeName)),
+      "native file: sliced untransplanted, gcode in U1 folder, est parsed 90m", sj);
+    r = await jpost("/api/slice", { file: "ag.3mf", type: "u1" });
+    sj = await waitJob(r.body.job.id);
+    ok(sj.state === "done" && sj.transplanted === true && sj.changed.length > 0,
+      "poisoned file: auto U1-ify fired with a change manifest", sj.changed);
+    r = await jpost("/api/slice", { file: "cube.3mf", type: "u1" });
+    sj = await waitJob(r.body.job.id);
+    ok(/-2\.gcode$/.test(sj.gcodeName), "gcode name collision → -2 suffix", sj.gcodeName);
+
+    // -- clone engine + settings knobs (v2.12 tranche 4) --
+    const cl4 = SL.cloneInstances(cubeB, 4);
+    const cl4M = SL.zipEntryContent(SL.zipRead(cl4.buffer).find(e => e.name === "3D/3dmodel.model")).toString("utf8");
+    const cl4Items = [...cl4M.matchAll(/<item\b[^>]*\/>/g)];
+    ok(cl4Items.length === 4 && new Set(cl4Items.map(m => /p:UUID="([^"]*)"/.exec(m[0])[1])).size === 4 &&
+       sha(SL.cloneInstances(cubeB, 1).buffer) === sha(cubeB),
+      "clone engine: ×4 unique build items on real bytes; copies=1 is a byte no-op");
+    r = await jpost("/api/slice", { file: "cube.3mf", type: "u1", copies: 3,
+      settings: { layer_height: 0.3, sparse_infill_density: 30, enable_support: true } });
+    ok(r.status === 200, "enqueue with copies + settings accepted", r.body);
+    sj = await waitJob(r.body.job.id);
+    // Assert the STRUCTURED field, not the prose. This check used to match
+    // /cloned .*x3/ against the manifest text, which slicing.js writes with
+    // "×" (U+00D7) — an ASCII "x" can never match it, so the harness was red
+    // from the day that string was prettified. Match only the stable ASCII
+    // head of the entry; the count lives in sj.copies where it belongs.
+    ok(sj.state === "done" && sj.copies === 3 && sj.changed.some(x => /cloned \d+ instance/.test(x)) &&
+       sj.applied && sj.applied.layer_height.ok && sj.applied.sparse_infill_density.ok && sj.applied.enable_support.ok,
+      "copies cloned in pipeline; settings echoed back APPLIED from the gcode tail", { c: sj.changed, a: sj.applied });
+    const gT = fs.readFileSync(path.join(hubDir, "gcode", sj.gcodeName), "utf8");
+    ok(/--arrange 1/.test(gT) && /--layer-height 0.3/.test(gT),
+      "CLI got --arrange 1 (forced by clones) + the setting flags");
+    fs.writeFileSync(modeFile, "deaf");
+    r = await jpost("/api/slice", { file: "cube.3mf", settings: { layer_height: 0.3 } });
+    sj = await waitJob(r.body.job.id);
+    ok(sj.state === "done" && sj.applied.layer_height.ok === false,
+      "deaf slicer: ignored knob flagged as mismatch, never trusted", sj.applied);
+    fs.writeFileSync(modeFile, "ok");
+    r = await jpost("/api/slice", { file: "cube.3mf", settings: { rm_rf: "x" } });
+    ok(r.status === 400, "unknown setting key rejected — no flag injection", r.status);
+
+    fs.writeFileSync(modeFile, "silent");
+    r = await jpost("/api/slice", { file: "cube.3mf", type: "u1" });
+    sj = await waitJob(r.body.job.id);
+    ok(sj.state === "error" && sj.exitCode === 5 && /no output captured/.test(sj.error),
+      "silent crash: nonzero exit + empty log named a hard crash", sj.error);
+    fs.writeFileSync(modeFile, "honest");
+    r = await jpost("/api/slice", { file: "cube.3mf", type: "u1" });
+    sj = await waitJob(r.body.job.id);
+    ok(sj.state === "error" && /filament_is_high_temperature/.test(sj.logTail),
+      "honest CLI error: stderr surfaced in the job log");
+    fs.writeFileSync(modeFile, "eaten");
+    r = await jpost("/api/slice", { file: "cube.3mf", type: "u1" });
+    sj = await waitJob(r.body.job.id);
+    ok(sj.state === "error" && /exited 0 but produced no gcode/.test(sj.error) && /GUI/.test(sj.hint || ""),
+      "exit-0-no-gcode: single-instance-forwarding hint attached", sj.hint);
+    fs.writeFileSync(modeFile, "ok");
+
+    r = await jpost("/api/slice", { file: "../server.js" });
+    ok(r.status === 400, "traversal/non-3mf enqueue → 400", r.status);
+    r = await jpost("/api/slice", { file: "missing.3mf" });
+    ok(r.status === 404, "unknown file enqueue → 404", r.status);
+    r = await fetch(HUB + "/"); const spage = await r.text();
+    ok(/\/modules\/slicing-ui\.js/.test(spage), "slicing client script injected when feature on");
+
+    // -- UI-settable slicer config (v2.12b) --
+    const altSrc = path.join(hubDir, "3mf-alt");
+    fs.mkdirSync(altSrc, { recursive: true });
+    fs.copyFileSync(FIXC, path.join(altSrc, "only.3mf"));
+    r = await jpost("/api/slice/config", { srcFolder: altSrc });
+    ok(r.status === 200 && r.body.srcFolderFound === true, "slicer config: folder change accepted", r.body);
+    r = await jget("/api/slice/files");
+    ok(r.body.files.length === 1 && r.body.files[0].file === "only.3mf",
+      "slicer config: library follows the new folder LIVE, no restart", r.body.files);
+    const cfgOnDisk = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+    ok(cfgOnDisk.slicer && cfgOnDisk.slicer.srcFolder === altSrc && cfgOnDisk.slicer.exe === process.execPath,
+      "slicer config: persisted to config.json without clobbering sibling keys", cfgOnDisk.slicer);
+    r = await jpost("/api/slice/config", { srcFolder: "", plate: -1 });
+    ok(r.status === 400, "slicer config: bad plate rejected atomically (folder untouched)", r.status);
+    r = await jpost("/api/slice/config", { srcFolder: path.join(hubDir, "3mf") });
+    ok(r.status === 200 && (await jget("/api/slice/files")).body.files.length === 2,
+      "slicer config: restored, both fixtures visible again");
+
+    // -- tranche 5: thumbs, knobs, re-slice/clear, persistence --
+    let th = await fetch(HUB + "/api/slice/thumb?file=cube.3mf");
+    const thPng = Buffer.from(await th.arrayBuffer());
+    ok(th.status === 200 && thPng.readUInt32BE(0) === 0x89504e47, "thumb: plate PNG served from the 3MF", thPng.length);
+    r = await jpost("/api/slice", { file: "cube.3mf",
+      settings: { sparse_infill_pattern: "gyroid", brim_type: "outer_only", top_shell_layers: 5 } });
+    sj = await waitJob(r.body.job.id);
+    ok(sj.state === "done" && sj.applied.sparse_infill_pattern.ok && sj.applied.brim_type.ok && sj.applied.top_shell_layers.ok &&
+       (await jpost("/api/slice", { file: "cube.3mf", settings: { brim_type: "mega_brim" } })).status === 400,
+      "tranche-5 knobs: applied-echo green; bad enum 400", sj.applied);
+    r = await jpost("/api/slice/again", { id: sj.id });
+    const agn = await waitJob(r.body.job.id);
+    ok(agn.state === "done" && agn.settings.sparse_infill_pattern === "gyroid",
+      "re-slice: same recipe, completed", agn.settings);
+    const jobsBefore = (await jget("/api/slice/jobs")).body.jobs.filter(x => x.state === "done").length;
+    await sleep(600); // let saveJobs 300ms debounce flush before killing the Hub
+    await stopHub(); await startHub(hubDir, { U1SLICE_MOCK_MODE_FILE: modeFile });
+    const jobsAfter = (await jget("/api/slice/jobs")).body.jobs.filter(x => x.state === "done").length;
+    ok(jobsAfter === jobsBefore && jobsBefore > 0 &&
+       (await jpost("/api/slice/clear")).body.removed >= jobsAfter,
+      "persistence: job history survives a real Hub restart; clear empties it", { before: jobsBefore, after: jobsAfter });
+
+    // -- feature toggle: off ⇒ routes gone, script not injected --
+    await stopHub();
+    const cfg2 = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+    cfg2.features = { slicing: false };
+    fs.writeFileSync(cfgPath, JSON.stringify(cfg2, null, 2));
+    await startHub(hubDir);
+    r = await jget("/api/slice/status");
+    ok(r.status === 404 && r.body === null, "slicing off: API absent");
+    r = await fetch(HUB + "/"); const spage2 = await r.text();
+    ok(!/\/modules\/slicing-ui\.js/.test(spage2), "slicing off: client script not injected");
+    const cfg3 = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+    delete cfg3.features;
+    fs.writeFileSync(cfgPath, JSON.stringify(cfg3, null, 2));
   }
 
   await stopHub();

@@ -26,6 +26,9 @@ const JS_SUNDAY = 0, JS_SATURDAY = 6;           // getDay(); Python's weekday() 
 const BED_CLEAR_BUFFER_MIN = 5;                  // gap between planned jobs on one machine
 const SWAP_COST_MIN = 20;                        // a filament swap is "worth" this much
                                                  // time when choosing between printers
+const STICKY_TOLERANCE_MIN = 30;                 // keep a copy on the machine it had last
+                                                 // plan unless another finishes it this
+                                                 // much sooner (stability, not stickiness)
 const PLAN_SLOT_CAP = 200;                       // sanity cap on plan expansion
 const EXEC_TICK_MS = 10000;                      // completion watcher (probe caches make this cheap)
 
@@ -89,13 +92,31 @@ function register(ctx) {
     fs.renameSync(tmp, FILE);                    // atomic on the same volume
   }
   const newId = p => p + "_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
-  // Sticky placement: a plan is something a human reads and acts on, so it
-  // must not reshuffle every time anything happens. Once a job-copy has been
-  // assigned a printer we keep that assignment across replans; it's only
-  // dropped when the job finishes, the printer goes offline/ineligible, or the
-  // user explicitly moves it. Times still float (that's real information) -
-  // WHICH MACHINE does not.
-  const PINS = new Map();   // job.id -> printer index
+  // Sticky placement, in TWO layers (fixed v2.12). A plan is something a human
+  // reads and acts on, so it must not reshuffle every time anything happens -
+  // but v2.11 kept that promise by writing every planner choice into the same
+  // map the user's explicit "Move" wrote to. After one plan() run every job
+  // behaved like a user pin, and the consequences were:
+  //   * free a printer, hit Replan, and it stays idle forever - no queued job
+  //     is allowed to migrate to it (Danny, field, 2026-08-30);
+  //   * the pin is read per COPY but keyed per JOB, so copy 1 sets it and
+  //     copies 2..n are forced onto that same lane. A qty-4 job serialises
+  //     onto one machine while the rest of the farm sits idle.
+  //   PINS      - HARD. Only /api/dispatch/jobs/assign writes here. The user
+  //               said "this job goes on that machine"; the planner obeys and
+  //               considers no other lane.
+  //   PLACEMENT - SOFT. Where the last plan put each COPY, keyed per copy so
+  //               copies never inherit each other's lane. Advisory: a copy
+  //               stays put unless another machine finishes it
+  //               STICKY_TOLERANCE_MIN earlier. Estimate jitter can't reshuffle
+  //               the plan; freed capacity - worth hours, not minutes - can.
+  const PINS = new Map();                        // job.id -> printer index (the user's choice)
+  const PLACEMENT = new Map();                   // job.id + "#" + copy -> printer index
+  const forget = jobId => {                      // drop every trace of one job's placement
+    PINS.delete(jobId);
+    for (const k of PLACEMENT.keys())
+      if (k.slice(0, k.lastIndexOf("#")) === jobId) PLACEMENT.delete(k);
+  };
   const AWAITING = new Set();                    // printer idx flagged "bed needs clearing" (in-memory)
   const LAST_STATE = new Map();                  // printer idx -> last seen print state
 
@@ -261,6 +282,7 @@ function register(ctx) {
       (a.created - b.created));
     const slots = [];
     const placed = [];      // [{start,end,colors,printerName,file}] for exclusivity checks
+    const seen = new Set(); // placement keys this run still uses (everything else is stale)
     for (const job of ordered) {
       // A copy a machine is printing RIGHT NOW is already accounted for -
       // subtract it so the planner never schedules work the farm is doing.
@@ -271,11 +293,14 @@ function register(ctx) {
         if (slots.length >= PLAN_SLOT_CAP) break;
         const eligible = lanes.filter(l => !job.multi || l.multiColor);
         if (!eligible.length) { slots.push({ job_id: job.id, file: job.file, unplannable: "no eligible printer (multi-color job, no multi-color machine online)" }); continue; }
-        let best = null;
-        const pinned = PINS.get(job.id);
+        const key = job.id + "#" + c;              // per COPY, never per job
+        seen.add(key);
+        const pinned = PINS.get(job.id);           // hard: the user moved this job here
+        const lastLane = PLACEMENT.get(key);       // soft: where this copy sat last plan
         const pool = (pinned !== undefined && eligible.some(l => l.idx === pinned))
-                   ? eligible.filter(l => l.idx === pinned)   // honor the sticky choice
+                   ? eligible.filter(l => l.idx === pinned)   // honor the user's choice
                    : eligible;
+        const cands = [];
         for (const l of pool) {
           const strict = !!job.needs_finish || D.settings.finish_policy === "attended";
           // Walk forward through attended blocks looking for one the job FITS
@@ -314,8 +339,17 @@ function register(ctx) {
           // avoiding when start times are comparable, not when it costs half a
           // day of an idle machine.
           const cost = realEnd + swaps.length * SWAP_COST_MIN * 60000;
-          const cand = { lane: l, start: realStart, end: realEnd, swaps, cost };
-          if (!best || cost < best.cost) best = cand;
+          cands.push({ lane: l, start: realStart, end: realEnd, swaps, cost });
+        }
+        let best = null;
+        for (const cand of cands) if (!best || cand.cost < best.cost) best = cand;
+        // Stability without stickiness. Keep this copy on the machine it had
+        // last time UNLESS moving it is a real win - a freed printer shows up
+        // as hours earlier, estimate noise as minutes. Without the tolerance
+        // the plan churns on every refresh; with a hard pin it can never move.
+        if (best && lastLane !== undefined && best.lane.idx !== lastLane) {
+          const stay = cands.find(x => x.lane.idx === lastLane);
+          if (stay && stay.cost - best.cost <= STICKY_TOLERANCE_MIN * 60000) best = stay;
         }
         if (!best) { slots.push({ job_id: job.id, file: job.file, unplannable: "no attended window found within 14 days" }); continue; }
         const dl = effDeadline(job);
@@ -338,13 +372,17 @@ function register(ctx) {
           misses_deadline: !!(dl && best.end > dl),
           lane_note: best.lane.note || undefined
         });
-        PINS.set(job.id, best.lane.idx);
+        PLACEMENT.set(key, best.lane.idx);       // soft only - never a pin
         const ready = readyAfter(best.end);
         best.lane.cursor = ready;
         best.lane.fp = { ...best.lane.fp };      // after a planned run the trays hold the job's colors
         best.lane.fp.heads = (job.colors || []).map(h => ({ hex: norm(h) }));
       }
     }
+    // Copies that no longer exist (qty reduced, job finished or removed) must
+    // not keep a lane reserved in the map - it would grow without bound and
+    // resurrect a stale placement if the qty went back up.
+    for (const k of PLACEMENT.keys()) if (!seen.has(k)) PLACEMENT.delete(k);
     // Report the whole fleet, not just the machines that got work: an idle
     // printer vanishing from the timeline hides exactly the capacity problem
     // the scheduler exists to surface.
@@ -376,7 +414,7 @@ function register(ctx) {
           job.remaining = Math.max(0, (job.remaining ?? job.qty) - 1);
           (job.history = job.history || []).push({ printer: i, ended: Date.now(), result: "complete" });
           job.state = job.remaining > 0 ? "queued" : "done";
-          if (job.state === "done") PINS.delete(job.id);
+          if (job.state === "done") forget(job.id);
           job.printing_on = null;
           dirty = true;
           ctx.hublog("info", "dispatch: '" + job.file + "' copy done on printer " + (i + 1) +
@@ -396,7 +434,11 @@ function register(ctx) {
                                      j.file === fname && j.printing_on == null);
         if (job) {
           const adopting = !(prev && !/print/.test(prev));
-          job.state = "printing"; job.printing_on = i; PINS.set(job.id, i); dirty = true;
+          // No pin here: job.printing_on already excludes the in-flight copy
+          // from planning, and swap-cost scoring already prefers the machine
+          // that has the filament loaded. Pinning made the job's REMAINING
+          // copies immovable too.
+          job.state = "printing"; job.printing_on = i; dirty = true;
           if (adopting) ctx.hublog("info", "dispatch: adopted in-progress '" + job.file +
             "' on printer " + (i + 1) + " (it was already running)");
         }
@@ -458,7 +500,7 @@ function register(ctx) {
     save(); res.json({ ok: true, job: j });
   });
   app.post("/api/dispatch/jobs/remove", (req, res) => {
-    PINS.delete((req.body || {}).id);
+    forget((req.body || {}).id);
     const n = D.jobs.length;
     D.jobs = D.jobs.filter(x => x.id !== (req.body || {}).id);
     if (D.jobs.length === n) return res.status(404).json({ error: "Unknown job" });
@@ -573,7 +615,7 @@ function register(ctx) {
     const was = j.printing_on;
     j.printing_on = null;
     if (j.state === "printing") j.state = j.remaining > 0 ? "queued" : "done";
-    PINS.delete(j.id);
+    forget(j.id);
     save();
     ctx.hublog("info", "dispatch: released '" + j.file + "' from printer " +
       (was == null ? "(none)" : was + 1) + " - free to be re-claimed");
@@ -583,7 +625,9 @@ function register(ctx) {
     const b = req.body || {};
     const j = D.jobs.find(x => x.id === b.id);
     if (!j) return res.status(404).json({ error: "Unknown job" });
-    if (b.printer === null || b.printer === "auto") { PINS.delete(j.id); return res.json({ ok: true, pinned: null }); }
+    // "auto" is a request for a fresh decision, so drop the soft placement too
+    // — otherwise the copy sits where the last plan put it.
+    if (b.printer === null || b.printer === "auto") { forget(j.id); return res.json({ ok: true, pinned: null }); }
     const idx = parseInt(b.printer, 10);
     const fleetSize = (ctx.printers || []).length;
     if (!Number.isInteger(idx) || idx < 0 || (fleetSize && idx >= fleetSize))
@@ -619,7 +663,7 @@ function register(ctx) {
       const job = D.jobs.find(j => j.state !== "done" && j.state !== "paused" &&
                                    j.file === fname && j.printing_on == null);
       if (job) {
-        job.state = "printing"; job.printing_on = i; PINS.set(job.id, i);
+        job.state = "printing"; job.printing_on = i;   // claim, don't pin (see tick)
         LAST_STATE.set(i, st);
         adopted.push({ printer: label, file: fname, paused: paused || undefined });
       } else {

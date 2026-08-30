@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- U1 Print Hub — index v2.11.0 -->
+<!-- U1 Print Hub — index v2.12.0 -->
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
@@ -456,7 +456,7 @@
   }
 
   @media (max-width:880px){
-    .shell{grid-template-columns:1fr;}
+    .shell{grid-template-columns:1fr; overflow-x:clip;}
     .side{height:auto; position:static; min-height:auto; border-right:none; border-bottom:1px solid var(--line);}
     .list{max-height:38vh; -webkit-overflow-scrolling:touch;}
     .fleet{grid-template-columns:1fr;}
@@ -466,9 +466,11 @@
     .topbar{position:sticky; top:0; z-index:40; margin:-14px -14px 10px; padding:10px 14px calc(10px);
       background:color-mix(in srgb, var(--chassis) 82%, transparent); backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px);
       border-bottom:1px solid var(--line-soft); flex-wrap:wrap; justify-content:flex-start; row-gap:8px;}
-    .viewtabs{width:100%; margin-right:0; overflow-x:auto; -webkit-overflow-scrolling:touch; scrollbar-width:none;}
+    .viewtabs{width:100%; min-width:0; margin-right:0; overflow-x:auto; -webkit-overflow-scrolling:touch; scrollbar-width:none;}
     .viewtabs::-webkit-scrollbar{display:none;}
-    .vtab{white-space:nowrap; flex:1; justify-content:center;}
+    .vtab{flex:1 1 0;min-width:0;overflow:hidden;text-overflow:ellipsis;justify-content:center;}
+    /* Clip wide module content at the view level, not .main (which would break sticky topbar) */
+    [id^="modview-"]{overflow-x:hidden; max-width:100%;}
     .vbadge{order:3;} .topbar .gear{margin-left:auto;} .topbar a.gear{margin-left:0;}
     /* Settings rows stack instead of crushing four inputs into one line. */
     .prow{flex-wrap:wrap;}
@@ -534,7 +536,7 @@
   </aside>
   <main class="main">
     <div class="topbar">
-      <div class="viewtabs"><button class="vtab on" data-view="dash">Dashboard</button><button class="vtab" data-view="match">Spool Match</button><button class="vtab" data-view="spools">Spools</button></div>
+      <div class="viewtabs"><button class="vtab on" data-view="dash">Dash</button><button class="vtab" data-view="match">Match</button><button class="vtab" data-view="spools">Spools</button></div>
       <span class="vbadge" id="vbadge"></span>
       <a class="gear" href="/fs-colors.html" title="Full Spectrum mix planner">🎨 FS Mixer</a>
       <button class="gear" id="gear" title="Settings">⚙ Settings</button>
@@ -647,7 +649,7 @@
     <div class="tipfoot"><a href="https://venmo.com/u/dgambill" target="_blank" rel="noopener">Buy me a beer 🍺</a></div>
     </div>
     <div class="matchview" id="matchview" style="display:none">
-      <div class="sechead"><h2>Spool Match</h2><span class="count" id="matchcount"></span></div>
+      <div class="sechead"><h2>Match</h2><span class="count" id="matchcount"></span></div>
       <p class="subnote" id="matchnote">Tap a printer to see which library files its loaded colors can print right now (≥50% color match).</p>
       <div class="matchgrid" id="matchgrid"></div>
     </div>
@@ -680,7 +682,7 @@
 
 <script>
 const $ = id => document.getElementById(id);
-const VERSION = "2.11.0";
+const VERSION = "2.12.0";
 let FILES = [], SELECTED = null, MAP = null, FLEET = [], MAPSEL = {};
 let ONBOARD = [], ACT = null; // onboard = /api/printer-files cache; ACT = open per-printer action strip {name,pid}
 let SRCSEL = { hub:true, p:{} }; // source-filter checkboxes; p[pid]=false hides that printer (default: everything on)
@@ -1969,6 +1971,42 @@ function showSpoolResult(sp, sid, uid){
     }catch(e){ st.className="pstatus err"; st.textContent=e.message; }
   });
 }
+// Edit a bound spool in place (v2.12) — refill a roll, fix a typo, tweak
+// temps. Goes through /api/spools/update: tag UIDs and loadout stay bound
+// because the spool_id never changes; nothing on the tag is rewritten.
+function openSpoolEdit(sp){
+  const bp=$("bindpanel"); bp.style.display="";
+  const sid=sp.spool_id, lbl="display:flex;flex-direction:column;gap:3px";
+  bp.innerHTML=`<div class="fshead">Edit spool</div>
+    <div class="subnote" style="margin-bottom:8px">Changes stick to this spool's identity — its tag${(sp.uids||[]).length===1?"":"s"} and loadout stay bound.</div>
+    <div class="row" style="flex-wrap:wrap;gap:8px;align-items:flex-end">
+      <label class="hint" style="${lbl};flex:1 1 100%">Color name<input class="field" id="edName" value="${esc(sp.color_name||"")}" maxlength="80"></label>
+      <label class="hint" style="${lbl};flex:1 1 44%">Brand<input class="field" id="edBrand" value="${esc(sp.brand||"")}" maxlength="80"></label>
+      <label class="hint" style="${lbl};flex:1 1 44%">Material<input class="field" id="edMat" value="${esc(sp.material_variant||"")}" maxlength="40"></label>
+      <label class="hint" style="${lbl};flex:0 0 auto">Color<input type="color" id="edHex" value="#${esc(sp.hex)}" style="width:52px;height:34px;padding:2px;border-radius:7px;border:1px solid var(--line-soft);background:none"></label>
+      <label class="hint" style="${lbl};flex:0 0 auto">Hot end °C<input class="field" id="edHot" type="number" inputmode="numeric" value="${sp.hot_end_temp??""}" style="width:90px"></label>
+      <label class="hint" style="${lbl};flex:0 0 auto">Bed °C<input class="field" id="edBed" type="number" inputmode="numeric" value="${sp.bed_temp??""}" style="width:90px"></label>
+    </div>
+    <div class="subnote" id="edMeasNote" style="display:none;margin-top:6px">Changing the color drops this spool's measured colorimeter data — it becomes a user color.</div>
+    <div class="row" style="margin-top:10px"><button class="btn primary" id="edSave">Save</button><button class="btn ghost" id="edCancel">Cancel</button><span class="pstatus" id="edSt"></span></div>`;
+  if(sp.lab){
+    const orig=("#"+sp.hex).toUpperCase();
+    $("edHex").addEventListener("input",()=>{ $("edMeasNote").style.display = $("edHex").value.toUpperCase()!==orig ? "" : "none"; });
+  }
+  $("edCancel").addEventListener("click",()=>{ bp.style.display="none"; });
+  $("edSave").addEventListener("click",async ()=>{
+    const st=$("edSt"); st.className="pstatus work"; st.textContent="Saving…";
+    const num=v=>{ const n=parseInt(v,10); return Number.isFinite(n)?n:null; };
+    const patch={ color_name:$("edName").value.trim(), brand:$("edBrand").value.trim(), material_variant:$("edMat").value.trim(),
+      hex:$("edHex").value.replace(/^#/,""), hot_end_temp:num($("edHot").value), bed_temp:num($("edBed").value) };
+    try{
+      const d=await post("/api/spools/update",{spool_id:sid, patch});
+      st.className="pstatus ok"; st.textContent="Saved ✓";
+      await loadSpools();
+      showSpoolResult(d.spool, sid, (sp.uids||[])[0]||null);
+    }catch(e){ st.className="pstatus err"; st.textContent=e.message; }
+  });
+}
 // Unknown tag → the one-time association prompt, in the settled order:
 // 1) search the bundled snapshot  2) sample from a loaded head  3) manual hex.
 function openBindPanel(uid){
@@ -2138,11 +2176,16 @@ async function loadSpools(){
     <div class="spoolmeta"><div class="spoolname">${esc(sp.color_name||("#"+sp.hex))}${loc?` <span style="font-family:var(--mono);font-size:10px;font-weight:400;color:var(--signal)">▸ ${esc(loc.name)} T${loc.slot+1}</span>`:""}</div>
     <div class="spoolsub">${esc([sp.brand,sp.material_variant].filter(Boolean).join(" · "))}${sp.hot_end_temp?` · ${sp.hot_end_temp}°/${sp.bed_temp||"—"}°`:""}${sp.uids.length?` · tag ${sp.uids.map(esc).join(", ")}`:" · no tag"}${sp.color_source&&sp.color_source!=="measured"?` · ${esc(sp.color_source)}`:""}</div></div>
     <a class="qbtn" href="/labels.html?id=${encodeURIComponent(sp.spool_id)}" target="_blank" title="Print QR label" style="text-decoration:none">🏷</a>
+    <button class="qbtn" data-edit="${esc(sp.spool_id)}" title="Edit this spool">✎</button>
     <button class="qbtn" data-show="${esc(sp.spool_id)}" title="Details / load to printer">→</button>
     <button class="qbtn qx" data-forget="${esc(sp.spool_id)}" title="Forget this spool">✕</button></div>`; }).join("");
   list.querySelectorAll("[data-show]").forEach(b=>b.addEventListener("click",()=>{
     const sp=SPOOLS.find(x=>x.spool_id===b.dataset.show);
     if(sp) showSpoolResult(sp, sp.spool_id, sp.uids[0]||null);
+  }));
+  list.querySelectorAll("[data-edit]").forEach(b=>b.addEventListener("click",()=>{
+    const sp=SPOOLS.find(x=>x.spool_id===b.dataset.edit);
+    if(sp) openSpoolEdit(sp);
   }));
   list.querySelectorAll("[data-forget]").forEach(b=>b.addEventListener("click",async ()=>{
     if(!confirm("Forget this spool and its tag binding?")) return;
@@ -2856,7 +2899,7 @@ async function loadConfigUI(){
     const c=await (await fetch("/api/config")).json();
     $("setFolder").value=c.gcodeFolder||"";
     (function(){
-      const LBL={power:"Smart plugs",camera:"Chamber cameras",spools:"Spools & RFID",match:"Spool Match",mixer:"FS Mixer","types-beta":"Printer types (beta)",dispatch:"Dispatch scheduler"};
+      const LBL={power:"Smart plugs",camera:"Chamber cameras",spools:"Spools & RFID",match:"Spool Match",mixer:"FS Mixer","types-beta":"Printer types (beta)",dispatch:"Dispatch scheduler",slicing:"In-app slicing"};
       const cfgF=c.featuresConfig||c.features||{}, liveF=c.features||{};
       const box=$("setFeatures");
       box.innerHTML=Object.keys(cfgF).map(k=>
@@ -2985,10 +3028,10 @@ async function runDiscover(){
     const have=new Set(gatherPrinters().map(p=>p.url.replace(/\/+$/,"")));
     w.innerHTML="";
     d.found.forEach(f=>{
-      const already=have.has(f.url.replace(/\/+$/,""));
+      const already=have.has(f.url.replace(/\/+$/,"")) || !!f.configured;
       const row=document.createElement("div"); row.className="discrow";
       row.innerHTML=`<span class="di"><b>${esc(f.device_name||f.machine_type||"Printer")}</b> · ${esc(f.ip)}${f.mac?" · "+esc(f.mac):""}</span>`+
-        `<button class="btn ghost" ${already?"disabled":""}>${already?"Added":"Add"}</button>`;
+        `<button class="btn ghost" ${already?"disabled":""}>${already?(f.configured?"Added — "+esc(f.configured):"Added"):"Add"}</button>`;
       const btn=row.querySelector("button");
       if(!already) btn.addEventListener("click",()=>{ addPrinterRow(f.device_name||"U1", f.url); btn.disabled=true; btn.textContent="Added"; });
       w.appendChild(row);

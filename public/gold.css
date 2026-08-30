@@ -140,3 +140,11 @@ body{
   .modalbox{padding:20px;}
   .side .head{padding:20px 18px 16px;}
 }
+/* ---- Mobile nav: the view tabs must fit one row on a phone. Outfit plus the
+   body tracking set at the top of this file makes tab text measurably wider
+   than the inline CSS's system-font metrics, so the row overflowed. Fix the
+   TABS, never the document: `html, body { overflow-x: hidden }` here broke
+   Cloudflare Access on 2026-08-30 (see MISTAKES.md). ---- */
+@media (max-width:880px){
+  .vtab{letter-spacing:0;}
+}

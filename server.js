@@ -3,7 +3,7 @@
 // and pushes the chosen file to the chosen printer via Moonraker (server-side,
 // so no browser CORS headaches).
 
-const VERSION = "2.11.0";
+const VERSION = "2.12.0";
 
 const crypto = require("crypto");
 const express = require("express");
@@ -121,8 +121,10 @@ function saveConfigFile() {
 // fork). Default is everything ON: an untouched config behaves exactly like
 // 2.10. U1HUB_PROFILE=lite (the Lite binary's baked-in default) flips the
 // Lite set off unless config.json explicitly says otherwise.
-const MODULE_DEFAULTS = { power: true, camera: true, spools: true, match: true, mixer: true, "types-beta": true, dispatch: true };
-const LITE_OFF = ["spools", "match", "mixer", "types-beta"];  // Lite = core + camera + power + dispatch
+const MODULE_DEFAULTS = { power: true, camera: true, spools: true, match: true, mixer: true, "types-beta": true, dispatch: true, slicing: false };
+// slicing ships OFF in 2.12: the engine is built and harness-green, but the CLI
+// path has no live hardware gate yet (Rule #1). Code stays; the tab does not.
+const LITE_OFF = ["spools", "match", "mixer", "types-beta", "slicing"];  // Lite = core + camera + power + dispatch
 let FEATURES = { ...MODULE_DEFAULTS };
 let FEATURES_LOCKED = false;
 function computeFeatures() {
@@ -381,7 +383,8 @@ require("./tunnel.js")(app, express, BASE_DIR, PORT);
 //      browser-side twin of MODULE_TABLE. Dispatch is its first entry; the
 //      list is static for the same pkg reason as the server table.
 const CLIENT_TABLE = {
-  dispatch: "/modules/dispatch-ui.js"   // public/modules/dispatch-ui.js, static-served
+  dispatch: "/modules/dispatch-ui.js",  // public/modules/dispatch-ui.js, static-served
+  slicing: "/modules/slicing-ui.js"     // v2.12 Slice tab, same pattern
   // (named -ui deliberately: the server module is modules/dispatch.js, and two
   //  same-named files in different folders is a foot-gun during deploys)
 };
@@ -1976,6 +1979,19 @@ app.get("/api/diagnostics", async (req, res) => {
   res.type("json").send(out);
 });
 
+// Normalize a printer url to host:port for identity comparison. Two config
+// entries with the same origin are the same physical printer twice — the
+// end-user error class behind a long stale-claim diagnosis in the 2.11 cycle
+// (two printers "sharing" one IP). Same IP on DIFFERENT ports stays legal:
+// a multi-instance Klipper host (one Pi, several Moonrakers on :7125/:7126)
+// is a real setup this guard must not break.
+function printerOrigin(u) {
+  try {
+    const x = new URL(String(u));
+    return (x.hostname + ":" + (x.port || (x.protocol === "https:" ? "443" : "80"))).toLowerCase();
+  } catch { return String(u || "").toLowerCase().replace(/\/+$/, ""); }
+}
+
 app.post("/api/config", (req, res) => {
   const b = req.body || {};
   const next = {
@@ -2015,6 +2031,18 @@ app.post("/api/config", (req, res) => {
       ? Object.fromEntries(Object.keys(MODULE_DEFAULTS).filter(k => k in b.features).map(k => [k, b.features[k] !== false]))
       : (CFG.features || undefined)
   };
+  // Duplicate-printer guard (v2.12): refuse the save — nothing is written —
+  // and name both offenders so the fix is obvious from the error alone.
+  if (Array.isArray(b.printers)) {
+    const seen = new Map();
+    for (const p of next.printers) {
+      const o = printerOrigin(p.url);
+      if (seen.has(o)) {
+        return res.status(409).json({ error: "\"" + seen.get(o) + "\" and \"" + p.name + "\" point at the same printer (" + o.replace(/:80$/, "") + ") — give each printer its own address" });
+      }
+      seen.set(o, p.name);
+    }
+  }
   try {
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(next, null, 2));
     loadConfig();
@@ -2064,6 +2092,15 @@ app.get("/api/discover", async (req, res) => {
       const results = await Promise.all(ips.slice(i, i + B).map(probeMoonraker));
       results.forEach(r => { if (r) found.push(r); });
     }
+  }
+  // Duplicate-IP awareness (v2.12): flag found devices that are already a
+  // configured printer, by origin rather than exact URL string, so a
+  // trailing-slash or case difference can't invite a second entry for the
+  // same machine.
+  const cfgByOrigin = new Map((PRINTERS || []).map(p => [printerOrigin(p.url), p.name]));
+  for (const f of found) {
+    const n = cfgByOrigin.get(printerOrigin(f.url));
+    if (n) f.configured = n;
   }
   res.json({ subnets: localSubnets(), found });
 });
@@ -2188,7 +2225,8 @@ const MODULE_TABLE = {
   camera: require("./modules/camera.js"),
   spools: require("./modules/spools.js"),
   mixer: require("./modules/mixer.js"),
-  dispatch: require("./modules/dispatch.js")
+  dispatch: require("./modules/dispatch.js"),
+  slicing: require("./modules/slicing.js")
 };
 const CAPS_PROVIDED = new Map();
 // Parse "estimated printing time (normal mode) = 1d 2h 3m" from gcode text.
@@ -2234,6 +2272,12 @@ const MODULE_CTX = Object.freeze({
   baseDir: BASE_DIR, assetDir: ASSET_DIR,
   detectCaps: (idx) => detectCaps(idx),
   fileInfo: (name, typeSlug) => fileInfoForModules(name, typeSlug),
+  // v2.12: slicing writes produced gcode into a type's folder; fileInfo only
+  // reads. Live lookup, same reassignment-safety rules as the getters below.
+  gcodeFolderFor: (slug) => typeFolder(typeBySlug(String(slug || "u1")) || typeBySlug("u1")),
+  // v2.12: modules may own a slice of config.json (slicing does — its slicer
+  // block is UI-editable). They mutate ctx.cfg.<their key> and persist here.
+  saveConfig: () => saveConfigFile(),
   loadout: (idx) => loadoutSnapshot(idx),
   spoolShelf: () => { try { return (JSON.parse(fs.readFileSync(path.join(BASE_DIR, "spools.json"), "utf8")) || {}).spools || {}; } catch { return {}; } },
   fleet: () => fleetSnapshot(),
