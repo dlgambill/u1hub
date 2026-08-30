@@ -13,6 +13,36 @@ Running log of things that broke, why, and the rule that stops a repeat.
 
 ---
 
+## 2026-08-30 — `taskkill /IM node.exe /F` kills the Desktop Commander bridge
+
+**What happened:** Ran the handoff's own start-of-session step 1,
+`taskkill /IM node.exe /F`, through Desktop Commander. The call returned
+"Connection closed", and so did the next two.
+
+**Root cause:** Desktop Commander *is* node. Two processes —
+`npx-cli.js @wonderwhy-er/desktop-commander` and the server's `dist/index.js` —
+both `node.exe`. A blanket kill takes the tool executing the kill. It restarts
+on its own within a few seconds, so the damage is confusion rather than a dead
+session, but two of those three lost calls were spent re-diagnosing a bridge
+that was never broken.
+
+**Consequence:** ~3 wasted turns at the very start of a session, every session,
+following the documented checklist.
+
+**Rule:** Never blanket-kill `node.exe` from inside a node-hosted tool. To clear
+a zombie Hub, kill by command line, not by image name:
+
+```
+Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
+  Where-Object { $_.CommandLine -match 'server\.js' } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
+```
+
+Two `node.exe` processes at session start with no `server.js` in their command
+lines are the bridge itself — that is the healthy state, not a zombie Hub.
+
+---
+
 ## 2026-08-30 — Mapped drive `X:\` cannot be granted by folder request
 
 **What happened:** Requested access to `X:\u1-print-hub` via the folder-access

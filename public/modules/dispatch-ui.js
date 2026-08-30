@@ -13,11 +13,31 @@
 //   * multi-plate prints: add several gcode files as ONE bundle — members
 //     share the bundle's deadline and quantity, and the jobs list shows them
 //     grouped under it.
+//
+// v2.13 — COMPLETION TARGET. One "finish everything by" datetime for the whole
+// queue (the shape a show or a pickup actually has), plus the feasibility
+// report the server builds from the same slots the timeline draws: what makes
+// it, what doesn't, why not, and what recovering that wait would buy. The
+// prose lives on the server so the report and the plan can never disagree;
+// this file only lays it out.
 
 "use strict";
 (function () {
   let STATE = null, PLAN = null, EL = null;
   let FILEQ = [];                                  // files staged for Add (chips)
+  let REPOPEN = false;                             // feasibility detail expanded?
+  // Short labels for the server's cause codes. The server owns the sentence;
+  // this is only the chip on the row, so the two can never drift apart in
+  // meaning — if a code arrives that isn't here, the raw code shows.
+  const CAUSE = {
+    too_long:       "longer than the time left",
+    queued_behind:  "queued behind other copies",
+    bed_clear:      "waiting for a bed clear",
+    printer_busy:   "printer still running",
+    attended_hours: "outside attended hours",
+    no_slack:       "no slack left",
+    unplannable:    "can't be planned"
+  };
   const DAYK = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
   const DAYLBL = { sun: "Sun", mon: "Mon", tue: "Tue", wed: "Wed", thu: "Thu", fri: "Fri", sat: "Sat" };
   const $$ = sel => EL.querySelector(sel);
@@ -44,7 +64,57 @@
     render();
   }
 
-  function render() { if (!STATE) return; renderWeek(); renderChips(); renderJobs(); renderPlan(); }
+  function render() { if (!STATE) return; renderWeek(); renderTarget(); renderChips(); renderJobs(); renderReport(); renderPlan(); }
+
+  // ---- farm completion target + feasibility report (v2.13) -----------------
+  // "Everything done by Friday 5pm." One datetime for the whole queue, because
+  // that is the shape a show or a customer pickup actually has. The server
+  // treats it as a FALLBACK deadline (a job's own deadline still wins) and
+  // hands back a report; this half only has to say it plainly.
+  const dtLocal = ms => {                        // ms -> value for <input type=datetime-local>
+    const d = new Date(ms - new Date(ms).getTimezoneOffset() * 60000);
+    return d.toISOString().slice(0, 16);
+  };
+  function renderTarget() {
+    const t = (STATE.settings || {}).target || null;
+    const inp = $$("#dsp-target");
+    if (inp && document.activeElement !== inp) inp.value = t ? dtLocal(t) : "";
+    $$("#dsp-target-clear").style.display = t ? "" : "none";
+  }
+  function renderReport() {
+    const box = $$("#dsp-report");
+    const rep = PLAN && PLAN.report;
+    if (!rep || !rep.copies) { box.innerHTML = ""; return; }
+    // No target and no per-job deadlines: nothing to be late against. Say so
+    // rather than showing a green banner that means nothing.
+    if (!rep.judged) {
+      box.innerHTML = `<div class="dsp-rep dsp-rep-none">No completion target set — set one above and this becomes "what makes it, and what doesn't".</div>`;
+      return;
+    }
+    const n = rep.misses, judged = rep.judged;
+    const head = n === 0
+      ? `<b>✓ All ${judged} cop${judged === 1 ? "y" : "ies"} make their deadline.</b>` +
+        (rep.slack_min != null ? ` <span>Tightest margin ${fmtMin(rep.slack_min)}${rep.latest_end ? " · plan ends " + fmtT(rep.latest_end) : ""}.</span>` : "")
+      : `<b>⚠ ${n} of ${judged} copies miss.</b> <span>${rep.makes} make it${rep.latest_end ? " · plan ends " + fmtT(rep.latest_end) : ""}.</span>`;
+    const rows = (rep.items || []).map(it => `
+      <div class="dsp-repitem">
+        <div class="dsp-repline">
+          <span class="dsp-repfile">${esc(it.file.replace(/\.gcode$/i, ""))}${it.of > 1 ? ` <i>#${it.copy}/${it.of}</i>` : ""}</span>
+          <span class="dsp-replate">${it.late_min == null ? "unplannable" : fmtMin(it.late_min) + " late"}</span>
+          <span class="dsp-repwhere">${it.printerName ? esc(it.printerName) + " · lands " + fmtT(it.est_end) : ""}</span>
+          <span class="dsp-repcause">${esc(CAUSE[it.cause] || it.cause)}</span>
+        </div>
+        <div class="dsp-repwhy">${esc(it.cause_detail)}</div>
+        <div class="dsp-repfix">→ ${esc(it.fix)}</div>
+        ${it.contention ? `<div class="dsp-repnote">⚠ ${esc(it.contention)}</div>` : ""}
+      </div>`).join("");
+    box.innerHTML =
+      `<div class="dsp-rep ${n ? "dsp-rep-bad" : "dsp-rep-ok"}">${head}` +
+      (n ? `<button id="dsp-rep-toggle" class="dsp-repmore">${REPOPEN ? "hide" : "why?"}</button>` : "") +
+      `</div>` + (n && REPOPEN ? `<div class="dsp-replist">${rows}</div>` : "");
+    const tg = $$("#dsp-rep-toggle");
+    if (tg) tg.onclick = () => { REPOPEN = !REPOPEN; renderReport(); };
+  }
 
   // ---- attended hours: calendar-week editor ---------------------------------
   function selectedWeekKey() { return $$("#dsp-week").value || isoWeekKey(Date.now()); }
@@ -400,6 +470,26 @@
       .dsp-moverow{display:flex;gap:6px;margin-top:4px}
       .dsp-moveto{flex:1;font:inherit;font-size:13px;padding:7px;border:1px solid #444;border-radius:7px;background:#1b1e24;color:inherit}
       .dsp-movego{font:inherit;font-size:13px;padding:7px 14px;border:1px solid #555;border-radius:7px;background:#23262d;color:inherit;cursor:pointer}
+      .dsp-targetbar{border:1px solid #2f333a;border-radius:8px;padding:7px 10px;font-size:12.5px}
+      .dsp-targetbar span{color:#c9cbd1}
+      .dsp-rep{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:8px 11px;border-radius:8px;font-size:13px;margin:6px 0}
+      .dsp-rep span{color:#9aa;font-weight:400}
+      .dsp-rep-ok{background:#12261a;border:1px solid #2c6b41;color:#8fe0ac}
+      .dsp-rep-bad{background:#2a1414;border:1px solid #8a3b32;color:#f0a89f}
+      .dsp-rep-none{background:#1b1e24;border:1px solid #2f333a;color:#889}
+      .dsp-repmore{margin-left:auto;font:inherit;font-size:12px;padding:3px 10px;border:1px solid #7a4c46;border-radius:6px;background:transparent;color:inherit;cursor:pointer}
+      .dsp-replist{border:1px solid #2a2d33;border-radius:8px;overflow:hidden;margin-bottom:8px}
+      .dsp-repitem{padding:8px 11px;border-bottom:1px solid #23262d;font-size:12.5px}
+      .dsp-repitem:last-child{border-bottom:0}
+      .dsp-repline{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+      .dsp-repfile{font-weight:700}
+      .dsp-repfile i{color:#889;font-style:normal;font-weight:400}
+      .dsp-replate{color:#f0a89f;font-weight:700}
+      .dsp-repwhere{color:#889}
+      .dsp-repcause{margin-left:auto;color:#ffd166;font-size:11.5px;border:1px solid #5c4a1f;border-radius:10px;padding:1px 8px}
+      .dsp-repwhy{color:#b9bcc4;margin-top:4px;line-height:1.45}
+      .dsp-repfix{color:#8fb7e0;margin-top:3px;line-height:1.45}
+      .dsp-repnote{color:#ff9f43;margin-top:3px}
       .dsp-empty{color:#889;font-size:13px;padding:10px 2px}
       .dsp-h{font-size:12px;letter-spacing:.08em;color:#d6a832;font-weight:800;margin:14px 0 4px}
     </style>
@@ -427,6 +517,12 @@
         <div style="color:#889;font-size:12px;margin:2px 0 6px">Jobs always START inside these hours - that is when you are around to swap spools and clear beds. Add a second block for days you're out in the middle. • = overridden day. Auto-start stays off — a human taps "Bed cleared".</div>
         <div class="dsp-days" id="dsp-days"></div>
       </div>
+      <div class="dsp-row dsp-targetbar">
+        <span title="One deadline for the whole queue. Jobs with a deadline of their own keep it.">🎯 Finish everything by</span>
+        <input type="datetime-local" id="dsp-target">
+        <button id="dsp-target-save">Set target</button>
+        <button id="dsp-target-clear" style="display:none">Clear</button>
+      </div>
       <div class="dsp-h">ADD JOB <span style="color:#889;font-weight:400">— several files become one bundle (multi-plate prints)</span></div>
       <div class="dsp-row">
         <select id="dsp-file"></select><button id="dsp-stage">+ add file</button>
@@ -439,6 +535,7 @@
       <button id="dsp-jobs-toggle" class="dsp-toggle">JOBS <span id="dsp-jobs-sum"></span> <b id="dsp-jobs-caret">▾</b></button>
       <div id="dsp-jobs"></div>
       <div class="dsp-h">PLAN <button id="dsp-replan" style="font-size:11px;padding:2px 8px">↻ replan</button> <button id="dsp-adopt" style="font-size:11px;padding:2px 8px" title="Match prints already running on your printers to queued jobs, so Dispatch stops scheduling work the farm is already doing">⤓ claim running prints</button></div>
+      <div id="dsp-report"></div>
       <div id="dsp-plan"></div>
     </div>`;
 
@@ -463,6 +560,20 @@
     $$("#dsp-save-all").onclick = async () => { await jpost("/api/dispatch/settings", { week: readDays() }); load(); };
     $$("#dsp-save-one").onclick = async () => { await jpost("/api/dispatch/settings", { weekOverride: { key: selectedWeekKey(), days: readDays() } }); load(); };
     $$("#dsp-clearov").onclick = async () => { await jpost("/api/dispatch/settings", { clearOverride: selectedWeekKey() }); load(); };
+    // Farm target. Errors surface — a target that silently didn't save is
+    // worse than none, because the green banner would be lying.
+    $$("#dsp-target-save").onclick = async () => {
+      const v = $$("#dsp-target").value;
+      if (!v) return alert("Pick a date and time first, or press Clear to remove the target.");
+      const r = await jpost("/api/dispatch/settings", { target: new Date(v).getTime() });
+      if (!r.ok) alert((r.body && r.body.error) || "Could not set that target");
+      REPOPEN = true;                      // they just asked the question — show the answer
+      load();
+    };
+    $$("#dsp-target-clear").onclick = async () => {
+      await jpost("/api/dispatch/settings", { target: null });
+      $$("#dsp-target").value = ""; load();
+    };
     $$("#dsp-stage").onclick = () => addChip($$("#dsp-file").value);
     $$("#dsp-add").onclick = async () => {
       if (!FILEQ.length && $$("#dsp-file").value) addChip($$("#dsp-file").value);

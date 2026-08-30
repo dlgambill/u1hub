@@ -13,12 +13,14 @@ failure appears 4–5 times, promote it to a hard rule below.
 2. **Nothing ships unverified.** "Built" is not "shippable." A feature is done
    when the harness is green *and* its live hardware gate has passed. Unverified
    shapes and paths are not emitted at all.
-3. **Staging is the source of truth.** Never build or reason from GitHub main
-   or the `C:\Users\Danny\code\u1-print-hub` clone. Staging was
-   `X:\u1-print-hub`; as of 2026-08-30 it is mirrored to
-   `C:\Users\Danny\code\u1-hub-staging`, because mapped network drives are
-   unreachable from a Cowork session. **Two trees now exist — confirm which one
-   is live before the first edit.**
+3. **Staging is the source of truth.** `X:\u1-print-hub` is where code is read,
+   edited and tested. Never build or reason from GitHub main or the
+   `C:\Users\Danny\code\u1-print-hub` clone — that clone exists to hold history
+   and is the only place to commit. `X:\u1-print-hub\.git` is stale (last tag
+   `v2.6.0`) and must never receive a commit.
+   `C:\Users\Danny\code\u1-hub-staging` was a one-off mirror from the days when
+   `X:` was unreachable; Desktop Commander reaches `X:` directly now, so that
+   mirror is dead weight, not a second source of truth.
 4. **Version bumps are atomic.** `server.js`, `public/index.html`, and
    `package.json` change in the same pass, then `npm test`.
 5. **Never commit state files.** config.json, spools.json, slots.json, auth.json,
@@ -27,9 +29,9 @@ failure appears 4–5 times, promote it to a hard rule below.
 
 ## Harness
 
-`npm test` → **290 checks**, expect **290 passed, 0 failed**. A red harness
+`npm test` → **307 checks**, expect **307 passed, 0 failed**. A red harness
 blocks everything.
 
-Green on cloud Linux and on Windows against `X:` (2026-08-30). One known flaky
+Green on Windows against `X:` (2026-08-30, v2.13.0). One known flaky
 check — "released job is free to be claimed against reality again" races the
 10 s executor tick; see `MISTAKES.md`. Re-run before believing it.

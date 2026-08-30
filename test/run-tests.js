@@ -1243,6 +1243,154 @@ async function stopHub() {
     r = await jget("/api/dispatch");
     for (const j of r.body.jobs.filter(x => x.bundle_id === BID)) await jpost("/api/dispatch/jobs/remove", { id: j.id });
     await jpost("/api/dispatch/bundles/remove", { id: BID });
+    // COMPLETION TARGET + FEASIBILITY REPORT (v2.13). "Everything by Friday
+    // 5pm" is one datetime for the whole queue, not 30 deadlines typed by
+    // hand. The scheduler is untouched: the target is a FALLBACK deadline, and
+    // the report is a pure read of the slots plan() already produced.
+    //
+    // Every target below is derived from OBSERVED slot times, never from a
+    // wall-clock guess. A 62-minute job added at 23:30 legitimately starts
+    // tomorrow (it doesn't fit in what's left of today's window), so any test
+    // that assumed "copy 2 ends 129 minutes from now" would be red for one
+    // hour a day — the exact shape of flake MISTAKES.md is full of.
+    {
+      // Park everything already queued so the report is about this block alone.
+      const parked = ((await jget("/api/dispatch")).body.jobs || [])
+        .filter(j => j.state !== "done" && j.state !== "paused").map(j => j.id);
+      for (const id of parked) await jpost("/api/dispatch/jobs/update", { id, state: "paused" });
+
+      r = await jpost("/api/dispatch/settings", { target: Date.now() - 60000 });
+      ok(r.status === 400 && /future/.test(r.body.error || ""),
+        "a completion target in the past is refused (a warning that's always on is never read)", r.body);
+
+      // Nothing to be late against: no target, no per-job deadline. The report
+      // must say "nothing judged", not show a green all-clear that means
+      // nothing.
+      r = await jpost("/api/dispatch/jobs", { file: "multi.gcode", type: "u1", qty: 3 });
+      const TJOB = r.body.job.id;
+      r = await jget("/api/dispatch/plan");
+      ok(r.body.report && r.body.report.judged === 0 && r.body.report.misses === 0
+         && r.body.report.copies === 3,
+        "no target and no deadlines: 3 copies planned, none judged, none reported late", r.body.report);
+
+      // Observe where the copies actually land, then aim the target at them.
+      const copiesOf = body => (body.slots || []).filter(s => s.job_id === TJOB && !s.unplannable)
+                                                 .sort((a, b) => a.copy - b.copy);
+      let cs = copiesOf(r.body);
+      ok(cs.length === 3 && cs.every(s => s.printer === cs[0].printer),
+        "precondition: a multi-color job serialises on the one multi-color machine", cs.map(s => s.printerName));
+
+      // Target AFTER the last copy: everything makes it, with real slack.
+      let TGT = cs[2].est_end + 60 * 60000;
+      r = await jpost("/api/dispatch/settings", { target: TGT });
+      ok(r.status === 200 && r.body.settings.target === TGT, "completion target saved", r.body.settings.target);
+      r = await jget("/api/dispatch/plan");
+      cs = copiesOf(r.body);
+      ok(cs[0].deadline === TGT && cs[0].deadline_source === "target",
+        "the farm target becomes the deadline of every job that hasn't got one",
+        { dl: cs[0].deadline, src: cs[0].deadline_source });
+      ok(r.body.report.judged === 3 && r.body.report.misses === 0 && r.body.report.slack_min >= 55,
+        "a plan that fits: 3 judged, 0 missed, ~1 h of slack at the tightest point", r.body.report);
+
+      // Now tighten it to land between copy 2 and copy 3.
+      TGT = Math.round((cs[1].est_end + cs[2].est_end) / 2);
+      await jpost("/api/dispatch/settings", { target: TGT });
+      r = await jget("/api/dispatch/plan");
+      let rep = r.body.report;
+      ok(rep.misses === 1 && rep.makes === 3 - 1 && rep.items.length === 1 && rep.slack_min < 0,
+        "tightening the target flags exactly the copy that lands after it", rep);
+      const miss = rep.items[0];
+      ok(miss.cause === "queued_behind" && miss.queued_ahead === 2 && /2 copies ahead of it/.test(miss.cause_detail),
+        "the miss is attributed to the copies queued ahead of it, not just reported as late", miss);
+      ok(miss.late_min > 0 && /Free capacity/.test(miss.fix) && /make it|find elsewhere/.test(miss.fix),
+        "each miss carries a fix and says what recovering that wait would buy", miss.fix);
+
+      // A job's OWN deadline wins over the farm target, looser or tighter.
+      // Overriding a deliberately later deadline would invent a miss nobody
+      // asked about, and a report that cries wolf stops being read.
+      r = await jpost("/api/dispatch/jobs", { file: "single.gcode", type: "u1", qty: 1,
+                                              deadline: Date.now() + 20 * 24 * 3600000 });
+      const TOWN = r.body.job.id;
+      r = await jget("/api/dispatch/plan");
+      const own = (r.body.slots || []).find(s => s.job_id === TOWN && !s.unplannable);
+      ok(own && own.deadline_source === "job" && own.misses_deadline !== true,
+        "a job's own (later) deadline survives the farm target and isn't reported as a miss",
+        own && { src: own.deadline_source, miss: own.misses_deadline });
+      await jpost("/api/dispatch/jobs/remove", { id: TOWN });
+      await jpost("/api/dispatch/jobs/remove", { id: TJOB });
+
+      // TOO LONG: no wait to blame — the run alone overshoots. An idle farm
+      // would not help, and the fix has to say so rather than "free capacity".
+      r = await jpost("/api/dispatch/jobs", { file: "long.gcode", type: "u1", qty: 1 });
+      const TLONG = r.body.job.id, ESTL = r.body.job.est_minutes || 60;
+      await jpost("/api/dispatch/settings", { target: Date.now() + Math.max(1, Math.floor(ESTL / 2)) * 60000 });
+      r = await jget("/api/dispatch/plan");
+      rep = r.body.report;
+      ok(rep.misses === 1 && rep.items[0].cause === "too_long" && /no machine, however free/.test(rep.items[0].cause_detail),
+        "a print longer than the time left is called what it is, not blamed on the queue", rep.items[0]);
+      await jpost("/api/dispatch/jobs/remove", { id: TLONG });
+
+      // ATTENDED HOURS: close today AND tomorrow, so the wait is at least 24 h
+      // whatever time the harness runs. Jobs may only START inside your hours,
+      // so the copy sits idle on a free machine — that is the cause, and it is
+      // the one the user can actually do something about.
+      {
+        const DK = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+        const today = new Date().getDay();
+        const week = {};
+        for (let i = 0; i < 7; i++)
+          week[DK[i]] = (i === today || i === (today + 1) % 7)
+            ? { on: false, windows: [] }
+            : { on: true, windows: [{ start: "00:00", end: "23:59" }] };
+        await jpost("/api/dispatch/settings", { week });
+        r = await jpost("/api/dispatch/jobs", { file: "single.gcode", type: "u1", qty: 1 });
+        const TWAIT = r.body.job.id;
+        r = await jget("/api/dispatch/plan");
+        let w = (r.body.slots || []).find(s => s.job_id === TWAIT && !s.unplannable);
+        ok(w && w.est_start - Date.now() >= 23.5 * 3600000,
+          "with today and tomorrow closed, the copy waits for the next attended day", w && new Date(w.est_start).toString());
+        await jpost("/api/dispatch/settings", { target: w.est_end - 10 * 60000 });
+        r = await jget("/api/dispatch/plan");
+        rep = r.body.report;
+        ok(rep.misses === 1 && rep.items[0].cause === "attended_hours" && /only START inside/.test(rep.items[0].cause_detail),
+          "an idle machine waiting on your hours is reported as exactly that", rep.items[0]);
+        ok(/Add an attended block/.test(rep.items[0].fix),
+          "and the fix names the hours to add, not a machine to buy", rep.items[0].fix);
+        await jpost("/api/dispatch/jobs/remove", { id: TWAIT });
+        // restore wide-open hours for everything after this block
+        await jpost("/api/dispatch/settings", { attended: { start: "00:00", end: "23:59" }, weekend: { start: "00:00", end: "23:59" } });
+      }
+
+      // The four waits are a DECOMPOSITION, not four guesses: for every planned
+      // copy they must add up to the time between now and its start. If they
+      // ever don't, the attributed cause is arithmetic fiction.
+      for (const id of parked) await jpost("/api/dispatch/jobs/update", { id, state: "queued" });
+      r = await jget("/api/dispatch/plan");
+      const planned = (r.body.slots || []).filter(s => !s.unplannable && s.delay);
+      const gen = r.body.generated_at;
+      const offBy = planned.map(s => {
+        const sum = s.delay.inflight + s.delay.queue + s.delay.bed + s.delay.window;
+        return { file: s.file, copy: s.copy, sum, real: Math.round((s.est_start - gen) / 60000) };
+      }).filter(x => Math.abs(x.sum - x.real) > 2);
+      ok(planned.length > 0 && !offBy.length,
+        "every copy's waits add up to the gap between now and its start (the causes are arithmetic, not vibes)",
+        offBy.slice(0, 3));
+
+      // Clearing has to work, or a target set for one show haunts every plan
+      // after it.
+      r = await jpost("/api/dispatch/settings", { target: null });
+      ok(r.status === 200 && r.body.settings.target === null, "the completion target can be cleared", r.body.settings.target);
+      r = await jget("/api/dispatch/plan");
+      // "Nothing is judged" is the wrong assertion here and it caught me: the
+      // job this section printed a copy of back at the top still carries its
+      // OWN (long past) deadline, so it is legitimately still judged and still
+      // late. What clearing the target must guarantee is narrower and truer —
+      // no slot answers to the target any more.
+      ok(r.body.target === null
+         && !(r.body.slots || []).some(s => s.deadline_source === "target"),
+        "with the target cleared, no job is judged against it again (per-job deadlines are untouched)",
+        { target: r.body.target, sources: (r.body.slots || []).map(s => s.deadline_source) });
+    }
     // Persistence + hygiene.
     const dj = JSON.parse(fs.readFileSync(path.join(hubDir, "dispatch.json"), "utf8"));
     ok(dj.jobs && dj.jobs.length === 1 && dj.settings.week && dj.settings.week.mon.windows

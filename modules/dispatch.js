@@ -1,4 +1,5 @@
-// modules/dispatch.js — the scheduler (v2.11). PrintFarm's workflow, reborn as
+// modules/dispatch.js — the scheduler (v2.11; completion target v2.13).
+// PrintFarm's workflow, reborn as
 // a Hub module on state the Hub actually KNOWS instead of guesses:
 //   * swap minimization reads real tray colors (print_task_config via the
 //     fleet snapshot) plus physical spool identity (the shelf), so the plan
@@ -32,6 +33,117 @@ const STICKY_TOLERANCE_MIN = 30;                 // keep a copy on the machine i
 const PLAN_SLOT_CAP = 200;                       // sanity cap on plan expansion
 const EXEC_TICK_MS = 10000;                      // completion watcher (probe caches make this cheap)
 
+// ---- feasibility report (v2.13) ---------------------------------------------
+// "Everything by Friday 5pm — what makes it, and what doesn't?"
+//
+// A list of red blocks is not an answer. The useful half is WHY a copy is late,
+// because every cause has a different move: a machine you could free, a bed you
+// could clear, an hour of attendance you could add, or a print that was never
+// going to fit no matter what. So each miss is attributed to the single largest
+// wait between now and its start, and told what recovering that wait would buy.
+//
+// Deliberately a PURE function of the slots plan() already produced — no second
+// plan() run, no clock of its own. A report that re-planned could disagree with
+// the timeline drawn next to it, and then neither would be believed.
+const FMT_T = ms => new Date(ms).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
+const DUR = m => {
+  m = Math.max(0, Math.round(m));
+  return m >= 60 ? Math.floor(m / 60) + "h" + (m % 60 ? " " + (m % 60) + "m" : "") : m + "m";
+};
+function feasibility(slots, target, now) {
+  const good = slots.filter(s => !s.unplannable);
+  const bad = slots.filter(s => s.unplannable);
+  const items = [];
+  // A copy that cannot be scheduled at all is a miss of the worst kind: it has
+  // no finish time to be late against. Report it first, never silently.
+  for (const s of bad) items.push({
+    job_id: s.job_id, file: s.file, copy: s.copy, of: s.of,
+    cause: "unplannable", late_min: null, cause_detail: s.unplannable,
+    fix: "This copy has no place in the plan at all — settle that before the deadline question means anything."
+  });
+  for (const s of good) {
+    if (!s.deadline || s.est_end <= s.deadline) continue;
+    const late = Math.round((s.est_end - s.deadline) / 60000);
+    const d = s.delay || {};
+    const left = Math.round((s.deadline - now) / 60000);       // minutes from now to its deadline
+    let cause, detail, fix;
+    if (s.est_minutes > left) {
+      // No wait to blame: the run alone overshoots. An idle farm wouldn't help.
+      cause = "too_long";
+      detail = "The print runs " + DUR(s.est_minutes) + " and only " + DUR(left) +
+               " remain before its deadline — no machine, however free, finishes it in time.";
+      fix = "Move the deadline out by at least " + DUR(late) + ", drop this copy, or split the plate.";
+    } else {
+      const waits = [
+        { code: "queued_behind",  min: d.queue || 0 },
+        { code: "bed_clear",      min: d.bed || 0 },
+        { code: "printer_busy",   min: d.inflight || 0 },
+        { code: "attended_hours", min: d.window || 0 }
+      ].sort((a, b) => b.min - a.min);
+      const top = waits[0];
+      if (!top.min) {
+        cause = "no_slack";
+        detail = "It starts as early as the plan allows and still lands " + DUR(late) + " late.";
+        fix = "Move the deadline " + DUR(late) + ", or take that much work out of the queue.";
+      } else {
+        cause = top.code;
+        const ahead = s.queued_ahead || 1;
+        detail =
+          cause === "queued_behind" ? ahead + " cop" + (ahead === 1 ? "y" : "ies") + " ahead of it on " +
+            s.printerName + " hold the machine — " + DUR(top.min) + " of waiting before it can start at " + FMT_T(s.est_start) + "." :
+          cause === "bed_clear" ? s.printerName + " finishes its previous print well before this one starts, but a " +
+            "human has to clear the bed — " + DUR(top.min) + " of that wait is a machine sitting done and full." :
+          cause === "printer_busy" ? s.printerName + " is still running a print of its own until " +
+            FMT_T(s.lane_free_at || s.est_start) + " — " + DUR(top.min) + " of waiting." :
+          s.printerName + " is free earlier, but a job may only START inside your attended hours — it waits " +
+            DUR(top.min) + " for the next block to open at " + FMT_T(s.est_start) + ".";
+        const gain = top.min >= late
+          ? "Recovering that wait alone would make it — you need " + DUR(late) + " of it."
+          : "Recovering all of it still leaves " + DUR(late - top.min) + " to find elsewhere.";
+        fix = ({
+          queued_behind:  "Free capacity: another machine, or defer what is ahead of it. ",
+          bed_clear:      "Be there to clear that bed sooner, or start the print earlier in the day. ",
+          printer_busy:   "Wait it out, or move this copy to a machine that is already free. ",
+          attended_hours: "Add an attended block covering " + FMT_T(s.est_start) +
+                          " — a short one is enough, since only the START has to be inside it. "
+        })[cause] + gain;
+      }
+    }
+    items.push({
+      job_id: s.job_id, file: s.file, copy: s.copy, of: s.of,
+      printer: s.printer, printerName: s.printerName,
+      queued_ahead: s.queued_ahead || 0,
+      est_start: s.est_start, est_end: s.est_end,
+      deadline: s.deadline, deadline_source: s.deadline_source,
+      late_min: late, cause, cause_detail: detail, fix,
+      // Contention never delays the plan (it is flagged, not serialised), so it
+      // is a note on a miss, never its cause. Saying otherwise would be a lie
+      // the user could act on.
+      contention: s.contention ? s.contention.color + " also wanted by " + s.contention.file +
+                                 " on " + s.contention.printer : undefined
+    });
+  }
+  const rank = x => (x.late_min == null ? Infinity : x.late_min);
+  items.sort((a, b) => rank(b) - rank(a));
+  // Tightest margin anywhere in the plan — negative when something misses.
+  // Measured per copy against ITS deadline, not plan-end against the target: a
+  // job with its own later deadline running past the target is not a miss, and
+  // a summary that said otherwise would cry wolf.
+  const withDl = good.filter(s => s.deadline);
+  const slack = withDl.length ? Math.min(...withDl.map(s => Math.round((s.deadline - s.est_end) / 60000))) : null;
+  return {
+    target: target || null,
+    copies: slots.length,
+    misses: items.length,
+    makes: slots.length - items.length,
+    unplannable: bad.length,
+    judged: withDl.length,                        // copies that actually have a deadline to miss
+    latest_end: good.length ? Math.max(...good.map(s => s.est_end)) : null,
+    slack_min: slack,
+    items: items.slice(0, 60)
+  };
+}
+
 function register(ctx) {
   const FILE = path.join(ctx.baseDir, "dispatch.json");
 
@@ -55,6 +167,11 @@ function register(ctx) {
     weekend:  { start: "09:00", end: "22:00" },
     away: [],                                    // [{from: ms, to: ms}]
     finish_policy: "anytime",                    // "anytime" | "attended"
+    // FARM TARGET (v2.13) — "I want everything done by this moment". One
+    // datetime for the whole queue, because that is how a show or a customer
+    // pickup actually arrives: not as 30 per-job deadlines typed by hand.
+    // It is a FALLBACK, never an override — see deadlineOf() in plan().
+    target: null,                                // ms, or null for "no target"
     auto_start: false
   };
   let D = { jobs: [], bundles: [], settings: JSON.parse(JSON.stringify(DEFAULT_SETTINGS)) };
@@ -263,17 +380,31 @@ function register(ctx) {
         if (typeof rem === "number") cursor = now + rem * 60000;
         else { cursor = now + 8 * 3600000; note = "busy, remaining time unknown — planned pessimistically"; }
       }
+      // busyUntil / lastEnd / queued exist for the FEASIBILITY REPORT, not for
+      // planning: they are what lets a miss say "queued behind 3 copies" or
+      // "waiting on the print already running" instead of just "it's late".
       return { idx: x.i, name: x.fp.name || ("printer " + (x.i + 1)),
-               multiColor: !!(x.fp.caps && x.fp.caps.multiColor), fp: x.fp, cursor, note };
+               multiColor: !!(x.fp.caps && x.fp.caps.multiColor), fp: x.fp, cursor, note,
+               busyUntil: cursor > now ? cursor : null, lastEnd: null, queued: 0 };
     });
     // Bundle deadlines tighten members'.
     const bundleDeadline = {};
     for (const b of D.bundles) if (b.deadline) bundleDeadline[b.id] = b.deadline;
-    const effDeadline = j => {
+    // The farm target is a FALLBACK, never an override. A job that carries its
+    // own deadline — or inherits one from its bundle — is judged against that,
+    // whether it is tighter than the target or looser. Only jobs with no
+    // deadline of their own answer to the target. Overriding a deliberately
+    // looser per-job deadline would report a miss the user never asked about,
+    // and reporting a miss nobody cares about is how a warning stops being read.
+    const TARGET = (Number.isFinite(+D.settings.target) && +D.settings.target > 0) ? +D.settings.target : null;
+    const deadlineOf = j => {
       const bd = j.bundle_id ? bundleDeadline[j.bundle_id] : null;
-      if (j.deadline && bd) return Math.min(j.deadline, bd);
-      return j.deadline || bd || null;
+      if (j.deadline && bd) return { at: Math.min(j.deadline, bd), src: j.deadline <= bd ? "job" : "bundle" };
+      if (j.deadline) return { at: j.deadline, src: "job" };
+      if (bd) return { at: bd, src: "bundle" };
+      return TARGET ? { at: TARGET, src: "target" } : { at: null, src: null };
     };
+    const effDeadline = j => deadlineOf(j).at;
     // EDF within priority.
     const runnable = D.jobs.filter(j => j.state === "queued" || j.state === "scheduled" || j.state === "printing");
     const ordered = [...runnable].sort((a, b) =>
@@ -352,7 +483,23 @@ function register(ctx) {
           if (stay && stay.cost - best.cost <= STICKY_TOLERANCE_MIN * 60000) best = stay;
         }
         if (!best) { slots.push({ job_id: job.id, file: job.file, unplannable: "no attended window found within 14 days" }); continue; }
-        const dl = effDeadline(job);
+        const dlInfo = deadlineOf(job);
+        const dl = dlInfo.at;
+        // WHY this copy lands when it lands. Everything between now and its
+        // start is one of four waits, and naming the biggest one is the whole
+        // difference between "3 jobs miss your deadline" (useless) and "3 jobs
+        // miss it because nobody clears P2's bed until 08:05" (actionable).
+        //   inflight — the machine is running a print right now
+        //   queue    — earlier copies in THIS plan hold the machine
+        //   bed      — a print ended but the bed can't be cleared until you're back
+        //   window   — the machine is free and you are not: outside attended hours
+        const cur = best.lane.cursor;                       // pre-placement (advanced below)
+        const unavail = Math.max(0, Math.min(cur, best.start) - now);
+        const wQueue = best.lane.lastEnd != null ? Math.max(0, Math.min(best.lane.lastEnd, best.start) - now) : 0;
+        const wFlight = best.lane.lastEnd == null ? unavail : 0;
+        const wBed = Math.max(0, unavail - wQueue - wFlight);
+        const wWindow = Math.max(0, best.start - Math.max(now, cur));
+        const mins = ms => Math.round(ms / 60000);
         const held = colorsHeld(job);
         const clash = findContention(held, best.start, best.end, placed);
         placed.push({ start: best.start, end: best.end, colors: held,
@@ -362,7 +509,12 @@ function register(ctx) {
           printer: best.lane.idx, printerName: best.lane.name,
           est_start: best.start, est_end: best.end, est_minutes: est,
           est_assumed: !job.est_minutes || undefined,
-          swaps: best.swaps, deadline: dl, pinned: pinned !== undefined || undefined,
+          swaps: best.swaps, deadline: dl, deadline_source: dlInfo.src || undefined,
+          pinned: pinned !== undefined || undefined,
+          // minutes of each wait, plus what was ahead of it and until when
+          delay: { inflight: mins(wFlight), queue: mins(wQueue), bed: mins(wBed), window: mins(wWindow) },
+          queued_ahead: best.lane.queued || undefined,
+          lane_free_at: cur > now ? cur : undefined,
           // A physical roll can't be in two machines at once. Flagged, not
           // silently rescheduled - the human decides what to do about it.
           contention: clash ? { color: clash.color, printer: clash.printer,
@@ -374,6 +526,8 @@ function register(ctx) {
         });
         PLACEMENT.set(key, best.lane.idx);       // soft only - never a pin
         const ready = readyAfter(best.end);
+        best.lane.lastEnd = best.end;            // report bookkeeping (see delay above)
+        best.lane.queued = (best.lane.queued || 0) + 1;
         best.lane.cursor = ready;
         best.lane.fp = { ...best.lane.fp };      // after a planned run the trays hold the job's colors
         best.lane.fp.heads = (job.colors || []).map(h => ({ hex: norm(h) }));
@@ -386,7 +540,8 @@ function register(ctx) {
     // Report the whole fleet, not just the machines that got work: an idle
     // printer vanishing from the timeline hides exactly the capacity problem
     // the scheduler exists to surface.
-    return { generated_at: now, slots,
+    return { generated_at: now, slots, target: TARGET,
+             report: feasibility(slots, TARGET, now),
              printers: lanes.map(l => ({ idx: l.idx, name: l.name, busy: !!l.note || l.cursor > now })) };
   }
 
@@ -525,6 +680,19 @@ function register(ctx) {
     const b = req.body || {};
     if (b.auto_start === true)
       return res.status(400).json({ error: "Unattended auto-start ships only after its own hardware gate (Rule #1) \u2014 for now a human taps 'Bed cleared \u2192 start next'." });
+    // Farm target, validated BEFORE anything is mutated: a 400 halfway down
+    // this handler would leave the week edited in memory but unsaved, so the
+    // running Hub and dispatch.json would disagree until the next write.
+    // `null` or "" clears it — an explicit clear has to exist, or a target set
+    // for one show haunts every plan after it. A target in the PAST is refused
+    // rather than quietly accepted: it would mark literally everything missed,
+    // and a warning that is always on is a warning nobody reads.
+    let newTarget;                               // undefined = "not mentioned"
+    if ("target" in b) {
+      if (b.target === null || b.target === "") newTarget = null;
+      else if (Number.isFinite(+b.target) && +b.target > Date.now()) newTarget = +b.target;
+      else return res.status(400).json({ error: "A completion target has to be a moment in the future." });
+    }
     const cleanDay = (d, cur) => {
       if (!d || typeof d !== "object") return cur;
       const on = d.on !== false;
@@ -559,6 +727,7 @@ function register(ctx) {
     }
     if (typeof b.clearOverride === "string") delete D.settings.weekOverrides[b.clearOverride];
     if (b.finish_policy === "anytime" || b.finish_policy === "attended") D.settings.finish_policy = b.finish_policy;
+    if (newTarget !== undefined) D.settings.target = newTarget;
     // Legacy pair still accepted \u2014 maps onto the template (Mon\u2013Fri / Sat+Sun)
     const win = (w, cur) => {
       if (!w) return null;
