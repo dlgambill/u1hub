@@ -1391,6 +1391,114 @@ async function stopHub() {
         "with the target cleared, no job is judged against it again (per-job deadlines are untouched)",
         { target: r.body.target, sources: (r.body.slots || []).map(s => s.deadline_source) });
     }
+    // A FINISHED JOB LEAVES (v2.14, Danny's call). It used to flip to state
+    // "done" and sit in the list forever — 54 jobs in the field, 19 finished.
+    // Nothing read them: job.history is consumed by nobody and printlog.json
+    // already records "last printed" per file.
+    {
+      r = await jpost("/api/dispatch/jobs", { file: "single.gcode", type: "u1", qty: 2 });
+      const RM = r.body.job.id;
+      const jobById = async id => ((await jget("/api/dispatch")).body.jobs || []).find(j => j.id === id);
+      // Drive the executor deterministically — printing, then complete, one
+      // manual tick each, with a pause for the 4 s probe cache. Never across
+      // the live 10 s interval (MISTAKES.md).
+      const runOneCopy = async () => {
+        mockU1.state.printState = "printing"; mockU1.state.filename = "single.gcode";
+        await sleep(4500); await jpost("/api/dispatch/tick", {});
+        mockU1.state.printState = "complete";
+        await sleep(4500); await jpost("/api/dispatch/tick", {});
+      };
+      await runOneCopy();
+      let rm = await jobById(RM);
+      ok(rm && rm.remaining === 1,
+        "a job with copies left survives its completion (2 -> 1, still in the queue)", rm && rm.remaining);
+      await runOneCopy();
+      rm = await jobById(RM);
+      ok(!rm, "the last copy finishing removes the job from the queue entirely", rm);
+      const djNow = JSON.parse(fs.readFileSync(path.join(hubDir, "dispatch.json"), "utf8"));
+      ok(!(djNow.jobs || []).some(j => j.id === RM),
+        "and it is gone from dispatch.json, not just the API response", (djNow.jobs || []).map(j => j.id));
+      mockU1.state.printState = "standby"; mockU1.state.filename = "";
+
+      // A bundle with no members left renders as nothing — it should not
+      // outlive its jobs, whether they finished or were deleted by hand.
+      r = await jpost("/api/dispatch/bundle-jobs", { files: ["multi.gcode", "single.gcode"], type: "u1", qty: 1, name: "Prune test" });
+      const PB = r.body.bundle.id;
+      for (const j of r.body.jobs) await jpost("/api/dispatch/jobs/remove", { id: j.id });
+      r = await jget("/api/dispatch");
+      ok(!(r.body.bundles || []).some(b => b.id === PB),
+        "emptying a bundle prunes it instead of leaving a group with nothing in it",
+        (r.body.bundles || []).map(b => b.name));
+    }
+    // STALE CLAIMS AGAINST REALITY (v2.14). A job marked "printing on P2" that
+    // P2 knows nothing about can never be re-adopted — one printer holds one
+    // job — and the planner treats P2 as busy, quietly removing a machine from
+    // the farm. Ten of them in the field, 2026-08-30.
+    //
+    // The safety rule is the point of the whole feature: release ONLY against a
+    // printer that actually answered. This is set up by writing dispatch.json
+    // by hand and restarting, because that is exactly how the state arises — a
+    // Hub that died mid-print — and there is deliberately no API that lets
+    // anything but reality attach a job to a machine.
+    {
+      const cfgPath2 = path.join(hubDir, "config.json");
+      const cfg2 = JSON.parse(fs.readFileSync(cfgPath2, "utf8"));
+      const realPrinters = cfg2.printers;
+      // A third printer at a dead port: online:false, and it will never answer.
+      await jpost("/api/config", { gcodeFolder: cfg2.gcodeFolder,
+        printers: [...realPrinters, { name: "Ghost-mock", url: "http://127.0.0.1:9" }] });
+      await stopHub();
+      const djFix = JSON.parse(fs.readFileSync(path.join(hubDir, "dispatch.json"), "utf8"));
+      const mk = (id, file, state, on, remaining) => ({
+        id, file, type: "u1", qty: 1, remaining, deadline: null, priority: 0, bundle_id: null,
+        needs_finish: false, est_minutes: 30, colors: [], multi: false,
+        state, created: Date.now(), history: [], printing_on: on
+      });
+      const keep = [...djFix.jobs];
+      djFix.jobs = [...keep,
+        mk("job_sweep", "single.gcode", "done", null, 0),      // finished under the old rule
+        mk("job_stale", "multi.gcode", "printing", 0, 1),      // claims P0, which runs something else
+        mk("job_true", "single.gcode", "printing", 0, 1),      // claims P0 and is telling the truth
+        mk("job_ghost", "single.gcode", "printing", 2, 1)];    // claims the printer that never answers
+      fs.writeFileSync(path.join(hubDir, "dispatch.json"), JSON.stringify(djFix, null, 2));
+      mockU1.state.printState = "printing"; mockU1.state.filename = "single.gcode";
+      await startHub(hubDir);
+      // The boot reconcile fires at 3 s and then has to probe three printers,
+      // one of which is a dead port. Give it room rather than racing it.
+      await sleep(5200);
+      r = await jget("/api/dispatch");
+      const byId = id => (r.body.jobs || []).find(j => j.id === id);
+      ok(!byId("job_sweep"),
+        "jobs left in state 'done' by the old rule are swept out at boot", (r.body.jobs || []).map(j => j.id));
+      const stale = byId("job_stale");
+      ok(stale && stale.printing_on === null && stale.state === "queued",
+        "a claim the printer contradicts is released and the job requeued",
+        stale && { on: stale.printing_on, s: stale.state });
+      const tru = byId("job_true");
+      ok(tru && tru.printing_on === 0 && tru.state === "printing",
+        "a claim the printer confirms is left exactly alone", tru && { on: tru.printing_on, s: tru.state });
+      const ghost = byId("job_ghost");
+      ok(ghost && ghost.printing_on === 2 && ghost.state === "printing",
+        "a claim on a printer that never answered is NOT released — silence is not evidence",
+        ghost && { on: ghost.printing_on, s: ghost.state });
+
+      // The same reconciliation is what "claim running prints" does, in both
+      // directions: let go of what isn't real before claiming what is.
+      mockU1.state.printState = "standby"; mockU1.state.filename = "";
+      await sleep(4500);
+      r = await jpost("/api/dispatch/adopt", {});
+      ok(r.status === 200 && (r.body.released || []).some(x => x.file === "single.gcode"),
+        "the adopt button releases stale claims too, and reports them with the printer's own state",
+        r.body.released);
+      ok((r.body.released || []).every(x => x.printer_state),
+        "each release names what the printer actually said, not just that it disagreed", r.body.released);
+      const ghost2 = ((await jget("/api/dispatch")).body.jobs || []).find(j => j.id === "job_ghost");
+      ok(ghost2 && ghost2.printing_on === 2,
+        "the unreachable printer's claim survives adopt as well", ghost2 && ghost2.printing_on);
+
+      for (const id of ["job_stale", "job_true", "job_ghost"]) await jpost("/api/dispatch/jobs/remove", { id });
+      await jpost("/api/config", { gcodeFolder: cfg2.gcodeFolder, printers: realPrinters });
+    }
     // Persistence + hygiene.
     const dj = JSON.parse(fs.readFileSync(path.join(hubDir, "dispatch.json"), "utf8"));
     ok(dj.jobs && dj.jobs.length === 1 && dj.settings.week && dj.settings.week.mon.windows

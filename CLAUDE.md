@@ -29,9 +29,9 @@ failure appears 4–5 times, promote it to a hard rule below.
 
 ## Harness
 
-`npm test` → **307 checks**, expect **307 passed, 0 failed**. A red harness
+`npm test` → **318 checks**, expect **318 passed, 0 failed**. A red harness
 blocks everything.
 
-Green on Windows against `X:` (2026-08-30, v2.13.0). One known flaky
+Green on Windows against `X:`, twice in a row (2026-08-30, v2.14.0). One known flaky
 check — "released job is free to be claimed against reality again" races the
 10 s executor tick; see `MISTAKES.md`. Re-run before believing it.

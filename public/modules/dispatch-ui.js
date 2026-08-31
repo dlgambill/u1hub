@@ -614,7 +614,14 @@
       const ad = (r.body && r.body.adopted) || [];
       const al = (r.body && r.body.already) || [];
       const un = (r.body && r.body.unmatched) || [];
+      const rl = (r.body && r.body.released) || [];
       const lines = [];
+      // Letting go is half of "match reality", and it changes what the planner
+      // thinks the farm has free — so it gets reported first, with the evidence.
+      if (rl.length) lines.push("Released " + rl.length + " stale claim" + (rl.length > 1 ? "s" : "") +
+        " (the printer says otherwise):\n" +
+        rl.map(x => "  • " + x.file + " claimed " + x.printer + ", which is " +
+          (x.printer_file ? x.printer_state + " '" + x.printer_file + "'" : x.printer_state)).join("\n"));
       if (ad.length) lines.push("Claimed " + ad.length + " running print" + (ad.length > 1 ? "s" : "") + ":\n" +
         ad.map(x => "  \u2022 " + x.printer + ": " + x.file + (x.paused ? "  (paused)" : "")).join("\n"));
       if (al.length) lines.push(al.length + " already tracked:\n" +

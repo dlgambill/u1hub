@@ -234,6 +234,43 @@ function register(ctx) {
     for (const k of PLACEMENT.keys())
       if (k.slice(0, k.lastIndexOf("#")) === jobId) PLACEMENT.delete(k);
   };
+  // A finished job LEAVES (v2.14, Danny's call). Before this, the last copy
+  // flipped the job to state "done" and it sat in the list forever — 54 jobs
+  // in the field, 19 of them finished, greyed out and permanently in the way.
+  // Nothing read them: job.history is written and consumed by nobody, and
+  // printlog.json already records "last printed" per file, so the queue was
+  // paying rent on a record no screen ever showed.
+  //
+  // Removal is immediate and total: the job, its placement keys, and any
+  // bundle it leaves empty.
+  //
+  // A bundle is a grouping, not a thing in its own right: with no members it
+  // renders as nothing and only grows the file. Pruned wherever jobs leave —
+  // finished OR deleted by hand, since either can empty one.
+  function pruneBundles() {
+    D.bundles = D.bundles.filter(b => D.jobs.some(j => j.bundle_id === b.id));
+  }
+  function finish(job, why) {
+    forget(job.id);
+    D.jobs = D.jobs.filter(x => x.id !== job.id);
+    pruneBundles();
+    ctx.hublog("info", "dispatch: '" + job.file + "' " + (why || "finished") +
+      " — removed from the queue (" + job.qty + " cop" + (job.qty === 1 ? "y" : "ies") + " done)");
+  }
+  // Jobs that finished under the old rule are still in dispatch.json. Sweep
+  // them once at load rather than making Danny clear 19 rows by hand.
+  {
+    const stale = D.jobs.filter(j => j.state === "done");
+    if (stale.length) {
+      D.jobs = D.jobs.filter(j => j.state !== "done");
+      pruneBundles();
+      save();
+      // Deleting 19 rows out from under someone silently is not on. Name them.
+      ctx.hublog("info", "dispatch: swept " + stale.length + " already-finished job" +
+        (stale.length === 1 ? "" : "s") + " out of the queue (" +
+        stale.slice(0, 6).map(j => j.file).join(", ") + (stale.length > 6 ? ", …" : "") + ")");
+    }
+  }
   const AWAITING = new Set();                    // printer idx flagged "bed needs clearing" (in-memory)
   const LAST_STATE = new Map();                  // printer idx -> last seen print state
 
@@ -545,6 +582,54 @@ function register(ctx) {
              printers: lanes.map(l => ({ idx: l.idx, name: l.name, busy: !!l.note || l.cursor > now })) };
   }
 
+  // ---- claim reconciliation (v2.14) -----------------------------------------
+  // A job marked "printing on P2" that P2 knows nothing about is worse than
+  // useless: one printer holds one job, so the claim can never be re-adopted,
+  // and the planner treats P2 as busy — a machine quietly removed from the farm
+  // (10 of them in the field, 2026-08-30). This releases such claims.
+  //
+  // The safety rule is the whole design: **release only against a printer that
+  // actually answered.** Offline, unreachable, or blank-status machines prove
+  // nothing, and freeing a real print because its printer was briefly
+  // unreachable would have the planner schedule a duplicate of work already on
+  // the bed. Silence is not evidence.
+  //
+  // Deliberately NOT wired into the 10 s background tick. A release that can
+  // fire between any two lines makes every test that touches a claim race a
+  // timer, which is the exact failure MISTAKES.md keeps logging. It runs once
+  // at boot and whenever a human taps "claim running prints" — which is the
+  // honest reading of that button anyway: match the queue to reality, in both
+  // directions.
+  function reconcile(fleet) {
+    const released = [];
+    for (const job of [...D.jobs]) {
+      if (job.state !== "printing" || job.printing_on == null) continue;
+      const fp = (fleet || [])[job.printing_on];
+      if (!fp || fp.online === false) continue;              // never heard back — leave it alone
+      const st = String(fp.status || fp.state || "").toLowerCase();
+      if (!st) continue;                                     // answered, but said nothing usable
+      const fname = String(fp.filename || fp.file || "").split("/").pop();
+      if ((/print/.test(st) || /pause/.test(st)) && fname === job.file) continue;   // the claim is true
+      const label = fp.name || ("printer " + (job.printing_on + 1));
+      released.push({ printer: label, file: job.file,
+                      printer_state: st, printer_file: fname || null });
+      job.printing_on = null;
+      if (job.remaining > 0) { job.state = "queued"; forget(job.id); }
+      else finish(job, "claim was stale and nothing was left to print");
+      ctx.hublog("info", "dispatch: released stale claim — '" + job.file + "' said it was on " +
+        label + ", which reports '" + st + "'" + (fname ? " running '" + fname + "'" : ""));
+    }
+    if (released.length) save();
+    return released;
+  }
+  // One shot at boot, once the fleet has had a moment to answer. Anything
+  // still claiming a machine that contradicts it was left over from a Hub that
+  // died mid-print, and nothing else will ever clear it.
+  const bootSweep = setTimeout(() => {
+    ctx.fleet().then(f => reconcile(f)).catch(() => {});
+  }, 3000);
+  if (bootSweep.unref) bootSweep.unref();
+
   // ---- executor: completion watcher (never a starter) -----------------------
   async function tick() {
     let fleet; try { fleet = await ctx.fleet(); } catch { return; }
@@ -568,12 +653,15 @@ function register(ctx) {
         if (job) {
           job.remaining = Math.max(0, (job.remaining ?? job.qty) - 1);
           (job.history = job.history || []).push({ printer: i, ended: Date.now(), result: "complete" });
-          job.state = job.remaining > 0 ? "queued" : "done";
-          if (job.state === "done") forget(job.id);
           job.printing_on = null;
           dirty = true;
           ctx.hublog("info", "dispatch: '" + job.file + "' copy done on printer " + (i + 1) +
             " — " + job.remaining + " remaining; bed-clear gate armed");
+          // Last copy: the job leaves. The bed-clear gate above is armed
+          // independently of the job record, so removing it here does not cost
+          // the "Bed cleared → start next" tap on that machine.
+          if (job.remaining > 0) job.state = "queued";
+          else finish(job, "finished its last copy");
         }
       }
       // Claim a print in progress. Two rules, both field-found 2026-08-28:
@@ -659,6 +747,7 @@ function register(ctx) {
     const n = D.jobs.length;
     D.jobs = D.jobs.filter(x => x.id !== (req.body || {}).id);
     if (D.jobs.length === n) return res.status(404).json({ error: "Unknown job" });
+    pruneBundles();               // deleting the last member empties the bundle too
     save(); res.json({ ok: true });
   });
   app.post("/api/dispatch/bundles", (req, res) => {
@@ -783,8 +872,10 @@ function register(ctx) {
     if (!j) return res.status(404).json({ error: "Unknown job" });
     const was = j.printing_on;
     j.printing_on = null;
-    if (j.state === "printing") j.state = j.remaining > 0 ? "queued" : "done";
-    forget(j.id);
+    // Releasing the claim on a job with nothing left to print doesn't leave a
+    // "done" row behind any more — there is no such row now.
+    if (j.remaining > 0) { if (j.state === "printing") j.state = "queued"; forget(j.id); }
+    else finish(j, "released with no copies left");
     save();
     ctx.hublog("info", "dispatch: released '" + j.file + "' from printer " +
       (was == null ? "(none)" : was + 1) + " - free to be re-claimed");
@@ -812,6 +903,10 @@ function register(ctx) {
     let fleet;
     try { fleet = await ctx.fleet(); }
     catch (e) { return res.status(502).json({ error: "Could not read the fleet: " + e.message }); }
+    // Matching the queue to reality runs BOTH ways, and letting go comes
+    // first: a job wrongly holding printer 2 blocks the real print on printer 2
+    // from being claimed at all, because one printer holds one job.
+    const released = reconcile(fleet);
     const adopted = [], already = [], unmatched = [];
     for (let i = 0; i < (fleet || []).length; i++) {
       const fp = fleet[i]; if (!fp) continue;
@@ -840,7 +935,7 @@ function register(ctx) {
       }
     }
     if (adopted.length) save();
-    res.json({ ok: true, adopted, already, unmatched });
+    res.json({ ok: true, adopted, already, unmatched, released });
   });
   app.get("/api/dispatch/plan", async (req, res) => {
     try { res.json(await plan()); }

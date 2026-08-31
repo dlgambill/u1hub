@@ -3,7 +3,7 @@
 // and pushes the chosen file to the chosen printer via Moonraker (server-side,
 // so no browser CORS headaches).
 
-const VERSION = "2.13.0";
+const VERSION = "2.14.0";
 
 const crypto = require("crypto");
 const express = require("express");
