@@ -13,6 +13,35 @@ Running log of things that broke, why, and the rule that stops a repeat.
 
 ---
 
+## 2026-08-30 — SPREAD check asserted against the wall clock, went red at 23:50
+
+**What happened:** The v2.15 harness run at 23:50 failed on "no job waits on a
+busy printer while another printer is free at that moment", with
+`{"job":"single.gcode","on":"SV-mock","at":"00:00","freeLane":0}`. Nothing in
+that code path had been touched.
+
+**Root cause:** the check treated *"starts more than 60 s after `Date.now()`"*
+as evidence a job was queued behind something. With an attended window closing
+at 23:59, a 90-minute job does not fit in what is left of today, so `plan()`
+correctly defers the whole plan to 00:00 rather than starting a print it knows
+will overrun the block. Every job then starts "later than now" while both lanes
+are idle — the check calls that waste. It is not waste; it is the documented
+fitting rule. The test was latently broken for roughly one hour out of every
+24, and simply had not been run in that hour before.
+
+**Consequence:** a red harness that blocks a ship, on a defect in the test, at
+the exact hour when the person reading it is least likely to be patient.
+
+**Rule:** **Never assert against `Date.now()` in a scheduler test.** Compare to
+something the plan itself produced — here, the earliest start in the plan, which
+makes the check mean what it always meant ("this job is queued behind
+something") without borrowing the wall clock. Same family as the 10 s executor
+tick: if the assertion's truth depends on when you run it, the assertion is
+wrong. Every deadline test added in v2.13 derives its times from observed slots
+for this reason; this older check predated the lesson.
+
+---
+
 ## 2026-08-30 — `taskkill /IM node.exe /F` kills the Desktop Commander bridge
 
 **What happened:** Ran the handoff's own start-of-session step 1,

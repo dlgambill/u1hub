@@ -45,7 +45,11 @@ const EXEC_TICK_MS = 10000;                      // completion watcher (probe ca
 // Deliberately a PURE function of the slots plan() already produced — no second
 // plan() run, no clock of its own. A report that re-planned could disagree with
 // the timeline drawn next to it, and then neither would be believed.
-const FMT_T = ms => new Date(ms).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
+// Weekday + time alone is a trap: "Tue 08:00" reads as tomorrow whether it is
+// tomorrow or a fortnight out, and this prose is exactly where the difference
+// decides whether you act. Always carry the date (v2.15).
+const FMT_T = ms => new Date(ms).toLocaleString([],
+  { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 const DUR = m => {
   m = Math.max(0, Math.round(m));
   return m >= 60 ? Math.floor(m / 60) + "h" + (m % 60 ? " " + (m % 60) + "m" : "") : m + "m";
@@ -339,6 +343,37 @@ function register(ctx) {
     return (clear === null ? endMs : clear) + BED_CLEAR_BUFFER_MIN * 60000;
   }
 
+  // Attended windows as absolute intervals, for the guide to shade closed
+  // hours behind the blocks (v2.15). The CLIENT must not re-derive this: it
+  // would be a second implementation of the week template, overrides and away
+  // blocks, and the day it drifts the guide shows a job starting inside grey.
+  // The server already knows; it just never said so out loud.
+  function attendedSpans(fromMs, toMs) {
+    let spans = [];
+    const midnight = d => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+    for (let t = midnight(new Date(fromMs)), guard = 0; t < toMs && guard < 40; guard++) {
+      const dt = new Date(t);
+      for (const w of dayWindows(dayWindow(t))) {
+        const s = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate(), 0, hm(w.start)).getTime();
+        const e = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate(), 0, hm(w.end)).getTime();
+        if (e > fromMs && s < toMs) spans.push({ from: s, to: e });
+      }
+      t = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate() + 1).getTime();
+    }
+    // Away blocks cut holes in the windows they overlap — being on the calendar
+    // is not the same as being in the building.
+    for (const a of D.settings.away || []) {
+      const next = [];
+      for (const s of spans) {
+        if (a.to <= s.from || a.from >= s.to) { next.push(s); continue; }
+        if (a.from > s.from) next.push({ from: s.from, to: a.from });
+        if (a.to < s.to) next.push({ from: a.to, to: s.to });
+      }
+      spans = next;
+    }
+    return spans.slice(0, 200);
+  }
+
   // ---- swap cost off real state --------------------------------------------
   const norm = h => String(h || "").trim().replace(/^#/, "").slice(0, 6).toUpperCase();
   function loadedHexes(fp) {                    // fleet-snapshot printer record -> Set of tray hexes
@@ -422,6 +457,7 @@ function register(ctx) {
       // "waiting on the print already running" instead of just "it's late".
       return { idx: x.i, name: x.fp.name || ("printer " + (x.i + 1)),
                multiColor: !!(x.fp.caps && x.fp.caps.multiColor), fp: x.fp, cursor, note,
+               paused: /pause/.test(st),
                busyUntil: cursor > now ? cursor : null, lastEnd: null, queued: 0 };
     });
     // Bundle deadlines tighten members'.
@@ -577,8 +613,41 @@ function register(ctx) {
     // Report the whole fleet, not just the machines that got work: an idle
     // printer vanishing from the timeline hides exactly the capacity problem
     // the scheduler exists to surface.
-    return { generated_at: now, slots, target: TARGET,
+    // WHAT IS ON THE BEDS RIGHT NOW (v2.15, Danny). `slots` is planned work,
+    // and it deliberately excludes the copy a machine is already printing —
+    // scheduling work the farm is doing is the bug that exclusion prevents. But
+    // leaving the running print off the picture entirely meant a busy printer
+    // drew as an unexplained empty lane until its ETA: the guide showed a hole
+    // where the most certain thing on the farm belongs.
+    //
+    // So it is reported SEPARATELY, never merged into `slots`. It is a fact,
+    // not a plan: nothing schedules it, the deadline report must not judge it,
+    // and it cannot be moved. The block runs from now to the ETA rather than
+    // from its true start, because the Hub knows the remaining time and not the
+    // start — drawing a start it does not know would be a guess wearing the
+    // costume of a measurement.
+    const running = [];
+    for (const l of lanes) {
+      if (!l.busyUntil) continue;
+      const fname = String(l.fp.filename || l.fp.file || "").split("/").pop();
+      const held = D.jobs.find(j => j.printing_on === l.idx && j.state === "printing");
+      running.push({
+        printer: l.idx, printerName: l.name,
+        file: fname || (held && held.file) || null,
+        job_id: held ? held.id : null,
+        tracked: !!held,                 // false = running, but Dispatch doesn't own it
+        est_end: l.cursor,
+        eta_unknown: !!l.note || undefined,
+        paused: l.paused || undefined
+      });
+    }
+    // The guide draws a real clock, so it needs the span the plan occupies and
+    // the hours inside it you are actually around for.
+    const ends = slots.filter(s => !s.unplannable).map(s => s.est_end);
+    const spanTo = (ends.length ? Math.max(...ends) : now) + 3600000;
+    return { generated_at: now, slots, running, target: TARGET,
              report: feasibility(slots, TARGET, now),
+             attended: attendedSpans(now, spanTo),
              printers: lanes.map(l => ({ idx: l.idx, name: l.name, busy: !!l.note || l.cursor > now })) };
   }
 

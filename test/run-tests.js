@@ -1086,12 +1086,21 @@ async function stopHub() {
       const busyAt = (printer, t) => all.some(s => s.printer === printer && s.est_start <= t && s.est_end > t);
       const lanesAll = new Set(all.map(s => s.printer));
       let wasteful = null;
+      // "Later than NOW" was the wrong yardstick and it went red at 23:50
+      // (2026-08-30): with a window closing at 23:59, a 90-minute job does not
+      // fit in what is left of today, so the planner cleanly defers the whole
+      // plan to 00:00 — correct behaviour that this check called waste, for one
+      // hour a day. The invariant is about QUEUEING, not the wall clock: a job
+      // is only waiting on something if it starts materially later than the
+      // earliest thing in this plan. Packing three jobs onto one lane still
+      // trips it, because copies 2 and 3 land hours after copy 1.
+      const earliestPlanned = all.length ? Math.min(...all.map(s => s.est_start)) : Date.now();
       for (const s of mine) {
         for (const p of lanesAll) {
           if (p === s.printer) continue;
-          // another lane idle when this job starts AND idle when it could have
-          // started earlier than it did
-          if (!busyAt(p, s.est_start - 1) && s.est_start > Date.now() + 60000) { wasteful = { job: s.file, on: s.printerName, at: new Date(s.est_start).toTimeString().slice(0, 5), freeLane: p }; break; }
+          // another lane idle when this job starts, AND this job is genuinely
+          // queued behind something rather than merely starting when the farm does
+          if (!busyAt(p, s.est_start - 1) && s.est_start > earliestPlanned + 60000) { wasteful = { job: s.file, on: s.printerName, at: new Date(s.est_start).toTimeString().slice(0, 5), freeLane: p }; break; }
         }
         if (wasteful) break;
       }
@@ -1198,6 +1207,16 @@ async function stopHub() {
       r = await jget("/api/dispatch/plan");
       const aslots = (r.body.slots || []).filter(s => s.job_id === AID && !s.unplannable);
       ok(aslots.length === 1, "the in-flight copy is excluded from the plan (1 of 2 remains)", aslots.length);
+      // ...but excluded from PLANNING is not the same as missing from the
+      // picture. Before v2.15 a busy printer drew as an unexplained empty lane
+      // until its ETA — the guide showed a hole where the most certain thing on
+      // the farm belongs (Danny, 2026-08-30).
+      const run0 = (r.body.running || []).find(x => x.printer === 0);
+      ok(run0 && run0.file === "single.gcode" && run0.est_end > Date.now() && run0.tracked === true,
+        "the print running right now is reported separately, named, and marked tracked", r.body.running);
+      ok(!!run0 && !(r.body.slots || []).some(s => s.job_id === run0.job_id && s.copy === 1 && s.printer === 0 && s.est_start < run0.est_end),
+        "and it is NOT merged into slots — a fact is not a plan, and nothing schedules over it",
+        (r.body.slots || []).filter(s => s.printer === 0).map(s => s.copy));
       mockU1.state.printState = "standby"; mockU1.state.filename = "";
       await jpost("/api/dispatch/jobs/remove", { id: AID });
     }
@@ -1390,6 +1409,33 @@ async function stopHub() {
          && !(r.body.slots || []).some(s => s.deadline_source === "target"),
         "with the target cleared, no job is judged against it again (per-job deadlines are untouched)",
         { target: r.body.target, sources: (r.body.slots || []).map(s => s.deadline_source) });
+    }
+    // ATTENDED WINDOWS ON THE PLAN (v2.15). The guide draws real clock time and
+    // shades the hours you are away. Those intervals have to come from the
+    // server: re-deriving the week template, its overrides and away blocks in
+    // the client would be a second implementation of the scheduler, and the day
+    // it drifted the guide would show a job starting inside grey.
+    {
+      r = await jget("/api/dispatch/plan");
+      const att = r.body.attended;
+      ok(Array.isArray(att) && att.length && att.every(a => a.from < a.to),
+        "the plan reports the attended windows it actually planned inside", att && att.slice(0, 2));
+      const dayOf = ms => new Date(ms).toDateString();
+      const today = new Date().toDateString();
+      ok(att.some(a => dayOf(a.from) === today),
+        "with every day open, today is among them", att.map(a => dayOf(a.from)).slice(0, 3));
+      // Close today: it must vanish from the report, not merely be unused.
+      const DK2 = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+      const wk = {};
+      for (let i = 0; i < 7; i++)
+        wk[DK2[i]] = i === new Date().getDay()
+          ? { on: false, windows: [] } : { on: true, windows: [{ start: "00:00", end: "23:59" }] };
+      await jpost("/api/dispatch/settings", { week: wk });
+      r = await jget("/api/dispatch/plan");
+      ok((r.body.attended || []).every(a => dayOf(a.from) !== today),
+        "a day you are away contributes no window for the guide to shade as open",
+        (r.body.attended || []).map(a => dayOf(a.from)).slice(0, 3));
+      await jpost("/api/dispatch/settings", { attended: { start: "00:00", end: "23:59" }, weekend: { start: "00:00", end: "23:59" } });
     }
     // A FINISHED JOB LEAVES (v2.14, Danny's call). It used to flip to state
     // "done" and sit in the list forever — 54 jobs in the field, 19 finished.

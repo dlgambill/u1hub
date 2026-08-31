@@ -26,6 +26,11 @@
   let STATE = null, PLAN = null, EL = null;
   let FILEQ = [];                                  // files staged for Add (chips)
   let REPOPEN = false;                             // feasibility detail expanded?
+  let CHANGES = null;                              // last replan's diff, or null
+  const PPH_STEPS = [24, 48, 90, 180];             // guide zoom: pixels per hour
+  let PPH = 48;
+  try { const z = +localStorage.getItem("u1.dspZoom"); if (PPH_STEPS.includes(z)) PPH = z; } catch {}
+  const LANE_W = 132;                              // sticky "channel" column width
   // Short labels for the server's cause codes. The server owns the sentence;
   // this is only the chip on the row, so the two can never drift apart in
   // meaning — if a code arrives that isn't here, the raw code shows.
@@ -42,7 +47,18 @@
   const DAYLBL = { sun: "Sun", mon: "Mon", tue: "Tue", wed: "Wed", thu: "Thu", fri: "Fri", sat: "Sat" };
   const $$ = sel => EL.querySelector(sel);
   const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-  const fmtT = ms => new Date(ms).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
+  // Weekday + time alone was a trap (fixed v2.15): "Tue 05:00 PM" reads as
+  // tomorrow whether it is tomorrow or a fortnight away, and a deadline is
+  // exactly where that difference decides what you do. Every absolute moment
+  // now carries its date. fmtClock stays bare for the guide's ruler, where the
+  // day is already written above the column.
+  const fmtT = ms => new Date(ms).toLocaleString([],
+    { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+  const fmtDay = ms => new Date(ms).toLocaleDateString([],
+    { weekday: "short", day: "numeric", month: "short" });
+  const fmtClock = ms => new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const sameDay = (a, b) => { const x = new Date(a), y = new Date(b);
+    return x.getFullYear() === y.getFullYear() && x.getMonth() === y.getMonth() && x.getDate() === y.getDate(); };
   const fmtMin = m => m >= 60 ? Math.floor(m / 60) + "h" + (m % 60 ? (m % 60) + "m" : "") : m + "m";
   function isoWeekKey(ms) {
     const dt = new Date(ms); dt.setHours(0, 0, 0, 0);
@@ -64,21 +80,16 @@
     render();
   }
 
-  function render() { if (!STATE) return; renderWeek(); renderTarget(); renderChips(); renderJobs(); renderReport(); renderPlan(); }
+  function render() { if (!STATE) return; renderWeek(); renderTarget(); renderChips(); renderJobs(); renderReport(); renderChanges(); renderPlan(); }
 
   // ---- farm completion target + feasibility report (v2.13) -----------------
   // "Everything done by Friday 5pm." One datetime for the whole queue, because
   // that is the shape a show or a customer pickup actually has. The server
   // treats it as a FALLBACK deadline (a job's own deadline still wins) and
   // hands back a report; this half only has to say it plainly.
-  const dtLocal = ms => {                        // ms -> value for <input type=datetime-local>
-    const d = new Date(ms - new Date(ms).getTimezoneOffset() * 60000);
-    return d.toISOString().slice(0, 16);
-  };
   function renderTarget() {
     const t = (STATE.settings || {}).target || null;
-    const inp = $$("#dsp-target");
-    if (inp && document.activeElement !== inp) inp.value = t ? dtLocal(t) : "";
+    dtSet($$("#dsp-target"), t);
     $$("#dsp-target-clear").style.display = t ? "" : "none";
   }
   function renderReport() {
@@ -289,40 +300,210 @@
     });
   }
 
-  // ---- plan lanes -----------------------------------------------------------
+  // ---- the guide ------------------------------------------------------------
+  // v2.15: the plan is a TV listings grid. Printers are the channels down the
+  // left, a real clock runs across the top, and a block's WIDTH is its runtime.
+  //
+  // The old view stretched every plan to the same width and positioned blocks
+  // by percentage, so a 20-minute print and a 10-hour print drew the same box
+  // and "when does this start?" had no answer on screen — you had to tap each
+  // block to find out. Everything here is anchored to one scale: PPH pixels per
+  // hour from t0, so distance IS time. Scroll is horizontal; the channel column
+  // and the ruler stay put, because losing track of which machine or which day
+  // you are reading is the one thing a guide must never let happen.
+  let GSCROLL = null;                              // survive re-render, don't jump the view
   function renderPlan() {
     const box = $$("#dsp-plan");
     const slots = (PLAN && PLAN.slots) || [];
     const bad = slots.filter(s => s.unplannable);
     const good = slots.filter(s => !s.unplannable);
-    if (!good.length && !bad.length && !((PLAN && PLAN.printers) || []).length) { box.innerHTML = '<div class="dsp-empty">Nothing planned.</div>'; return; }
+    const printers = (PLAN && PLAN.printers) || [];
+    if (!good.length && !bad.length && !printers.length) {
+      box.innerHTML = '<div class="dsp-empty">Nothing planned.</div>'; return;
+    }
+    const prev = $$("#dsp-guide");
+    if (prev) GSCROLL = prev.scrollLeft;
+    const HOUR = 3600000, now = Date.now();
+    // Round out to whole hours so the ruler's labels are round numbers, and
+    // always include now — a guide that starts after the present is a calendar.
+    const earliest = good.length ? Math.min(now, ...good.map(s => s.est_start)) : now;
+    const latest = good.length ? Math.max(now + 2 * HOUR, ...good.map(s => s.est_end)) : now + 8 * HOUR;
+    const t0 = Math.floor(earliest / HOUR) * HOUR;
+    const t1 = Math.ceil((latest + HOUR / 2) / HOUR) * HOUR;
+    const hours = Math.max(4, Math.round((t1 - t0) / HOUR));
+    const W = hours * PPH;
+    const x = ms => ((ms - t0) / HOUR) * PPH;
+
+    // Every online printer gets a channel, including the idle ones. A machine
+    // vanishing from the guide hides exactly the capacity problem worth seeing.
     const byPrinter = {};
-    // Seed every online printer so idle ones still get a lane (visible unused
-    // capacity beats a tidy-looking plan).
-    for (const p of (PLAN && PLAN.printers) || []) byPrinter[p.idx] = { name: p.name, slots: [] };
-    for (const s of good) (byPrinter[s.printer] = byPrinter[s.printer] || { name: s.printerName, slots: [] }).slots.push(s);
-    const t0 = good.length ? Math.min(...good.map(s => s.est_start), Date.now()) : Date.now();
-    const t1 = good.length ? Math.max(...good.map(s => s.est_end), t0 + 3600000) : t0 + 3600000;
-    const span = t1 - t0;
-    const pct = ms => Math.max(0, Math.min(100, ((ms - t0) / span) * 100));
+    for (const p of printers) byPrinter[p.idx] = { name: p.name, slots: [] };
+    for (const s of good)
+      (byPrinter[s.printer] = byPrinter[s.printer] || { name: s.printerName, slots: [] }).slots.push(s);
+
+    // Ruler: a day band above, hour ticks below. Label density follows the
+    // zoom — cramming 5pm next to 6pm at 24px/h just makes a grey smear.
+    let days = "", ticks = "";
+    for (let h = 0; h < hours; h++) {
+      const t = t0 + h * HOUR, d = new Date(t);
+      if (d.getHours() === 0 || h === 0) {
+        const nextMid = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1).getTime();
+        const to = Math.min(nextMid, t1);
+        const bw = Math.max(0, x(to) - x(t));
+        // The first band is usually a stub — the plan starts mid-evening, so
+        // that day has an hour or two left. A clipped "Sun, A" butting into the
+        // next day's label is worse than no label; the divider still reads.
+        days += `<div class="dsp-gday" style="left:${x(t)}px;width:${bw}px">` +
+                (bw >= 64 ? `<span>${esc(fmtDay(t))}</span>` : "") + `</div>`;
+      }
+      const every = PPH >= 180 ? 1 : PPH >= 90 ? 2 : PPH >= 48 ? 3 : 6;
+      const label = d.getHours() % every === 0 ? fmtClock(t) : "";
+      ticks += `<div class="dsp-gtick${d.getHours() === 0 ? " dsp-gmid" : ""}" style="left:${x(t)}px">` +
+               (label ? `<span>${esc(label)}</span>` : "") + `</div>`;
+    }
+    // Hours you are not around, shaded behind everything. These intervals come
+    // from the SERVER (plan.attended) — re-deriving the week template, its
+    // overrides and away blocks here would be a second implementation of the
+    // scheduler, and the day it drifted the guide would show a job starting
+    // inside grey. No windows reported (older Hub, or nothing to say) → no
+    // shading, rather than a guide that is wrong-looking on purpose.
+    const att = (PLAN && PLAN.attended) || [];
+    let closed = "";
+    if (att.length) {
+      let cur = t0;
+      for (const a of att) {
+        const f = Math.max(t0, a.from), to = Math.min(t1, a.to);
+        if (to <= cur) continue;
+        if (f > cur) closed += `<i style="left:${x(cur)}px;width:${x(f) - x(cur)}px"></i>`;
+        cur = Math.max(cur, to);
+      }
+      if (cur < t1) closed += `<i style="left:${x(cur)}px;width:${x(t1) - x(cur)}px"></i>`;
+    }
+    const nowLine = now >= t0 && now <= t1
+      ? `<div class="dsp-gnow" style="left:${x(now)}px"></div>` : "";
+
+    // What is on the beds right now, from plan.running — a separate list, and
+    // kept separate here too. It is the most certain thing on the guide and it
+    // is not planned work: no deadline colour, no move, no tap-to-replan.
+    const RUN = (PLAN && PLAN.running) || [];
+    const runBlocks = idx => RUN.filter(r => r.printer === idx).map((r, i) => {
+      const l = Math.max(0, x(now)), w = Math.max(7, x(r.est_end) - l);
+      const name = (r.file || "unknown file").replace(/\.gcode$/i, "");
+      const until = r.eta_unknown ? "ETA unknown" : "until " + fmtClock(r.est_end);
+      const body = w >= 120 ? `<b>${esc(name)}</b><span>${esc(until)}</span>`
+                 : w >= 62 ? `<b>${esc(name)}</b>` : "";
+      return `<div class="dsp-grun${r.eta_unknown ? " dsp-grunq" : ""}${r.paused ? " dsp-grunp" : ""}" ` +
+        `data-run="${i}" data-runp="${idx}" style="left:${l}px;width:${w}px" ` +
+        `title="${r.paused ? "PAUSED" : "PRINTING NOW"} on ${esc(r.printerName)}\n${esc(name)}\n` +
+        `${r.eta_unknown ? "remaining time unknown — the lane is planned pessimistically" : "ends about " + esc(fmtT(r.est_end))}` +
+        `${r.tracked ? "" : "\nnot tracked by Dispatch — use ⤓ claim running prints"}">` +
+        `<span class="dsp-gtext">${body}</span>` +
+        `<b class="dsp-grunicon">${r.paused ? "⏸" : "▶"}</b></div>`;
+    }).join("");
+
     const awaiting = new Set(STATE.awaiting || []);
-    box.innerHTML = Object.entries(byPrinter).map(([idx, lane]) => {
+    const laneRows = Object.entries(byPrinter).map(([idx, lane]) => {
       const blocks = lane.slots.map(s => {
-        const l = pct(s.est_start), w = Math.max(2, pct(s.est_end) - l);
-        const cls = s.misses_deadline ? " dsp-miss" : "";
-        const swapBadge = s.swaps.length ? `<b class="dsp-swapn" title="${esc(s.swaps.map(x => (x.spool ? x.spool + " (" + x.color + ")" : x.color)).join("\n"))}">${s.swaps.length}⇄</b>` : "";
-        return `<div class="dsp-blk${cls}" data-slot="${good.indexOf(s)}" style="left:${l}%;width:${w}%" title="${esc(s.file)} #${s.copy}/${s.of}\n${fmtT(s.est_start)} → ${fmtT(s.est_end)}${s.est_assumed ? "\n(no estimate in file — 1 h assumed)" : ""}${s.misses_deadline ? "\n⚠ MISSES DEADLINE" : ""}">${esc(s.file.replace(/\.gcode$/, ""))} ${swapBadge}${s.contention ? `<b class="dsp-clash" title="${esc(s.contention.color)} also needed by ${esc(s.contention.file)} on ${esc(s.contention.printer)}">\u26a0</b>` : ""}${s.idle_after_min ? `<b class="dsp-idle" title="machine waits for you to clear the bed">\u{1F4A4}${Math.round(s.idle_after_min / 60)}h</b>` : ""}</div>`;
+        const l = x(s.est_start), w = Math.max(7, x(s.est_end) - l);
+        const name = s.file.replace(/\.gcode$/i, "");
+        const swapBadge = s.swaps.length
+          ? `<b class="dsp-swapn" title="${esc(s.swaps.map(v => (v.spool ? v.spool + " (" + v.color + ")" : v.color)).join("\n"))}">${s.swaps.length}⇄</b>` : "";
+        const clash = s.contention
+          ? `<b class="dsp-clash" title="${esc(s.contention.color)} also needed by ${esc(s.contention.file)} on ${esc(s.contention.printer)}">⚠</b>` : "";
+        const idle = s.idle_after_min
+          ? `<b class="dsp-idle" title="then waits ${esc(fmtMin(s.idle_after_min))} for you to clear the bed">\u{1F4A4}</b>` : "";
+        // What fits, fits. Below ~62px a name is two letters and an ellipsis,
+        // which tells you nothing a bare bar doesn't — so a short print is a
+        // bar you tap, and the tooltip and the sheet carry the detail.
+        const body = w >= 120
+          ? `<b>${esc(name)}</b><span>${esc(fmtClock(s.est_start))}–${esc(fmtClock(s.est_end))}</span>`
+          : w >= 62 ? `<b>${esc(name)}</b>` : "";
+        return `<div class="dsp-gblk${s.misses_deadline ? " dsp-gmiss" : ""}" data-slot="${good.indexOf(s)}" ` +
+          `style="left:${l}px;width:${w}px" title="${esc(name)} #${s.copy}/${s.of}\n${esc(fmtT(s.est_start))} → ${esc(fmtT(s.est_end))} (${esc(fmtMin(s.est_minutes))})` +
+          `${s.est_assumed ? "\n(no estimate in file — 1 h assumed)" : ""}${s.misses_deadline ? "\n⚠ MISSES ITS DEADLINE" : ""}">` +
+          `<span class="dsp-gtext">${body}</span>${swapBadge}${clash}${idle}</div>`;
       }).join("");
       const clearBtn = awaiting.has(+idx)
-        ? `<button class="dsp-clear" data-dsp-clear="${idx}">Bed cleared → start next</button>`
-        : `<button class="dsp-clear dsp-idleclear" data-dsp-clear="${idx}" title="Hand this printer its next planned job now">▶ start next</button>`;
-      const idleNote = lane.slots.length ? "" : '<span class="dsp-lidle">idle — no work planned</span>';
-      return `<div class="dsp-lane"><div class="dsp-lname">${esc(lane.name)} ${clearBtn} ${idleNote}</div><div class="dsp-track">${blocks}</div></div>`;
-    }).join("") + (bad.length ? `<div class="dsp-empty">⚠ ${bad.length} cop${bad.length === 1 ? "y" : "ies"} unplannable: ${esc(bad[0].unplannable)}</div>` : "");
+        ? `<button class="dsp-clear" data-dsp-clear="${idx}">Bed cleared → next</button>`
+        : `<button class="dsp-clear dsp-idleclear" data-dsp-clear="${idx}" title="Hand this printer its next planned job now">▶ next</button>`;
+      const busyNow = RUN.find(r => r.printer === +idx);
+      const first = busyNow
+        ? `<span class="dsp-gsub dsp-grunning">${busyNow.paused ? "⏸ paused" : "▶ printing now"}</span>`
+        : lane.slots.length
+          ? `<span class="dsp-gsub">from ${esc(fmtClock(Math.min(...lane.slots.map(s => s.est_start))))}</span>`
+          : `<span class="dsp-gsub dsp-lidle">idle — nothing planned</span>`;
+      return `<div class="dsp-grow">
+        <div class="dsp-gcell"><span class="dsp-gpname">${esc(lane.name)}</span>${first}${clearBtn}</div>
+        <div class="dsp-gtime" style="width:${W}px">${closed}${nowLine}${runBlocks(+idx)}${blocks}</div>
+      </div>`;
+    }).join("");
+
+    const zoom = PPH_STEPS.map(p =>
+      `<button class="dsp-gz${p === PPH ? " dsp-gzon" : ""}" data-pph="${p}">${p >= 180 ? "15m" : p >= 90 ? "30m" : p >= 48 ? "1h" : "3h"}</button>`).join("");
+    box.innerHTML = `
+      <div class="dsp-gtools">
+        <span class="dsp-gsub">detail</span>${zoom}
+        <button class="dsp-gjump" id="dsp-gnowbtn">⊙ now</button>
+        <span class="dsp-gkey"><i class="dsp-krun"></i>printing now <i class="dsp-kblk"></i>planned <i class="dsp-kmiss"></i>misses deadline <i class="dsp-kclosed"></i>you're away</span>
+      </div>
+      <div class="dsp-guide" id="dsp-guide">
+        <div class="dsp-gtrack" style="width:${LANE_W + W}px">
+          <div class="dsp-grow dsp-gruler">
+            <div class="dsp-gcell dsp-gcorner"><span class="dsp-gsub">printer</span></div>
+            <div class="dsp-gtime" style="width:${W}px">${days}${ticks}${nowLine}</div>
+          </div>
+          ${laneRows}
+        </div>
+      </div>` +
+      (bad.length ? `<div class="dsp-empty">⚠ ${bad.length} cop${bad.length === 1 ? "y" : "ies"} unplannable: ${esc(bad[0].unplannable)}</div>` : "");
+
     box.querySelectorAll("[data-dsp-clear]").forEach(b => b.onclick = () => clearBed(+b.dataset.dspClear, b));
-    // Touch has no hover, so the title attribute is invisible on a phone —
-    // and short blocks truncate to "Ca...". Tapping opens the details.
+    // Touch has no hover, so the title attribute is invisible on a phone.
+    // Tapping opens everything the block could not say.
     box.querySelectorAll("[data-slot]").forEach(b => b.onclick = () => showSlot(good[+b.dataset.slot]));
+    box.querySelectorAll("[data-run]").forEach(b => b.onclick = () =>
+      showRunning(RUN.filter(r => r.printer === +b.dataset.runp)[+b.dataset.run]));
+    box.querySelectorAll("[data-pph]").forEach(b => b.onclick = () => {
+      PPH = +b.dataset.pph;
+      try { localStorage.setItem("u1.dspZoom", String(PPH)); } catch {}
+      GSCROLL = null;                              // scale changed; the old offset means nothing
+      renderPlan();
+    });
+    const g = $$("#dsp-guide");
+    const toNow = () => { if (g) g.scrollLeft = Math.max(0, x(now) - 48); };
+    const jump = $$("#dsp-gnowbtn");
+    if (jump) jump.onclick = toNow;
+    // Restore where they were reading; land on "now" only the first time.
+    if (g) { if (GSCROLL != null) g.scrollLeft = GSCROLL; else toNow(); }
+  }
+
+  // A running print has no plan to explain — only facts, and one honest gap:
+  // the Hub is told the remaining time, never the start, so "began at" is a
+  // number it does not have and will not invent.
+  function showRunning(r) {
+    if (!r) return;
+    const rows = [
+      ["Printer", r.printerName],
+      ["State", r.paused ? "⏸ paused — still holding the bed and its filament" : "▶ printing"],
+      ["File", r.file || "the printer didn't name a file"],
+      ["Ends", r.eta_unknown ? "unknown — this lane is planned pessimistically (+8 h)" : fmtT(r.est_end)],
+      ["Started", "not reported — the Hub is told what remains, not when it began"],
+      ["Dispatch", r.tracked ? "tracked: this is a job in your queue"
+                             : "NOT tracked — tap ⤓ claim running prints to match it to a job"]
+    ];
+    $$("#dsp-sheet").innerHTML = `
+      <div class="dsp-sheetbox">
+        <div class="dsp-sheettitle">${esc((r.file || "Running print").replace(/\.gcode$/i, ""))}</div>
+        <table class="dsp-sheettab">${rows.map(x2 => `<tr><td>${esc(x2[0])}</td><td>${esc(x2[1])}</td></tr>`).join("")}</table>
+        <div class="dsp-sheetsub">This is what the machine is doing, not a plan</div>
+        <div style="color:#889;font-size:12px">Dispatch never schedules over a running print, and never moves one.</div>
+        <button class="dsp-sheetclose">Close</button>
+      </div>`;
+    $$("#dsp-sheet").style.display = "flex";
+    $$("#dsp-sheet").onclick = e => {
+      if (e.target.id === "dsp-sheet" || e.target.classList.contains("dsp-sheetclose"))
+        $$("#dsp-sheet").style.display = "none";
+    };
   }
 
   // Tap-to-expand: everything the cramped block couldn't say.
@@ -401,6 +582,222 @@
     } finally { setTimeout(load, 800); }
   }
 
+  // ---- replan: progress, then what actually changed --------------------------
+  // Replan used to silently swap the picture. But the interesting part of a
+  // replan IS the diff — what moved, what slipped, what now misses — and a
+  // redraw is precisely what destroys it. So: snapshot, refetch, compare, say.
+  //
+  // The bar tracks real work (queue fetched, plan fetched, diff computed), not
+  // a timer pretending to be work. On a small farm it is over in a blink, so it
+  // holds briefly at the end rather than flashing — the point is to show that
+  // something ran, and to give a failure somewhere to appear instead of the
+  // screen simply not changing.
+  const planKey = s => s.job_id + "#" + s.copy;
+  function snapshotPlan(plan) {
+    const m = new Map();
+    for (const s of ((plan && plan.slots) || []).filter(x => !x.unplannable))
+      m.set(planKey(s), { printer: s.printer, printerName: s.printerName, file: s.file,
+                          start: s.est_start, copy: s.copy, of: s.of, miss: !!s.misses_deadline });
+    return m;
+  }
+  const SHIFT_MIN = 5;            // under this, a start-time move is estimate noise, not news
+  function diffPlans(before, after) {
+    const out = [];
+    for (const [k, b] of before) {
+      const a = after.get(k);
+      if (!a) { out.push({ kind: "gone", file: b.file, copy: b.copy, of: b.of,
+                           text: "is no longer in the plan" }); continue; }
+      if (a.printer !== b.printer)
+        out.push({ kind: "moved", file: a.file, copy: a.copy, of: a.of,
+                   text: "moved " + b.printerName + " → " + a.printerName });
+      const shift = Math.round((a.start - b.start) / 60000);
+      if (Math.abs(shift) >= SHIFT_MIN)
+        out.push({ kind: shift < 0 ? "earlier" : "later", file: a.file, copy: a.copy, of: a.of,
+                   text: "starts " + fmtMin(Math.abs(shift)) + (shift < 0 ? " earlier" : " later") +
+                         " — now " + fmtT(a.start) });
+      if (a.miss !== b.miss)
+        out.push({ kind: a.miss ? "nowmiss" : "nowmakes", file: a.file, copy: a.copy, of: a.of,
+                   text: a.miss ? "now MISSES its deadline" : "now makes its deadline" });
+    }
+    for (const [k, a] of after)
+      if (!before.has(k)) out.push({ kind: "new", file: a.file, copy: a.copy, of: a.of,
+                                     text: "added on " + a.printerName + " at " + fmtT(a.start) });
+    // Bad news first: a copy that started missing its deadline is the reason to
+    // read this list at all.
+    const rank = { nowmiss: 0, gone: 1, later: 2, moved: 3, new: 4, earlier: 5, nowmakes: 6 };
+    out.sort((p, q) => (rank[p.kind] ?? 9) - (rank[q.kind] ?? 9));
+    return out;
+  }
+  async function replan() {
+    const bar = $$("#dsp-progress");
+    const fill = bar && bar.querySelector(".dsp-pbfill");
+    const lbl = bar && bar.querySelector(".dsp-pblabel");
+    const step = (pct, text, bad) => {
+      if (!bar) return;
+      bar.style.display = "";
+      bar.classList.toggle("dsp-pbbad", !!bad);
+      if (fill) fill.style.width = pct + "%";
+      if (lbl) lbl.textContent = text;
+    };
+    const t0 = Date.now();
+    step(10, "reading the queue…");
+    const d = await jget("/api/dispatch");
+    step(50, "planning…");
+    const p = await jget("/api/dispatch/plan");
+    if (!p.ok || !p.body || !p.body.slots) {
+      // Never overwrite a good plan with a failed fetch: what is on screen is
+      // still true, and saying so beats blanking it.
+      step(100, (p.body && p.body.error) || "planning failed — the plan on screen is the one from before", true);
+      setTimeout(() => { if (bar) bar.style.display = "none"; }, 4000);
+      return;
+    }
+    step(80, "comparing…");
+    const before = snapshotPlan(PLAN);
+    STATE = d.body || STATE;
+    PLAN = p.body;
+    CHANGES = { at: Date.now(), items: diffPlans(before, snapshotPlan(PLAN)) };
+    const n = CHANGES.items.length;
+    step(100, n ? n + " change" + (n === 1 ? "" : "s") : "no changes");
+    const hold = Math.max(0, 400 - (Date.now() - t0));
+    setTimeout(() => { if (bar) bar.style.display = "none"; }, hold + 550);
+    render();
+  }
+  function renderChanges() {
+    const box = $$("#dsp-changes");
+    if (!box) return;
+    if (!CHANGES) { box.innerHTML = ""; return; }
+    const items = CHANGES.items;
+    const head = items.length
+      ? `<b>${items.length} change${items.length === 1 ? "" : "s"} from that replan</b>`
+      : `<b>Replanned — nothing moved.</b> <span>Same printers, same times.</span>`;
+    box.innerHTML =
+      `<div class="dsp-chg${items.length ? "" : " dsp-chgnone"}">${head}` +
+      `<button class="dsp-chgx" id="dsp-chgx" title="dismiss">✕</button></div>` +
+      (items.length ? `<div class="dsp-chglist">` + items.slice(0, 40).map(it =>
+        `<div class="dsp-chgrow dsp-k-${esc(it.kind)}">
+           <span class="dsp-chgfile">${esc(it.file.replace(/\.gcode$/i, ""))}${it.of > 1 ? ` <i>#${it.copy}/${it.of}</i>` : ""}</span>
+           <span class="dsp-chgtext">${esc(it.text)}</span>
+         </div>`).join("") +
+        (items.length > 40 ? `<div class="dsp-chgrow"><span class="dsp-chgtext">…and ${items.length - 40} more</span></div>` : "") +
+        `</div>` : "");
+    const xb = $$("#dsp-chgx");
+    if (xb) xb.onclick = () => { CHANGES = null; renderChanges(); };
+  }
+
+  // ---- date + time flyout ----------------------------------------------------
+  // A native datetime-local is a different control in every browser, and on a
+  // phone the calendar hides behind an icon the width of a grain of rice. A
+  // deadline earns a real month grid and a real clock, in one popover, with the
+  // whole moment — date AND time — settled before anything is committed.
+  const MONTHS = ["January", "February", "March", "April", "May", "June",
+                  "July", "August", "September", "October", "November", "December"];
+  const dtGet = el => { const v = el && el.getAttribute("data-ms"); return v ? +v : null; };
+  function dtSet(el, ms) {
+    if (!el) return;
+    el.setAttribute("data-ms", ms == null ? "" : String(ms));
+    el.classList.toggle("dsp-dtempty", ms == null);
+    const v = el.querySelector(".dsp-dtval");
+    if (v) v.textContent = ms == null ? (el.getAttribute("data-placeholder") || "not set") : fmtT(ms);
+  }
+  const dtFieldHTML = (id, placeholder) =>
+    `<button type="button" class="dsp-dtfield dsp-dtempty" id="${id}" data-ms="" data-placeholder="${esc(placeholder)}">` +
+    `<span class="dsp-dtcal">\u{1F4C5}</span><span class="dsp-dtval">${esc(placeholder)}</span></button>`;
+  const hhmm = d => String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+  function closePicker() {
+    const p = document.getElementById("dsp-pop");
+    if (p) p.remove();
+    document.removeEventListener("mousedown", outsidePicker, true);
+    document.removeEventListener("keydown", escPicker, true);
+  }
+  function outsidePicker(e) {
+    const p = document.getElementById("dsp-pop");
+    if (p && !p.contains(e.target)) closePicker();
+  }
+  function escPicker(e) { if (e.key === "Escape") closePicker(); }
+  // anchor: the field that was clicked. onPick(ms | null) — null means cleared.
+  function openPicker(anchor, valueMs, onPick) {
+    closePicker();
+    // Default to 5pm today rather than midnight: nobody's deadline is 00:00,
+    // and a picker that opens on a useless value costs two extra taps.
+    let sel = valueMs ? new Date(valueMs) : (() => { const d = new Date(); d.setHours(17, 0, 0, 0); return d; })();
+    let view = new Date(sel.getFullYear(), sel.getMonth(), 1);
+    const pop = document.createElement("div");
+    pop.id = "dsp-pop";
+    pop.className = "dsp-pop";
+    document.body.appendChild(pop);
+
+    function draw() {
+      const first = new Date(view.getFullYear(), view.getMonth(), 1);
+      const lead = first.getDay();                                  // 0 = Sunday, matching the hours editor
+      const cells = [];
+      for (let i = 0; i < 42; i++) {
+        const d = new Date(view.getFullYear(), view.getMonth(), 1 - lead + i);
+        const other = d.getMonth() !== view.getMonth();
+        const isSel = sameDay(d.getTime(), sel.getTime());
+        const isToday = sameDay(d.getTime(), Date.now());
+        cells.push(`<button type="button" class="dsp-pd${other ? " dsp-pdo" : ""}${isSel ? " dsp-pdsel" : ""}${isToday ? " dsp-pdtoday" : ""}" ` +
+          `data-d="${d.getFullYear()}-${d.getMonth()}-${d.getDate()}">${d.getDate()}</button>`);
+      }
+      pop.innerHTML = `
+        <div class="dsp-phead">
+          <button type="button" class="dsp-pnav" data-mv="-1">‹</button>
+          <span class="dsp-pmon">${esc(MONTHS[view.getMonth()])} ${view.getFullYear()}</span>
+          <button type="button" class="dsp-pnav" data-mv="1">›</button>
+        </div>
+        <div class="dsp-pdow">${["S", "M", "T", "W", "T", "F", "S"].map(x => `<span>${x}</span>`).join("")}</div>
+        <div class="dsp-pgrid">${cells.join("")}</div>
+        <div class="dsp-ptime">
+          <span class="dsp-pclock">\u{1F551}</span>
+          <input type="time" class="dsp-ptin" value="${hhmm(sel)}">
+          <span class="dsp-pchips">
+            ${[["09:00", "9a"], ["12:00", "12p"], ["17:00", "5p"], ["23:59", "EOD"]]
+              .map(([v, l]) => `<button type="button" class="dsp-pchip" data-t="${v}">${l}</button>`).join("")}
+          </span>
+        </div>
+        <div class="dsp-pfoot">
+          <button type="button" class="dsp-pclear" data-act="clear">Clear</button>
+          <span class="dsp-ppreview">${esc(fmtT(sel.getTime()))}</span>
+          <button type="button" class="dsp-pset" data-act="set">Set</button>
+        </div>`;
+      pop.querySelectorAll("[data-mv]").forEach(b => b.onclick = () => {
+        view = new Date(view.getFullYear(), view.getMonth() + (+b.dataset.mv), 1); draw();
+      });
+      pop.querySelectorAll("[data-d]").forEach(b => b.onclick = () => {
+        const [y, m, dd] = b.dataset.d.split("-").map(Number);
+        sel = new Date(y, m, dd, sel.getHours(), sel.getMinutes(), 0, 0);
+        view = new Date(y, m, 1);
+        draw();
+      });
+      const tin = pop.querySelector(".dsp-ptin");
+      tin.onchange = tin.oninput = () => {
+        const [h, mi] = String(tin.value || "").split(":").map(Number);
+        if (Number.isFinite(h) && Number.isFinite(mi)) { sel.setHours(h, mi, 0, 0); draw(); }
+      };
+      pop.querySelectorAll("[data-t]").forEach(b => b.onclick = () => {
+        const [h, mi] = b.dataset.t.split(":").map(Number);
+        sel.setHours(h, mi, 0, 0); draw();
+      });
+      pop.querySelector('[data-act="clear"]').onclick = () => { closePicker(); onPick(null); };
+      pop.querySelector('[data-act="set"]').onclick = () => { closePicker(); onPick(sel.getTime()); };
+    }
+    draw();
+    // Anchor under the field, then pull it back inside the viewport. On a phone
+    // the field is often near the right edge and a naive left:rect.left runs
+    // the calendar off screen.
+    const r = anchor.getBoundingClientRect();
+    const w = Math.min(300, window.innerWidth - 16);
+    pop.style.width = w + "px";
+    let left = Math.min(r.left, window.innerWidth - w - 8);
+    pop.style.left = Math.max(8, left) + "px";
+    const below = window.innerHeight - r.bottom;
+    if (below > pop.offsetHeight + 12 || below > 300) pop.style.top = (r.bottom + 6) + "px";
+    else pop.style.top = Math.max(8, r.top - pop.offsetHeight - 6) + "px";
+    setTimeout(() => {
+      document.addEventListener("mousedown", outsidePicker, true);
+      document.addEventListener("keydown", escPicker, true);
+    }, 0);
+  }
+
   // ---- mount ----------------------------------------------------------------
   function mount(el) {
     EL = el;
@@ -443,13 +840,10 @@
       .dsp-done{opacity:.55}
       .dsp-swatches i{display:inline-block;width:13px;height:13px;border-radius:3px;border:1px solid #0006;margin-right:2px;vertical-align:middle}
       .dsp-job button,.dsp-bhead button{font-size:12px;padding:3px 9px;border:1px solid #555;border-radius:5px;background:#23262d;color:inherit;cursor:pointer}
-      .dsp-lane{margin:10px 0}
-      .dsp-lname{font-size:13px;font-weight:700;margin-bottom:4px;display:flex;gap:10px;align-items:center}
-      .dsp-clear{border-color:#0a7a33;color:#4cd07a;font-size:12px;padding:3px 10px}
+      /* .dsp-lane/.dsp-track/.dsp-blk went with the percentage-width timeline
+         the guide replaced in v2.15 — don't reintroduce them. */
+      .dsp-clear{border-color:#0a7a33;color:#4cd07a;font-size:11.5px;padding:3px 8px;align-self:flex-start}
       .dsp-idleclear{border-color:#555;color:#9aa}
-      .dsp-track{position:relative;height:34px;background:#181b20;border:1px solid #2a2d33;border-radius:7px;overflow:hidden}
-      .dsp-blk{position:absolute;top:3px;bottom:3px;background:#274a72;border:1px solid #3a6ca8;border-radius:5px;font-size:11px;line-height:26px;padding:0 6px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;cursor:default}
-      .dsp-miss{background:#6e2020;border-color:#c0392b}
       .dsp-swapn{color:#ffd166;font-weight:700}
       .dsp-idle{color:#8ab;font-weight:700;margin-left:4px}
       .dsp-lidle{color:#667;font-weight:400;font-size:11.5px}
@@ -492,6 +886,130 @@
       .dsp-repnote{color:#ff9f43;margin-top:3px}
       .dsp-empty{color:#889;font-size:13px;padding:10px 2px}
       .dsp-h{font-size:12px;letter-spacing:.08em;color:#d6a832;font-weight:800;margin:14px 0 4px}
+      /* ---- the guide (v2.15) --------------------------------------------- */
+      /* One scale governs everything: distance is time. The channel column and
+         the ruler are sticky so you never lose the machine or the day. */
+      .dsp-gtools{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:6px 0 4px}
+      .dsp-gsub{color:var(--ink-faint,#828B9A);font-size:11.5px}
+      .dsp-gz,.dsp-gjump{font:inherit;font-size:11.5px;padding:3px 9px;border:1px solid var(--line,#3C4250);border-radius:6px;background:var(--panel,#1b1e24);color:var(--ink-dim,#AEB6C4);cursor:pointer}
+      .dsp-gzon{border-color:var(--signal,#d6a832);color:var(--signal,#d6a832);font-weight:700}
+      .dsp-gkey{display:flex;gap:8px;align-items:center;margin-left:auto;color:var(--ink-faint,#828B9A);font-size:11px;flex-wrap:wrap}
+      .dsp-gkey i{display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:3px;vertical-align:-1px}
+      .dsp-krun{background:#1d5c3a;border:1px solid #3DD68C}
+      .dsp-kblk{background:#274a72;border:1px solid #3a6ca8}
+      .dsp-kmiss{background:#6e2020;border:1px solid #c0392b}
+      .dsp-kclosed{background:repeating-linear-gradient(45deg,#171a20,#171a20 3px,#12151a 3px,#12151a 6px);border:1px solid #23262d}
+      .dsp-guide{overflow-x:auto;overflow-y:hidden;border:1px solid var(--line-soft,#2a2d33);border-radius:9px;background:var(--chassis,#12151a);-webkit-overflow-scrolling:touch}
+      .dsp-gtrack{position:relative}
+      .dsp-grow{display:flex;align-items:stretch;border-bottom:1px solid var(--line-soft,#23262d)}
+      .dsp-grow:last-child{border-bottom:0}
+      .dsp-gcell{position:sticky;left:0;z-index:3;width:132px;min-width:132px;flex:none;
+        display:flex;flex-direction:column;gap:2px;justify-content:center;padding:6px 9px;
+        background:var(--panel,#1b1e24);border-right:1px solid var(--line,#3C4250)}
+      .dsp-gpname{font-size:12.5px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      .dsp-gtime{position:relative;flex:none;height:46px}
+      .dsp-gruler{position:sticky;top:0;z-index:4;background:var(--panel,#1b1e24)}
+      .dsp-gruler .dsp-gtime{height:38px}
+      .dsp-gcorner{justify-content:flex-end;padding-bottom:5px}
+      .dsp-gday{position:absolute;top:0;height:17px;line-height:17px;border-left:1px solid var(--line,#3C4250);
+        background:var(--panel-2,#23262d);font-size:11px;font-weight:800;letter-spacing:.04em;
+        color:var(--signal,#d6a832);overflow:hidden;white-space:nowrap}
+      .dsp-gday span{padding-left:6px}
+      .dsp-gtick{position:absolute;top:17px;bottom:0;border-left:1px solid var(--line-soft,#23262d)}
+      .dsp-gtick.dsp-gmid{border-left-color:var(--line,#3C4250)}
+      .dsp-gtick span{position:absolute;left:3px;top:2px;font-size:10.5px;color:var(--ink-faint,#828B9A);white-space:nowrap}
+      /* closed hours sit behind everything and never intercept a tap */
+      .dsp-gtime > i{position:absolute;top:0;bottom:0;pointer-events:none;
+        background:repeating-linear-gradient(45deg,rgba(255,255,255,.028),rgba(255,255,255,.028) 3px,transparent 3px,transparent 6px)}
+      .dsp-gnow{position:absolute;top:0;bottom:0;width:2px;background:var(--signal,#FFB200);opacity:.85;pointer-events:none;z-index:2}
+      .dsp-gblk{position:absolute;top:4px;bottom:4px;z-index:1;background:#274a72;border:1px solid #3a6ca8;border-radius:5px;
+        padding:0 5px;overflow:hidden;cursor:pointer;display:flex;align-items:center;gap:4px;
+        transition:filter var(--dur,.18s) var(--ease,ease)}
+      .dsp-gblk:hover{filter:brightness(1.18)}
+      .dsp-gmiss{background:#6e2020;border-color:#c0392b}
+      /* Running now: green, and visibly not one of the planned blue blocks —
+         it is the one thing on the guide that is already true. */
+      .dsp-grun{position:absolute;top:4px;bottom:4px;z-index:1;background:#1d5c3a;border:1px solid var(--ok,#3DD68C);
+        border-radius:5px;padding:0 5px;overflow:hidden;cursor:pointer;display:flex;align-items:center;gap:4px}
+      .dsp-grun:hover{filter:brightness(1.18)}
+      .dsp-grun .dsp-gtext span{color:#bff0d4}
+      .dsp-grunicon{flex:none;font-size:10px;color:var(--ok,#3DD68C)}
+      .dsp-grunp{background:#5c4a1d;border-color:#d6a832}
+      .dsp-grunp .dsp-grunicon{color:#d6a832}
+      /* ETA unknown: striped, so an 8-hour pessimistic bar never reads as a measurement */
+      .dsp-grunq{background:repeating-linear-gradient(45deg,#1d5c3a,#1d5c3a 6px,#164a2e 6px,#164a2e 12px)}
+      .dsp-grunning{color:var(--ok,#3DD68C);font-weight:700}
+      .dsp-gtext{display:flex;flex-direction:column;justify-content:center;min-width:0;line-height:1.2;overflow:hidden}
+      .dsp-gtext b{font-size:11.5px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      .dsp-gtext span{font-size:10px;color:#cfe0f5;opacity:.85;white-space:nowrap}
+      .dsp-gblk b.dsp-swapn,.dsp-gblk b.dsp-clash,.dsp-gblk b.dsp-idle{flex:none;font-size:10.5px}
+      /* ---- replan progress + change list ---------------------------------- */
+      .dsp-pbar{margin:6px 0}
+      .dsp-pbtrack{height:4px;border-radius:3px;background:var(--panel-2,#23262d);overflow:hidden}
+      .dsp-pbfill{height:100%;width:0;background:var(--signal,#d6a832);transition:width .22s var(--ease,ease)}
+      .dsp-pblabel{font-size:11.5px;color:var(--ink-faint,#828B9A);margin-top:4px}
+      .dsp-pbbad .dsp-pbfill{background:var(--bad,#F26B5E)}
+      .dsp-pbbad .dsp-pblabel{color:var(--bad,#F26B5E)}
+      .dsp-chg{display:flex;gap:8px;align-items:center;padding:7px 11px;border:1px solid var(--line,#3C4250);
+        border-radius:8px 8px 0 0;background:var(--panel,#1b1e24);font-size:13px}
+      .dsp-chg span{color:var(--ink-faint,#828B9A);font-weight:400}
+      .dsp-chgnone{border-radius:8px;color:var(--ink-dim,#AEB6C4)}
+      .dsp-chgx{margin-left:auto;font:inherit;font-size:12px;line-height:1;padding:3px 7px;border:1px solid var(--line,#3C4250);
+        border-radius:5px;background:transparent;color:inherit;cursor:pointer}
+      .dsp-chglist{border:1px solid var(--line,#3C4250);border-top:0;border-radius:0 0 8px 8px;overflow:hidden;margin-bottom:8px}
+      .dsp-chgrow{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;padding:6px 11px;font-size:12.5px;
+        border-bottom:1px solid var(--line-soft,#23262d);border-left:3px solid transparent}
+      .dsp-chgrow:last-child{border-bottom:0}
+      .dsp-chgfile{font-weight:700;min-width:150px}
+      .dsp-chgfile i{color:var(--ink-faint,#828B9A);font-style:normal;font-weight:400}
+      .dsp-chgtext{color:var(--ink-dim,#AEB6C4)}
+      .dsp-k-nowmiss{border-left-color:#c0392b} .dsp-k-nowmiss .dsp-chgtext{color:#f0a89f;font-weight:700}
+      .dsp-k-gone{border-left-color:#7a4c46}
+      .dsp-k-later{border-left-color:#c07a2b}
+      .dsp-k-moved{border-left-color:#3a6ca8}
+      .dsp-k-new{border-left-color:#2c6b41}
+      .dsp-k-earlier{border-left-color:#2c6b41}
+      .dsp-k-nowmakes{border-left-color:#2c6b41} .dsp-k-nowmakes .dsp-chgtext{color:#8fe0ac}
+      /* ---- date + time field and flyout ----------------------------------- */
+      .dsp-dtfield{display:inline-flex;align-items:center;gap:6px;font:inherit;font-size:12.5px;
+        padding:6px 10px;border:1px solid var(--line,#444);border-radius:6px;background:var(--panel,#1b1e24);
+        color:inherit;cursor:pointer;min-width:170px;text-align:left}
+      .dsp-dtfield:hover{border-color:var(--signal,#d6a832)}
+      .dsp-dtempty .dsp-dtval{color:var(--ink-faint,#828B9A)}
+      .dsp-dtcal{font-size:12px;opacity:.85}
+      .dsp-pop{position:fixed;z-index:70;background:var(--panel,#161920);border:1px solid var(--line,#343941);
+        border-radius:12px;padding:10px;box-shadow:var(--elev-2,0 10px 28px rgba(0,0,0,.5));font-size:13px}
+      .dsp-phead{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}
+      .dsp-pmon{font-weight:800;font-size:13px}
+      .dsp-pnav{font:inherit;font-size:16px;line-height:1;width:28px;height:28px;border:1px solid var(--line,#3C4250);
+        border-radius:6px;background:transparent;color:inherit;cursor:pointer}
+      .dsp-pdow{display:grid;grid-template-columns:repeat(7,1fr);gap:2px;margin-bottom:2px}
+      .dsp-pdow span{text-align:center;font-size:10.5px;color:var(--ink-faint,#828B9A)}
+      .dsp-pgrid{display:grid;grid-template-columns:repeat(7,1fr);gap:2px}
+      .dsp-pd{font:inherit;font-size:12px;height:30px;border:1px solid transparent;border-radius:6px;
+        background:transparent;color:inherit;cursor:pointer}
+      .dsp-pd:hover{background:var(--panel-2,#23262d)}
+      .dsp-pdo{color:var(--ink-faint,#5C6474)}
+      .dsp-pdtoday{border-color:var(--line,#3C4250)}
+      .dsp-pdsel{background:var(--signal,#d6a832);color:#12151a;font-weight:800;border-color:var(--signal,#d6a832)}
+      .dsp-ptime{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:9px;padding-top:9px;
+        border-top:1px solid var(--line-soft,#2a2d33)}
+      .dsp-pclock{font-size:13px}
+      .dsp-ptin{font:inherit;font-size:12.5px;padding:5px 7px;border:1px solid var(--line,#444);border-radius:6px;
+        background:var(--chassis,#12151a);color:inherit}
+      .dsp-pchips{display:flex;gap:3px;flex-wrap:wrap}
+      .dsp-pchip{font:inherit;font-size:11px;padding:4px 7px;border:1px solid var(--line,#3C4250);border-radius:11px;
+        background:transparent;color:var(--ink-dim,#AEB6C4);cursor:pointer}
+      .dsp-pchip:hover{border-color:var(--signal,#d6a832);color:var(--signal,#d6a832)}
+      .dsp-pfoot{display:flex;align-items:center;gap:8px;margin-top:9px;padding-top:9px;border-top:1px solid var(--line-soft,#2a2d33)}
+      .dsp-ppreview{flex:1;font-size:11.5px;color:var(--ink-faint,#828B9A);text-align:center}
+      .dsp-pclear,.dsp-pset{font:inherit;font-size:12.5px;padding:6px 12px;border-radius:7px;cursor:pointer;border:1px solid var(--line,#555)}
+      .dsp-pclear{background:transparent;color:var(--ink-dim,#AEB6C4)}
+      .dsp-pset{background:var(--signal,#d6a832);border-color:var(--signal,#d6a832);color:#12151a;font-weight:800}
+      @media (max-width:560px){
+        .dsp-gcell{width:104px;min-width:104px;padding:5px 7px}
+        .dsp-chgfile{min-width:0}
+      }
     </style>
     <div class="dsp-wrap" style="position:relative">
       <div id="dsp-drop"><div>⤵ drop to add to Dispatch</div></div>
@@ -519,14 +1037,13 @@
       </div>
       <div class="dsp-row dsp-targetbar">
         <span title="One deadline for the whole queue. Jobs with a deadline of their own keep it.">🎯 Finish everything by</span>
-        <input type="datetime-local" id="dsp-target">
-        <button id="dsp-target-save">Set target</button>
+        ${dtFieldHTML("dsp-target", "pick a date and time")}
         <button id="dsp-target-clear" style="display:none">Clear</button>
       </div>
       <div class="dsp-h">ADD JOB <span style="color:#889;font-weight:400">— several files become one bundle (multi-plate prints)</span></div>
       <div class="dsp-row">
         <select id="dsp-file"></select><button id="dsp-stage">+ add file</button>
-        deadline <input type="datetime-local" id="dsp-dl">
+        deadline ${dtFieldHTML("dsp-dl", "none")}
         <label title="Plan this one to finish while you are around (delicate removal, same-day shipping)"><input type="checkbox" id="dsp-on"> be here at the finish</label>
         <input id="dsp-bundlename" placeholder="bundle name (e.g. Jones order)" style="display:none;min-width:200px">
         <button id="dsp-add">Add</button>
@@ -535,6 +1052,11 @@
       <button id="dsp-jobs-toggle" class="dsp-toggle">JOBS <span id="dsp-jobs-sum"></span> <b id="dsp-jobs-caret">▾</b></button>
       <div id="dsp-jobs"></div>
       <div class="dsp-h">PLAN <button id="dsp-replan" style="font-size:11px;padding:2px 8px">↻ replan</button> <button id="dsp-adopt" style="font-size:11px;padding:2px 8px" title="Match prints already running on your printers to queued jobs, so Dispatch stops scheduling work the farm is already doing">⤓ claim running prints</button></div>
+      <div class="dsp-pbar" id="dsp-progress" style="display:none">
+        <div class="dsp-pbtrack"><div class="dsp-pbfill"></div></div>
+        <div class="dsp-pblabel"></div>
+      </div>
+      <div id="dsp-changes"></div>
       <div id="dsp-report"></div>
       <div id="dsp-plan"></div>
     </div>`;
@@ -560,25 +1082,32 @@
     $$("#dsp-save-all").onclick = async () => { await jpost("/api/dispatch/settings", { week: readDays() }); load(); };
     $$("#dsp-save-one").onclick = async () => { await jpost("/api/dispatch/settings", { weekOverride: { key: selectedWeekKey(), days: readDays() } }); load(); };
     $$("#dsp-clearov").onclick = async () => { await jpost("/api/dispatch/settings", { clearOverride: selectedWeekKey() }); load(); };
-    // Farm target. Errors surface — a target that silently didn't save is
-    // worse than none, because the green banner would be lying.
-    $$("#dsp-target-save").onclick = async () => {
-      const v = $$("#dsp-target").value;
-      if (!v) return alert("Pick a date and time first, or press Clear to remove the target.");
-      const r = await jpost("/api/dispatch/settings", { target: new Date(v).getTime() });
-      if (!r.ok) alert((r.body && r.body.error) || "Could not set that target");
-      REPOPEN = true;                      // they just asked the question — show the answer
-      load();
+    // Farm target. The picker's own "Set" is the commit — a second Set button
+    // beside it would only invite half-set targets. Errors surface: a target
+    // that silently didn't save is worse than none, because the banner beneath
+    // it would then be answering a question nobody asked.
+    $$("#dsp-target").onclick = () => {
+      const el = $$("#dsp-target");
+      openPicker(el, dtGet(el), async ms => {
+        const r = await jpost("/api/dispatch/settings", { target: ms });
+        if (!r.ok) return alert((r.body && r.body.error) || "Could not set that target");
+        REPOPEN = true;                    // they just asked the question — show the answer
+        load();
+      });
     };
     $$("#dsp-target-clear").onclick = async () => {
       await jpost("/api/dispatch/settings", { target: null });
-      $$("#dsp-target").value = ""; load();
+      load();
+    };
+    $$("#dsp-dl").onclick = () => {
+      const el = $$("#dsp-dl");
+      openPicker(el, dtGet(el), ms => dtSet(el, ms));
     };
     $$("#dsp-stage").onclick = () => addChip($$("#dsp-file").value);
     $$("#dsp-add").onclick = async () => {
       if (!FILEQ.length && $$("#dsp-file").value) addChip($$("#dsp-file").value);
       if (!FILEQ.length) return;
-      const dl = $$("#dsp-dl").value ? new Date($$("#dsp-dl").value).getTime() : null;
+      const dl = dtGet($$("#dsp-dl"));
       const nf = $$("#dsp-on").checked;
       let r;
       if (FILEQ.length === 1) {
@@ -602,10 +1131,10 @@
         }
       }
       if (!r.ok) alert((r.body && r.body.error) || "Add failed");
-      else { FILEQ = []; $$("#dsp-bundlename").value = ""; $$("#dsp-dl").value = ""; $$("#dsp-on").checked = false; }
+      else { FILEQ = []; $$("#dsp-bundlename").value = ""; dtSet($$("#dsp-dl"), null); $$("#dsp-on").checked = false; }
       load();
     };
-    $$("#dsp-replan").onclick = load;
+    $$("#dsp-replan").onclick = replan;
     $$("#dsp-adopt").onclick = async () => {
       const b = $$("#dsp-adopt"), was = b.textContent;
       b.disabled = true; b.textContent = "\u2026";

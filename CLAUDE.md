@@ -29,9 +29,14 @@ failure appears 4–5 times, promote it to a hard rule below.
 
 ## Harness
 
-`npm test` → **318 checks**, expect **318 passed, 0 failed**. A red harness
+`npm test` → **323 checks**, expect **323 passed, 0 failed**. A red harness
 blocks everything.
 
-Green on Windows against `X:`, twice in a row (2026-08-30, v2.14.0). One known flaky
+Green on Windows against `X:` (2026-08-31, v2.15.0). One known flaky
 check — "released job is free to be claimed against reality again" races the
 10 s executor tick; see `MISTAKES.md`. Re-run before believing it.
+
+**Never assert against the wall clock.** Two harness checks have now been red
+purely because of the hour they ran in (the 10 s tick, and a 23:50 run where a
+job legitimately deferred to the next window). Derive expected times from what
+the plan actually produced, never from `Date.now()`.
