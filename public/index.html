@@ -202,6 +202,14 @@
   .pill.busy{color:var(--busy); background:rgba(91,155,240,.12);} .pill.busy .dot{background:var(--busy);}
   .pill.off{color:var(--ink-faint); background:rgba(120,128,140,.12);} .pill.off .dot{background:var(--ink-faint);}
   .pill.err{color:var(--bad); background:rgba(224,106,92,.12);} .pill.err .dot{background:var(--bad);}
+  /* v2.20: out of service by choice — the accent, never --bad. Taking a machine
+     down is a decision you made, not a fault the Hub discovered, and the two
+     must not look alike. */
+  .pill.maint{color:var(--signal); background:color-mix(in srgb, var(--signal) 13%, transparent);}
+  .pill.maint .dot{background:var(--signal);}
+  .pcard.maint{border-color:color-mix(in srgb, var(--signal) 34%, var(--line));}
+  .pcard .maintline{font-size:11.5px; color:var(--signal); margin-top:-5px;}
+  .pcard .maintline .mnote{color:var(--ink-dim);}
   .heads{display:grid; grid-template-columns:repeat(4,1fr); gap:9px;}
   .h{border:1px solid var(--line-soft); border-radius:8px; overflow:hidden; background:var(--panel-2);}
   .h.match{border-color:var(--signal); box-shadow:0 0 0 1px var(--signal);}
@@ -257,6 +265,12 @@
   .matchcard{border:1px solid var(--line-soft); border-radius:12px; overflow:hidden; background:var(--panel,#161a20);}
   .matchhead{width:100%; display:flex; align-items:center; gap:10px; padding:12px 14px; background:none; border:0; cursor:pointer; text-align:left;}
   .matchhead .mpn{font-weight:600; color:var(--ink); font-size:15px;}
+  /* v2.20: a machine out for maintenance still appears here — you want to be
+     able to test-print after a repair — but it must never look like a normal
+     target. Accent, not --bad: nothing is broken, it is deliberately parked. */
+  .matchcard.maint{border-color:color-mix(in srgb, var(--signal) 34%, var(--line));}
+  .matchhead .mmaint{font-family:var(--mono); font-size:10.5px; letter-spacing:.04em; color:var(--signal);
+    border:1px solid color-mix(in srgb, var(--signal) 40%, var(--line)); border-radius:999px; padding:2px 8px; white-space:nowrap;}
   .mswrow{display:flex; gap:4px; margin-left:2px;}
   .msw{width:22px; height:22px; border-radius:5px; border:1px solid rgba(255,255,255,.18); display:inline-block; box-sizing:border-box;}
   .msw.empty{background:repeating-linear-gradient(135deg,#262a32,#262a32 5px,#222630 5px,#222630 10px); border-style:dashed; font-family:var(--mono); font-size:7px; color:var(--ink-faint); text-align:center; line-height:20px;}
@@ -1624,8 +1638,9 @@ async function renderMatch(){
         + (showAll ? `Show top ${MATCH_PREVIEW}` : `Show all ${matches.length} →`)
         + `</button></div>`
       : "";
-    return `<div class="matchcard${open?' open':''}">`+
-      `<button class="matchhead" data-mtoggle="${p.id}"><span class="mpn">${esc(p.name)}</span><span class="mswrow">${swrow}</span>`+
+    const mtag = p.maintenance ? `<span class="mmaint" title="Out of service since ${esc(new Date(p.maintenance.since||Date.now()).toLocaleString())}${p.maintenance.note?" — "+esc(p.maintenance.note):""}">⚒ maintenance</span>` : "";
+    return `<div class="matchcard${open?' open':''}${p.maintenance?' maint':''}">`+
+      `<button class="matchhead" data-mtoggle="${p.id}"><span class="mpn">${esc(p.name)}</span>${mtag}<span class="mswrow">${swrow}</span>`+
       `<span class="mcount">${matches.length} match${matches.length===1?'':'es'}</span><span class="mchev">${open?'▾':'▸'}</span></button>`+
       `<div class="mlist" style="${open?'':'display:none'}">${rows}${moreBtn}</div></div>`;
   }).join("") || `<div class="mempty">No printers online.</div>`;
@@ -2390,7 +2405,7 @@ function renderFleet(){
   fleetShown.forEach(p=>{
     if(p.online) online++;
     const card=document.createElement("div");
-    card.className="pcard"+(p.online?"":" offline");
+    card.className="pcard"+(p.online?"":" offline")+(p.maintenance?" maint":"");
     // status pill
     let pillCls="off", pillTxt="Offline";
     if(p.online){
@@ -2407,6 +2422,19 @@ function renderFleet(){
       else if(p.state==="paused"){ pillCls="busy"; pillTxt="Paused"; }
       else if(p.state==="error"){ pillCls="err"; pillTxt="Error"; }
       else { pillCls="idle"; pillTxt="Idle"; }
+    }
+    // v2.20: a machine you took out of service must say so HERE, not only on
+    // the Dispatch guide. It shipped Dispatch-only, so a printer down for
+    // maintenance sat on the Dash reading "IDLE" — an invitation to send it the
+    // very work you had just told the scheduler not to send it.
+    //
+    // It overrides the idle/offline pill but NOT printing or paused: a job
+    // still on the bed is the more urgent fact, and the strip below says the
+    // rest. Manual printing is deliberately still allowed — after a repair you
+    // want to test-print — but nobody can now do it without having read the
+    // word "maintenance" first.
+    if(p.maintenance && !(p.online && (p.state==="printing"||p.state==="paused"))){
+      pillCls="maint"; pillTxt="Maintenance";
     }
     // heads — capability-gated, not type-gated: a printer without the
     // Snapmaker color API (caps.multiColor false) has no head grid at all.
@@ -2493,6 +2521,10 @@ function renderFleet(){
       <div class="top">${p.url
         ? `<a class="pn pnlink" href="${esc(p.url)}" target="_blank" rel="noopener" title="Open ${esc(p.url)} — the printer's own Klipper UI (same network only)">${esc(p.name)}<span class="pnout">↗</span></a>`
         : `<span class="pn">${esc(p.name)}</span>`}<span style="display:flex;align-items:center;gap:7px">${p.online?`<button class="statsbtn${STATSOPEN.has(p.id)?' on':''}" data-statsbtn="${p.id}" title="Temps &amp; job stats">▁▂▅</button>`:""}${diskChip(p)}<span class="pill ${pillCls}"><span class="dot"></span>${pillTxt}</span></span></div>
+      ${p.maintenance ? `<div class="maintline">⚒ Out of service${
+        p.online && (p.state==="printing"||p.state==="paused") ? " after this print" : ""
+      }${p.maintenance.note ? ` — <span class="mnote">${esc(p.maintenance.note)}</span>` : ""}
+        <span class="mnote">· the scheduler is routing around it</span></div>` : ""}
       ${p.online ? (camShouldShow(p.id)
         ? `<div class="camtile" data-cam="${p.id}">${CAMMODE==="demand"?`<button class="camclose" data-camclose="${p.id}" title="Hide camera">✕</button>`:""}</div>`
         : `<button class="camopen" data-camopen="${p.id}">📷 Live view</button>`) : ""}

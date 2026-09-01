@@ -1534,8 +1534,19 @@ async function fleetSnapshot() {
   // know it to navigate there at all — withholding it here would buy nothing.
   // LAN-only by nature: over the Cloudflare tunnel a 192.168.x link won't
   // resolve, which the UI says on the link itself rather than hiding it.
+  // v2.20: `maintenance` — a machine the user deliberately took out of service.
+  // Owned by the dispatch module, but every surface that draws a printer needs
+  // it: it shipped visible only on the Dispatch guide, and the Dash card for a
+  // machine that was down still read "IDLE". Resolved through the capability
+  // map at CALL time, so it is simply absent when dispatch is switched off.
+  let maint = {};
+  try {
+    const f = CAPS_PROVIDED.get("dispatch.maintenance");
+    if (f) maint = f() || {};
+  } catch {}
   return Promise.all((PRINTERS || []).map((p, i) =>
-    probeCached(p, i).then(r => ({ id: i, ptype: p.type || "u1", url: p.url || null, plug: (FEATURES.power && p.plug) ? { type: p.plug.type } : null, ...r }))));
+    probeCached(p, i).then(r => ({ id: i, ptype: p.type || "u1", url: p.url || null, plug: (FEATURES.power && p.plug) ? { type: p.plug.type } : null,
+      maintenance: maint[String(i)] ? { since: maint[String(i)].since, note: maint[String(i)].note || "" } : null, ...r }))));
 }
 
 app.get("/api/fleet", async (req, res) => {

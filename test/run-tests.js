@@ -2030,6 +2030,33 @@ async function stopHub() {
     // Put it back so the restore below lands on the state the rest expects.
     await jpost("/api/resources/inventory", { spool_id: "-101", remaining_g: 5, cost_per_roll: 24.99 });
 
+    // v2.20: and once NOTHING points at the dead spool, the entry goes by
+    // itself. Reported live 2026-09-01 — "1 inventory entry belongs to a spool
+    // that no longer exists (600 g @ $25)" had been on the Resources tab since
+    // he deleted the roll, with a `forget` button as the only exit. Deleting
+    // filament from the library IS the instruction to forget its numbers; a
+    // banner that outlives the delete is the software arguing with a decision
+    // the user already made.
+    //
+    // The reference check is what keeps this from being data loss, and it is
+    // the case directly above: while #FF0000 still named -101, the entry stayed
+    // and was reported. Clear the mapping and it should evaporate with no
+    // /forget call anywhere in this block.
+    {
+      r = await jpost("/api/resources/map", { color_hex: "#FF0000", spool_id: null });
+      ok(r.status === 200, "the colour mapping to the dead spool is cleared", r.status);
+      r = await jget("/api/resources");
+      ok((r.body.orphaned_inv || []).length === 0,
+        "with nothing pointing at it, the stranded entry reports itself gone", r.body.orphaned_inv);
+      const onDisk = JSON.parse(fs.readFileSync(path.join(hubDir, "resources.json"), "utf8"));
+      ok(!("-101" in (onDisk.inv || {})),
+        "…and it is gone from resources.json, not merely hidden from the response",
+        Object.keys(onDisk.inv || {}));
+      // Restore the state the rest of this suite expects.
+      await jpost("/api/resources/inventory", { spool_id: "-101", remaining_g: 5, cost_per_roll: 24.99 });
+      await jpost("/api/resources/map", { color_hex: "#FF0000", spool_id: "-101" });
+    }
+
     // --- v2.19 affiliate links, end to end -------------------------------------
     // The link-SHAPING rules live in test/affiliate-standalone.js (25 cases).
     // What matters here is that the wiring is real: the tag reaches the rows,
@@ -2300,6 +2327,33 @@ async function stopHub() {
     r = await jget("/api/dispatch");
     mj = (r.body.jobs || []).find(j => j.id === MJOB);
     ok(mj && mj.printing_on !== 0, "still unclaimed after an explicit adopt", mj && mj.printing_on);
+
+    // v2.20: maintenance is a FLEET fact and every surface that draws a printer
+    // needs it. It shipped visible only on the Dispatch guide, so the Dash card
+    // for a machine taken out of service still read "IDLE" — an invitation to
+    // send it the work you had just told the scheduler not to send it.
+    {
+      const fl = (await jget("/api/fleet")).body || [];
+      ok(fl[0] && fl[0].maintenance && typeof fl[0].maintenance.since === "number",
+        "/api/fleet reports maintenance, so every surface can see it", fl[0] && fl[0].maintenance);
+      ok(fl[1] && fl[1].maintenance === null,
+        "…and reports null for a machine that is fine", fl[1] && fl[1].maintenance);
+      // And the page has to render it, not merely receive it. An API contract
+      // check is not a check that the user can see the thing.
+      const idx = fs.readFileSync(path.join(REPO, "public", "index.html"), "utf8");
+      ok(/p\.maintenance\s*\?/.test(idx) && /pill\.maint|pillCls\s*=\s*"maint"/.test(idx),
+        "the Dash card renders a maintenance state rather than showing Idle");
+      ok(/maintline/.test(idx), "…and says it in words on the card, not just a colour");
+      // The Match tab is the other place that draws a printer and offers a
+      // Print button against it. It filters on p.online, and a machine parked
+      // for maintenance is still online — so without this it renders as a
+      // perfectly ordinary target. It is deliberately NOT removed from the
+      // list (you want to test-print after a repair); it is labelled.
+      ok(/class="matchcard[^"]*p\.maintenance\s*\?/.test(idx),
+        "the Match card is marked when its printer is out of service");
+      ok(/mmaint/.test(idx) && /\.matchcard\.maint/.test(idx),
+        "…with both a visible tag and a card style, not one or the other");
+    }
 
     // A machine that is down but still printing must stay visible. Going quiet
     // about real work on a real bed is the one thing this must never do.

@@ -19,12 +19,92 @@ Running log of things that broke, why, and the rule that stops a repeat.
 | Asserted or acted without checking first | 6 incidents | rule 8 |
 | Harness green while the feature was broken | 2 incidents | rule 2 — "green" is not "verified" |
 | Unverified shape trusted as complete | 2 incidents | rule 6 |
+| Shipped onto one surface, not every surface that draws the thing | 3 incidents | *approaching a law* — check every tab that renders it before calling it done |
 | Version drift across the three files | 1 | rule 4 |
 | Staging vs git clone drift | 1 | rule 3 |
 | Bridge / tooling sharp edges | 5 incidents | *not a law* — reference block, "Working over the bridge" |
 
 Bridge quirks are operating facts, not judgment failures; a rule that says
 "remember these four things" is a lookup table wearing a rule's clothes.
+
+---
+
+## 2026-09-01 — A notice that outlived the thing it was about
+
+**What happened:** Danny deleted a roll from his filament library. The Resources
+tab then told him, on every render and for as long as he kept the Hub open,
+"1 inventory entry belongs to a spool that no longer exists (600 g @ $25) —
+harmless, but nothing points at it any more." His words: *"this needs to go
+away. I should be able to delete filament from my library without having a
+perpetual message about it."*
+
+**Root cause:** I designed the 2.16 orphan report and the 2.19 `forget` button
+around the wrong question. I asked "how do we avoid silently losing a person's
+typed-in numbers?" and answered it with a permanent banner plus a button. The
+question I never asked was "what did the user mean by deleting the roll?" —
+because deleting filament from the library *is* the instruction to forget its
+numbers. Every render after that was the software re-litigating a decision he
+had already made, and demanding a second click to accept it.
+
+Worth noting what the 2.19 fix got right and wrong at once: I had already spotted
+that "a report you cannot act on stops being read", and shipped a button. A
+button is still work. The report itself was the defect.
+
+**Consequence:** a permanent false alarm on the tab that is supposed to be the
+farm's honest inventory picture, for two weeks, on the machine he actually uses.
+Alarms that cannot be cleared teach you to stop reading alarms — and the same
+banner block carries the real orphan warning.
+
+**Fix:** `reconcileInventory()` drops the entry automatically, guarded twice —
+only when the shelf read was *authoritative* (a parsed `spools.json`, not an
+EIO on the SMB share, which would otherwise look like "he threw away every roll
+he owns"), and only when nothing in `color_map` still points at that spool id.
+The second guard is what keeps this from being data loss: a colour deliberately
+mapped to a roll that is briefly off the shelf still names it, and that case is
+still reported — with new wording that says the numbers are being *held for the
+replacement*, which is true and actionable, rather than that they are litter.
+The dropped grams and price go to the hub log on the way out.
+
+**Rule:** when a state is the *expected consequence of something the user just
+did on purpose*, it is not a warning. Reconcile it and move on. Reserve the
+banner for states the user did not ask for and can still do something about —
+and if the only offered action is "confirm what you already told me", there was
+never anything to report.
+
+---
+
+## 2026-09-01 — A printer taken out of service still read "IDLE" on the Dash
+
+**What happened:** Maintenance mode shipped an hour after the buy-links entry
+below, which is an entry *about shipping onto one surface only*. I then shipped
+maintenance mode onto one surface only. U3 was genuinely parked —
+`/api/dispatch` carried `maintenance: {"2": {…}}`, the scheduler was routing
+around it — and its Dash card said **IDLE**, with Upload and Print sitting right
+there. The Match tab likewise offered it as an ordinary target.
+
+**Root cause:** maintenance was stored in `dispatch.js` and read by the Dispatch
+guide, which is where I built and tested it. `/api/fleet` — what the Dash and
+Match tabs render from — did not carry the field at all, so no other surface
+could have shown it even if its markup had wanted to.
+
+**Consequence:** the exact invitation the feature exists to prevent: send a job
+to a machine you have just told the scheduler not to send jobs to. Caught by me,
+not by Danny, and only because I checked the *surface* instead of the API — the
+lesson from the buy-links failure, applied one hour later, on the very next
+feature. That is how narrow the gap was.
+
+**Fix:** `dispatch.js` provides `dispatch.maintenance`; `fleetSnapshot()` in
+`server.js` resolves it at call time and merges `maintenance: {since, note} |
+null` onto every printer. The Dash card gets a `maint` pill, a card style and a
+`maintline` in words; the Match card gets a tag and a card style. Manual
+printing to a down machine is still allowed on purpose — you want to test-print
+after a repair — but it can no longer happen without reading the word
+"maintenance". Five harness checks now assert the field *and* the markup.
+
+**Rule:** a fact about a printer belongs to the fleet, not to the module that
+happens to own its storage. Before calling a feature done, list every surface
+that draws that object and check each one — the count is the deliverable, not
+the first tab that works.
 
 ---
 

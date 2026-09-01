@@ -277,12 +277,16 @@
       if (T.orphaned) bits.push(`<b>${T.orphaned} colour${T.orphaned > 1 ? "s were" : " was"}
         mapped to a spool that is no longer on the shelf.</b> The mapping is kept, not
         guessed at — pick the replacement from the dropdown on those rows.`);
-      if (OI.length) bits.push(`${OI.length} inventory entr${OI.length > 1 ? "ies" : "y"}
-        belong${OI.length > 1 ? "" : "s"} to ${OI.length > 1 ? "spools" : "a spool"} that no longer
-        exist${OI.length > 1 ? "" : "s"} (${OI.map(o =>
+      // v2.20: an entry nothing refers to is deleted server-side the moment the
+      // spool goes, so this can only be an entry a colour above still points at
+      // — i.e. numbers being HELD for a mapping, not litter. Say that, and keep
+      // the manual escape hatch for someone who wants them gone now.
+      if (OI.length) bits.push(`${OI.length === 1 ? "A roll" : OI.length + " rolls"} above
+        ${OI.length === 1 ? "is" : "are"} mapped to filament that has left the shelf, so
+        ${OI.length === 1 ? "its" : "their"} numbers (${OI.map(o =>
           (o.remaining_g == null ? "?" : Math.round(o.remaining_g) + " g")
-          + (o.cost_per_roll == null ? "" : " @ $" + o.cost_per_roll)).join(", ")}) —
-        harmless, but nothing points at ${OI.length > 1 ? "them" : "it"} any more.
+          + (o.cost_per_roll == null ? "" : " @ $" + o.cost_per_roll)).join(", ")})
+        ${OI.length === 1 ? "is" : "are"} being kept for the replacement.
         <span class="rforget">${OI.map(o => `<button class="invf" data-forget="${esc(o.spool_id)}"
           title="Delete the inventory recorded against spool ${esc(o.spool_id)}. Its numbers are shown above; this cannot be undone.">
           forget ${esc(o.spool_id)}</button>`).join(" ")}</span>`);

@@ -10,6 +10,7 @@
   "scripts": {
     "start": "node server.js",
     "test": "node test/run-tests.js",
+    "test:standalone": "node test/affiliate-standalone.js && node test/amounts-standalone.js && node test/de-nearwhite-standalone.js && node test/gold-falsify-standalone.js && node test/inventory-reconcile-standalone.js && node test/resources-standalone.js && node test/slicing-standalone.js && node test/updates-standalone.js",
     "refresh-filament-db": "node scripts/refresh-filament-db.js",
     "build": "pkg . --targets node22-win-x64,node22-macos-x64,node22-macos-arm64,node22-linux-x64 --out-path dist"
   },

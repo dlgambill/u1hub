@@ -65,7 +65,7 @@ failure appears 4–5 times, promote it to a hard rule below.
 
 ## Harness
 
-`npm test` → **472 checks**, expect **472 passed, 0 failed**. A red harness
+`npm test` → **481 checks**, expect **481 passed, 0 failed**. A red harness
 blocks everything.
 
 Takes ~2.5 min over SMB. Run it with `scripts/run-harness.cmd` and poll
@@ -74,14 +74,17 @@ Takes ~2.5 min over SMB. Run it with `scripts/run-harness.cmd` and poll
 `public/index.html`: `node --check` only covers `.js`, so a typo in the page's
 own 2,400-line inline script would otherwise ship silently.
 
-Standalone suites, run directly and not from `npm test`:
+Standalone suites — `npm run test:standalone` runs all of them in one go
+(added 2026-09-01, because "run directly" had come to mean "never run"):
 `test/amounts-standalone.js` (44, real gcode) · `test/resources-standalone.js` ·
 `test/de-nearwhite-standalone.js` (the ΔE 7 gate) ·
 `test/gold-falsify-standalone.js` (rule-6 evidence for the CSS checks) ·
 `test/updates-standalone.js` (16, version ordering) ·
-`test/affiliate-standalone.js` (25, link shaping).
+`test/affiliate-standalone.js` (25, link shaping) ·
+`test/inventory-reconcile-standalone.js` (17, deleting a roll leaves nothing
+behind — falsified by `scripts/falsify-reconcile.js`).
 
-Green on Windows against `X:` (2026-09-01 11:04, v2.19.0) — and verified in the
+Green on Windows against `X:` (2026-09-01 12:41, v2.20.0) — and verified in the
 23:00 hour specifically, which is when the clock-sensitive checks used to fail.
 
 **Live gates without touching production.** `scripts/boot-4546.cmd` starts a

@@ -1315,6 +1315,12 @@ function register(ctx) {
   });
 
   ctx.provide("dispatch.jobs", () => D.jobs);
+  // v2.20: maintenance is a FLEET fact, not a Dispatch-tab fact. It shipped
+  // visible only on the Dispatch guide, so the Dash card for a machine taken
+  // out of service still read "IDLE" — you could stand at the Dash, see an idle
+  // printer, and send it work you had explicitly said not to send it. Every
+  // surface that draws a printer needs this, so it goes on /api/fleet.
+  ctx.provide("dispatch.maintenance", () => D.maintenance);
 }
 
 module.exports = { register };

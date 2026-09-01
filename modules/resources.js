@@ -167,10 +167,22 @@ function makeStore(baseDir, hublog) {
 //   local[]   manually added, negative numeric id
 // They are joined here into one list with a string id, then decorated with the
 // inventory numbers this module owns.
-function readShelf(baseDir, store) {
-  let raw = {};
-  try { raw = JSON.parse(fs.readFileSync(path.join(baseDir, "spools.json"), "utf8")) || {}; }
-  catch { raw = {}; }
+// `meta` is an optional out-param: meta.authoritative says whether the empty-
+// or-short shelf we are about to return is a FACT or a failed read. Anything
+// that deletes on the strength of "this id is not on the shelf" must check it —
+// spools.json lives on an SMB share, and one EIO would otherwise look exactly
+// like "the user threw away every roll they own".
+function readShelf(baseDir, store, meta) {
+  let raw = {}, authoritative = false;
+  try {
+    raw = JSON.parse(fs.readFileSync(path.join(baseDir, "spools.json"), "utf8")) || {};
+    authoritative = !!(raw.spools && typeof raw.spools === "object");
+  } catch (e) {
+    // No file at all is a real answer: nothing has ever been put on the shelf.
+    // A parse error or an I/O error is not.
+    raw = {}; authoritative = !!(e && e.code === "ENOENT");
+  }
+  if (meta) meta.authoritative = authoritative;
   const out = [];
   const add = (id, s, source) => {
     if (!s) return;
@@ -214,6 +226,51 @@ function readShelf(baseDir, store) {
   for (const [id, s] of Object.entries(raw.spools || {})) add(id, s, "rfid");
   return out;
 }
+// v2.20: throwing a roll away must not leave a notice behind forever.
+//
+// Before this, deleting a spool stranded its inventory row and the Resources
+// tab said so on every render — "1 inventory entry belongs to a spool that no
+// longer exists (600 g @ $25)" — with a `forget` button as the only way out.
+// Danny's read is the right one: deleting filament from the library IS the
+// instruction to forget its numbers. A banner that survives the delete is the
+// software arguing with a decision the user already made.
+//
+// So the row is dropped automatically, but only when both are true:
+//   1. the shelf read was AUTHORITATIVE (see readShelf) — never delete on the
+//      strength of a failed read of a file on a network share; and
+//   2. nothing in color_map still points at that spool id.
+//
+// (2) is what keeps this from being data loss. A colour deliberately mapped to
+// a roll that is briefly off the shelf — swapped brands, tag rebound, spool in
+// a drawer — still names it, and the existing orphan path already reports that
+// case in a way you can act on (and re-adding the spool restores the mapping
+// intact). Only an entry that nothing anywhere refers to is dropped, and the
+// grams and price go to the log on the way out so the number is recoverable.
+function reconcileInventory(hublog, store, shelfIds, authoritative) {
+  const inv = store.state.inv || {};
+  const cm = store.state.color_map || {};
+  const referenced = new Set(Object.values(cm).map(String));
+  const kept = [], dropped = [];
+  for (const [id, v] of Object.entries(inv)) {
+    if (shelfIds.has(id)) continue;
+    const row = { spool_id: id, remaining_g: v.remaining_g ?? null,
+                  cost_per_roll: v.cost_per_roll ?? null };
+    if (!authoritative || referenced.has(id)) { kept.push(row); continue; }
+    dropped.push(row);
+    delete inv[id];
+  }
+  if (dropped.length) {
+    store.save();
+    for (const d of dropped)
+      hublog("info", "resources: dropped inventory for deleted spool " + d.spool_id +
+        " (" + (d.remaining_g == null ? "no grams" : d.remaining_g + " g") +
+        (d.cost_per_roll == null ? "" : " @ " + d.cost_per_roll) + ") — nothing referenced it");
+  }
+  // Only entries a colour still points at are reported. Everything else is
+  // already gone, and a report of something you cannot act on is noise.
+  return authoritative ? kept : [];
+}
+
 // ---- Amazon associate links (v2.19) ----------------------------------------
 // Two honest halves, and only one of them is buildable without credentials.
 //
@@ -553,16 +610,13 @@ function register(ctx) {
   function compute(q) {
     const jobs = jobsNow();
     if (jobs === null) return { error: "Dispatch is off — there is no schedule to price." };
-    const shelf = readShelf(ctx.baseDir, store);
-    // Inventory rows whose spool no longer exists. Harmless to the maths — the
-    // rollup only reads inventory through a matched spool — but they are a
-    // person's typed-in grams and price sitting in a file with nothing pointing
-    // at them, so they get reported rather than left to rot silently.
+    const meta = {};
+    const shelf = readShelf(ctx.baseDir, store, meta);
+    // Inventory rows whose spool no longer exists. Unreferenced ones are simply
+    // dropped here (see reconcileInventory); what comes back is the short list a
+    // colour still points at, which is the only kind you can actually act on.
     const shelfIds = new Set(shelf.map(s => s.id));
-    const orphaned_inv = Object.entries(store.state.inv || {})
-      .filter(([id]) => !shelfIds.has(id))
-      .map(([id, v]) => ({ spool_id: id, remaining_g: v.remaining_g ?? null,
-                           cost_per_roll: v.cost_per_roll ?? null }));
+    const orphaned_inv = reconcileInventory(ctx.hublog, store, shelfIds, meta.authoritative);
     const agg = rollup({
       jobs, shelf,
       store, cache,
@@ -759,4 +813,4 @@ function register(ctx) {
 
 module.exports = { register, buyLink, asinOf, isAmazonUrl, affiliateConf, DEFAULT_AMAZON_TAG,
   deltaE2000, rgbToLab, hexToRgb, normHex,
-                   matchSpool, rollup, buildRows, COUNTED_STATES };
+                   matchSpool, rollup, buildRows, reconcileInventory, readShelf, COUNTED_STATES };
