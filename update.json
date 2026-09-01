@@ -1,7 +1,7 @@
 {
   "_comment": "Release manifest. Every Hub with update checks on fetches this file and compares its own version against `version`. Bump it as part of cutting a release, not before — the harness pins it equal to package.json so a manifest that lies about the current release cannot ship.",
-  "version": "2.20.0",
+  "version": "2.21.0",
   "url": "https://github.com/dlgambill/u1hub/releases",
-  "notes": "Push a job back one place when two want the same spool. Take a printer down for maintenance and the queue redistributes across the rest. Plus update notices, a keyboard-reachable UI, and a fix for phantom spools in the Resource Monitor.",
+  "notes": "Your printers' Klipper pages now work from anywhere the Hub does — the link on each Dash card rides the Hub's tunnel and password. Maintenance shows on every tab, deleted spools stop leaving warnings behind, and one clear 'Replenish on Amazon' link replaces Buy/Search.",
   "published": "2026-09-01"
 }

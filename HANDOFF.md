@@ -648,3 +648,70 @@ three the first time the restarted Hub served `/api/resources`;
   black eight rolls at a time but has entered one. He has looked at this and
   said the warnings are fine — do not "fix" it with inventory-derived
   contention. That was proposed and declined on 2026-09-01.
+
+---
+
+## 12. Addendum — v2.21.0 (2026-09-01): Klipper pages from anywhere, and three of Danny's UX calls
+
+**Harness: 510 passed, 0 failed.** `scripts/gate-klipper.js` (new live gate): 14
+passed against a real printer. Version 2.21.0 across server.js, package.json,
+index.html and update.json.
+
+### The Klipper reverse proxy (`modules/klipper.js`)
+
+Danny: *"if I'm outside of the network I can't access the printers Klipper
+pages. Can we add those to the tunnel somehow?"*
+
+Each printer's own Fluidd UI is now served at `/p/<id>/` on the Hub, so it rides
+the tunnel and the password gate. Measured before building: Fluidd's assets are
+all relative and its `config.json` `endpoints` parser preserves pathnames, so a
+path prefix is a supported shape — the proxy rewrites exactly ONE response
+(config.json, to point Fluidd back through `/p/<id>`) and relays everything
+else byte-for-byte, WebSocket included.
+
+Load-bearing details, each with a harness check:
+- Core skips `express.json()` under `/p/` (`PRINTER_PROXY_PREFIX` in server.js)
+  — a parsed body is a drained stream, and the proxy would forward nothing.
+- `SERVER.on("upgrade")` + `ctx.onUpgrade()`: upgrades never reach Express, so
+  auth.js now returns `isAuthed` and the module gates the socket itself.
+- `/p/3` (no slash) 302s to `/p/3/` — otherwise every `./asset` resolves a
+  directory too high and the app loads blank.
+- The printer sees its own Host (Moonraker CORS) and never sees the Hub's
+  session cookie.
+- Chosen by Danny: the Dash ↗ link **always** goes through the Hub (one code
+  path; the direct IP stays in the tooltip). The nine-ingress-rules alternative
+  was rejected because Klipper has no login — it would publish nine
+  unauthenticated control UIs.
+
+Live-gated twice: `gate-klipper.js` (byte-identical bundle, config rewrite,
+JSON-RPC answered over the proxied socket) and a real browser session — Fluidd
+at `/p/0/` connected, live print telemetry updating. The camera tile's "(error)"
+was checked against the printer directly: identical on the LAN, pre-existing,
+not the proxy.
+
+### Danny's three UX calls, all shipped
+
+1. **"Replenish on Amazon."** The `add buy link` chore-cell is gone from the
+   Spools rows, and the Buy/Search label split is gone everywhere — one label on
+   both tabs, the title still says whether the click lands on a saved link or a
+   search. (`scripts/falsify-replenish.js` proves the five checks bite.)
+2. **The affiliate switch lives in Settings now** — "Supporting the project",
+   his wording: "…receives a small commission… if you do not wish to support
+   them, uncheck this box." Applies immediately, round-trips through the new
+   `GET /api/resources/affiliate`, hides itself when the resources module is
+   off. The Resources-tab disclosure is the same switch through another door.
+3. **Slicing warns before it enables.** The box was already unchecked (his
+   config: `slicing:false`); ticking it now confirm()s — "not yet ready for
+   use… feel free to fork the project at github.com/dlgambill/u1hub" — and
+   Cancel puts the box back.
+
+### For the next session
+
+- **Four commits unpushed** as of this addendum's writing (v2.20 ×2, HANDOFF,
+  v2.21). `update.json` says 2.21.0 and notifies nobody until pushed.
+- The affiliate tag is still ACTIVE on Danny's own install; Amazon does not pay
+  on own purchases. The switch is now one click away in Settings.
+- The slicing warning's confirm() blocks the Chrome bridge — never click that
+  checkbox through browser automation; the harness asserts it from markup.
+- White and pink still match no spool; black warnings are expected (8 rolls
+  bought, 1 entered) and Danny has said they are fine as-is.

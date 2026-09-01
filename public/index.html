@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- U1 Print Hub — index v2.20.0 -->
+<!-- U1 Print Hub — index v2.21.0 -->
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
@@ -590,6 +590,25 @@
         <div class="row" id="setFeatures" style="flex-wrap:wrap;gap:10px"></div>
         <div class="hint" id="setFeaturesNote" style="display:none;color:#d6a832">Feature changes saved — restart the Hub to apply them.</div>
 
+        <!-- v2.21: the affiliate switch, findable where a person would look for
+             it. It has lived on the Resources tab since 2.19, but a setting you
+             can only find by already being on the right tab in the right state
+             is not a setting — Danny went to Settings and it was not there.
+             Applies immediately (it is a resources API setting, not part of the
+             Save blob), and the section hides itself when the resources module
+             is off, because a switch for links that cannot render is noise. -->
+        <div id="setAffiliate" style="display:none">
+          <label class="fl" style="margin-top:14px">Supporting the project</label>
+          <label style="display:flex;align-items:flex-start;gap:8px;font-size:13px;border:1px solid #333;border-radius:7px;padding:8px 10px;max-width:640px;cursor:pointer">
+            <input type="checkbox" id="setAffOn" style="margin-top:2px">
+            <span>The creator of this software receives a small commission when you buy filament
+            through the Hub's “Replenish on Amazon” links — at no extra cost to you.
+            If you do not wish to support them, uncheck this box. The links keep working either way;
+            they just go out without the affiliate tag.</span>
+          </label>
+          <div class="pstatus" id="setAffStatus"></div>
+        </div>
+
 
         <label class="fl" style="margin-top:14px">Printer types <span class="betachip">BETA</span> <span class="hint">a type owns a folder, an accent color and a switcher tab — U1 keeps the flat base folder. Non-U1 types are in beta: they work against stock Klipper/Moonraker in testing, and we're gathering real-hardware reports. Hit a problem? Use “Download diagnostics” below and attach the file to a <a href="https://github.com/dlgambill/u1hub/issues/new/choose" target="_blank" rel="noopener" style="color:var(--signal)">GitHub issue</a>.</span></label>
         <div id="setTypes"></div>
@@ -721,7 +740,7 @@
 
 <script>
 const $ = id => document.getElementById(id);
-const VERSION = "2.20.0";
+const VERSION = "2.21.0";
 let FILES = [], SELECTED = null, MAP = null, FLEET = [], MAPSEL = {};
 let ONBOARD = [], ACT = null; // onboard = /api/printer-files cache; ACT = open per-printer action strip {name,pid}
 let SRCSEL = { hub:true, p:{} }; // source-filter checkboxes; p[pid]=false hides that printer (default: everything on)
@@ -2289,20 +2308,28 @@ async function loadSpools(){
     return `<div class="spoolinv">`
       + invCell(sp.spool_id,"remaining_g", v.remaining_g, "", " g left", "set grams")
       + invCell(sp.spool_id,"cost_per_roll", v.cost_per_roll, "$", "/roll", "set price")
-      + invCell(sp.spool_id,"purchase_url", v.purchase_url, "", "", "add buy link")
       // v2.20: always offer a way to buy. Before this the link appeared only if
       // you had already pasted a purchase URL, so a shelf where nobody had done
       // that (i.e. every real shelf) showed "add buy link" and nothing else. The
       // server now hands back v.buy — the spool's own URL when it has one, an
-      // Amazon search for that brand/material/colour when it does not. It says
-      // "Search" rather than "Buy" in the second case because the Hub has not
-      // checked that the filament exists there.
+      // Amazon search for that brand/material/colour when it does not.
+      //
+      // v2.21: the "add buy link" cell is GONE, and the link says the same
+      // thing in both cases. Danny's call, and it is right twice over. Every
+      // row was carrying a chore ("paste a URL for this roll") that nobody was
+      // ever going to do nine times, sitting directly above a control that
+      // already worked without it — so the chore read as the primary action and
+      // the working control as a fallback. And "Search" vs "Buy" made you read
+      // the button to learn which kind of link you happened to have, which is a
+      // distinction the code cares about and a person restocking a colour does
+      // not. A saved purchase_url still wins as the destination; the title
+      // still says where the click lands.
       + (v.buy
           ? `<a class="invbuy" href="${esc(v.buy.url)}" target="_blank" rel="noopener"
                title="${v.buy.kind === "search"
-                 ? "No link saved on this spool — search Amazon for it" + (v.buy.tagged ? " (affiliate link)" : "")
+                 ? "Searches Amazon for this filament" + (v.buy.tagged ? " (affiliate link)" : "")
                  : esc(v.buy.url) + (v.buy.tagged ? " (affiliate link)" : "")}"
-             >${v.buy.kind === "search" ? "Search ↗" : "Buy ↗"}</a>`
+             >Replenish on Amazon ↗</a>`
           : "")
       + `</div>`;
   };
@@ -2394,6 +2421,32 @@ $("diagDl").addEventListener("click",async ()=>{
   }catch(e){ st.className="pstatus err"; st.textContent="Export failed: "+e.message; }
   b.disabled=false;
 });
+
+// v2.21: the ↗ on a card goes through the Hub, not to the printer's LAN IP.
+//
+// Danny: "if I'm outside of the network I can't access the printers Klipper
+// pages." The direct link only ever worked from the house, and it looked
+// identical from a phone on cellular — a link that is dead exactly when you
+// most want it (something has gone wrong and you are not there). /p/<id>/ is
+// the same UI relayed by the Hub, so it works wherever the Hub does and rides
+// the tunnel's HTTPS and the password gate with it.
+//
+// One link, not two, and never a guess about which network you are on: a rule
+// like "direct on the LAN, proxied when remote" gets VPN and split-DNS wrong,
+// and being wrong means a dead link with no explanation. The local hop through
+// the Hub costs a few milliseconds on a machine that is already talking to all
+// nine printers twice a minute. The direct address is still in the tooltip for
+// when the Hub itself is the thing that is down.
+function klipperHref(p){
+  if(!p.url) return "#";
+  if(window.HUB_FEATURES && window.HUB_FEATURES.klipper === false) return p.url;
+  return "/p/" + p.id + "/";
+}
+function klipperTitle(p){
+  if(window.HUB_FEATURES && window.HUB_FEATURES.klipper === false)
+    return "Open " + p.url + " — the printer's own Klipper UI (same network only)";
+  return "Open " + p.name + "'s Klipper UI through the Hub — works from anywhere the Hub does. Direct: " + p.url;
+}
 
 function renderFleet(){
   const need=neededColors();
@@ -2519,7 +2572,7 @@ function renderFleet(){
     }
     card.innerHTML=`
       <div class="top">${p.url
-        ? `<a class="pn pnlink" href="${esc(p.url)}" target="_blank" rel="noopener" title="Open ${esc(p.url)} — the printer's own Klipper UI (same network only)">${esc(p.name)}<span class="pnout">↗</span></a>`
+        ? `<a class="pn pnlink" href="${esc(klipperHref(p))}" target="_blank" rel="noopener" title="${esc(klipperTitle(p))}">${esc(p.name)}<span class="pnout">↗</span></a>`
         : `<span class="pn">${esc(p.name)}</span>`}<span style="display:flex;align-items:center;gap:7px">${p.online?`<button class="statsbtn${STATSOPEN.has(p.id)?' on':''}" data-statsbtn="${p.id}" title="Temps &amp; job stats">▁▂▅</button>`:""}${diskChip(p)}<span class="pill ${pillCls}"><span class="dot"></span>${pillTxt}</span></span></div>
       ${p.maintenance ? `<div class="maintline">⚒ Out of service${
         p.online && (p.state==="printing"||p.state==="paused") ? " after this print" : ""
@@ -3083,19 +3136,59 @@ async function loadConfigUI(){
     const c=await (await fetch("/api/config")).json();
     $("setFolder").value=c.gcodeFolder||"";
     (function(){
-      const LBL={power:"Smart plugs",camera:"Chamber cameras",spools:"Spools & RFID",match:"Spool Match",mixer:"FS Mixer","types-beta":"Printer types (beta)",dispatch:"Dispatch scheduler",slicing:"In-app slicing"};
+      const LBL={power:"Smart plugs",camera:"Chamber cameras",spools:"Spools & RFID",match:"Spool Match",mixer:"FS Mixer","types-beta":"Printer types (beta)",dispatch:"Dispatch scheduler",slicing:"In-app slicing",resources:"Resource Monitor",updates:"Update notices",klipper:"Printer pages via Hub"};
       const cfgF=c.featuresConfig||c.features||{}, liveF=c.features||{};
       const box=$("setFeatures");
       box.innerHTML=Object.keys(cfgF).map(k=>
         `<label style="display:flex;align-items:center;gap:6px;font-size:13px;border:1px solid #333;border-radius:7px;padding:6px 10px"><input type="checkbox" data-feat="${k}" ${cfgF[k]!==false?"checked":""}> ${LBL[k]||k}</label>`).join("");
       $("setFeaturesNote").style.display = Object.keys(cfgF).some(k=>(cfgF[k]!==false)!==(liveF[k]!==false)) ? "" : "none";
+      // v2.21: slicing ships unfinished (see MODULE_DEFAULTS — off since 2.12
+      // because the CLI path has never passed a live hardware gate). Someone
+      // exploring Settings deserves to hear that BEFORE the box is ticked and
+      // saved, not after a broken tab appears. confirm(), not alert(): the
+      // person chooses, and Cancel puts the box back the way it was.
+      const sl=box.querySelector('[data-feat="slicing"]');
+      if(sl) sl.addEventListener("change",()=>{
+        if(!sl.checked) return;
+        const goAhead=confirm("In-app slicing is not yet ready for use.\n\nIf you are interested in developing it, please feel free to fork the project at:\nhttps://github.com/dlgambill/u1hub\n\nEnable it anyway?");
+        if(!goAhead) sl.checked=false;
+      });
     })();
+    loadAffiliateUI();
     if(Array.isArray(c.types)&&c.types.length) TYPES=c.types;
     renderTypeRows();
     $("setPrinters").innerHTML="";
     (c.printers||[]).forEach(p=>addPrinterRow(p.name,p.url,p.plug,p.type));
     if(!c.configured){ $("setup").classList.add("show"); $("setupmsg").textContent="welcome — add your printers to begin"; if(!$("setPrinters").children.length) addPrinterRow("",""); }
   }catch(e){}
+}
+// v2.21: the affiliate switch in Settings. State lives in the resources module
+// (/api/resources/affiliate); this is a second door to the same switch, so the
+// Resources-tab disclosure and this checkbox can never disagree. Applies on
+// change — a support choice should not be hostage to the Save button, and the
+// setting is not part of the config blob anyway.
+async function loadAffiliateUI(){
+  const wrap=$("setAffiliate"); if(!wrap) return;
+  try{
+    const r=await fetch("/api/resources/affiliate");
+    if(!r.ok){ wrap.style.display="none"; return; }   // resources module off
+    const a=(await r.json()).affiliate||{};
+    wrap.style.display="";
+    const cb=$("setAffOn");
+    cb.checked=a.enabled!==false;
+    if(!cb.dataset.wired){
+      cb.dataset.wired="1";
+      cb.addEventListener("change",async()=>{
+        const st=$("setAffStatus"); st.className="pstatus work"; st.textContent="Saving…"; cb.disabled=true;
+        try{
+          const rr=await fetch("/api/resources/affiliate",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({enabled:cb.checked})});
+          if(!rr.ok) throw new Error((await rr.json()).error||("HTTP "+rr.status));
+          st.className="pstatus ok"; st.textContent=cb.checked?"Thank you! Affiliate links are on.":"Affiliate links are off.";
+        }catch(e){ st.className="pstatus err"; st.textContent="Could not save: "+e.message; cb.checked=!cb.checked; }
+        cb.disabled=false;
+      });
+    }
+  }catch(e){ wrap.style.display="none"; }
 }
 // ---- Printer-type management (Settings) -------------------------------------
 // Two deliberately separate actions: "Add printer type" names a fleet class

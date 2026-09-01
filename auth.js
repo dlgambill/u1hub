@@ -189,4 +189,12 @@ module.exports = function mountAuth(app, express, baseDir, assetDir) {
     setCookie(res, "gone", 0);
     res.json({ ok: true });
   });
+
+  // v2.21: the gate above is Express middleware, and a WebSocket UPGRADE never
+  // reaches Express — Node hands it to the server's 'upgrade' event instead.
+  // modules/klipper.js proxies Moonraker's socket, so it has to run the same
+  // check itself. Returning the predicate is the whole export: nothing else in
+  // this closure is anyone's business, and re-implementing a session check
+  // elsewhere is how two definitions of "logged in" start drifting apart.
+  return { isAuthed };
 };

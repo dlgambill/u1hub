@@ -747,6 +747,14 @@ function register(ctx) {
   // quietly reversed later: this ships DISCLOSED and switchable. Anyone running
   // the Hub — including him — can turn it off in one click, and with it off no
   // tag is applied to anything.
+  // GET (v2.21): the switch is now also in Settings, which needs to read the
+  // state without dragging in the whole rollup — and a POST with an empty body
+  // as a read is the kind of cleverness that turns into a bug report.
+  app.get("/api/resources/affiliate", (req, res) => {
+    const aff = affiliateConf(ctx.cfg);
+    res.json({ affiliate: { enabled: aff.enabled, tag_set: !!aff.amazon, active: !!(aff.enabled && aff.amazon) } });
+  });
+
   app.post("/api/resources/affiliate", express.json ? express.json() : (q, s, n) => n(), (req, res) => {
     const b = req.body || {};
     // Resolve through affiliateConf, NOT off the raw config block. Reading the

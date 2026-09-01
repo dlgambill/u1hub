@@ -113,6 +113,28 @@ function createMock(profile) {
     if (u.pathname === "/server/files/metadata")
       return send(200, { result: {} });
 
+    // v2.21 fixture, for the Klipper reverse proxy only: reflect what actually
+    // arrived. The proxy relays a raw stream, and the failure it must rule out
+    // is core's express.json() having already drained the body — a defect that
+    // is invisible from status codes alone, because an empty POST still
+    // succeeds. Echoing method, content-type and the exact bytes makes it
+    // visible. Deliberately not a Moonraker route: nothing but the proxy test
+    // may depend on it.
+    if (u.pathname === "/__echo") {
+      let body = "";
+      req.on("data", c => body += c);
+      req.on("end", () => send(200, {
+        method: req.method,
+        contentType: req.headers["content-type"] || "",
+        host: req.headers.host || "",
+        cookie: req.headers.cookie || "",
+        query: u.search || "",
+        bytes: Buffer.byteLength(body),
+        body
+      }));
+      return;
+    }
+
     send(404, { error: "mock: no route " + u.pathname });
   });
 

@@ -310,7 +310,7 @@
     const A = DATA.affiliate || {};
     if (A.active && A.tagged_rows > 0) {
       w.push(`<div class="rwarn rdisc" style="border-color:var(--line);background:transparent">
-        <span class="rdisctxt">Buy and Search links on this page are Amazon affiliate links —
+        <span class="rdisctxt">The "Replenish on Amazon" links on this page are Amazon affiliate links —
         if you buy through one, this project earns a small commission at no extra cost to you.
         Prices and availability are Amazon's; the Hub does not check them.</span>
         <button class="btn" id="res-aff" style="margin-left:10px;padding:3px 9px;font-size:11.5px">Turn off</button>
@@ -320,7 +320,7 @@
       // stored: the way back on must always be visible from the same place the
       // way off was, or turning it off is a one-way door.
       w.push(`<div class="rwarn rdisc" style="border-color:var(--line);background:transparent">
-        <span class="rdisctxt">Affiliate links are off — Buy and Search links go out untagged.${
+        <span class="rdisctxt">Affiliate links are off — the "Replenish on Amazon" links go out untagged.${
           A.tag_set ? "" : " No associate tag is stored, so turning this on will do nothing until one is set."}</span>
         <button class="btn" id="res-aff" style="margin-left:10px;padding:3px 9px;font-size:11.5px">Turn on</button>
       </div>`);
@@ -392,25 +392,30 @@
       // second list) is the whole reason it never got filled in.
       const price = inv(r.spool_id, "cost_per_roll",
         r.cost_per_roll == null ? null : "$" + r.cost_per_roll.toFixed(2), "set price");
-      // v2.19: a row with no purchase link falls back to an Amazon SEARCH, and
-      // says "Search" rather than "Buy". The Hub has not checked that the
-      // filament exists there — it cannot, without the Product Advertising API
-      // — so a button that said "Buy" would be claiming something it does not
-      // know. The title spells out where the click goes either way.
+      // v2.19: a row with no purchase link falls back to an Amazon SEARCH. The
+      // Hub has not checked that the filament exists there — it cannot, without
+      // the Product Advertising API — so the label must not promise a specific
+      // product. "Replenish on Amazon" is honest about both cases: it says
+      // where you land, not what is waiting there.
       // v2.20: a real anchor, not a button driven by window.open(). A popup
       // blocker eats window.open silently — no error, no tab, nothing to
       // diagnose — and "the buy links aren't live" is exactly what that looks
       // like from the outside. An <a target="_blank"> is a plain navigation and
       // is never blocked. It is also middle-clickable and copyable, which a
       // button never was.
+      // v2.21: one label, "Replenish on Amazon", whether the click lands on a
+      // saved product link or a search. "Buy" vs "Search" made the user read
+      // the button to work out which kind of link they had — a distinction that
+      // matters to the code and not at all to the person restocking a colour.
+      // The destination still differs and the title still says which.
       const b = r.buy;
       const buy = !b
-        ? `<button class="rbuy" disabled title="No purchase link, and not enough detail on this spool to search for one">Buy</button>`
+        ? `<button class="rbuy" disabled title="Not enough detail on this spool to search Amazon for it">Replenish on Amazon</button>`
         : b.kind === "search"
           ? `<a class="rbuy" href="${esc(b.url)}" target="_blank" rel="noopener"
-               title="No link saved on this spool — this searches Amazon for ${esc(r.material)} ${esc(r.spool_name || r.color_hex)}${b.tagged ? " (affiliate link)" : ""}">Search</a>`
+               title="Searches Amazon for ${esc(r.material)} ${esc(r.spool_name || r.color_hex)}${b.tagged ? " (affiliate link)" : ""}">Replenish on Amazon</a>`
           : `<a class="rbuy go" href="${esc(b.url)}" target="_blank" rel="noopener"
-               title="${esc(b.url)}${b.tagged ? " (affiliate link)" : ""}">Buy</a>`;
+               title="${esc(b.url)}${b.tagged ? " (affiliate link)" : ""}">Replenish on Amazon</a>`;
       // On a phone the material cell is hidden and its value rides in the
       // colour cell instead — one line per row of chrome saved, and material
       // only ever matters next to the colour anyway.

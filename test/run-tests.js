@@ -2094,6 +2094,20 @@ async function stopHub() {
         "index.html renders the spool buy link from v.buy, not from purchase_url alone");
       ok(!/v\.purchase_url\s*\?\s*`<a class="invbuy"/.test(idx),
         "…and the old purchase_url-only gate is gone");
+      // v2.21: the "add buy link" chore is gone from the Spools rows, and the
+      // link says one thing. Checks the CALL, not the prose — the comment above
+      // it quotes the old label on purpose, and a check that a file does not
+      // mention a string is not a check that it does not render it.
+      ok(!/invCell\([^)]*"purchase_url"/.test(idx),
+        "the Spools row no longer offers 'add buy link'");
+      ok(/>Replenish on Amazon ↗<\/a>/.test(idx),
+        "…and the Spools link reads 'Replenish on Amazon' in both cases");
+      // The label was a ternary on v.buy.kind, so the string to hunt is the
+      // ternary's arms, not a finished tag. Falsification caught this: the
+      // tag-shaped version of this check passed against the reverted code.
+      ok(!/"(Search|Buy) ↗"/.test(idx),
+        "…with no Search/Buy split left in the markup",
+        (idx.match(/.{0,40}"(Search|Buy) ↗".{0,20}/g) || []).slice(0, 2));
     }
     // The Resources control is an anchor, not a window.open button: a popup
     // blocker eats window.open silently, which is indistinguishable from the
@@ -2109,6 +2123,11 @@ async function stopHub() {
         "the Buy/Search control does not rely on window.open",
         (code.match(/.{0,50}window\.open\(.{0,30}/g) || []).slice(0, 2));
       ok(/<a class="rbuy"/.test(rui), "…it is a real anchor");
+      ok(/>Replenish on Amazon<\/a>/.test(code) && /Replenish on Amazon<\/button>/.test(code),
+        "the Resources control reads 'Replenish on Amazon' in every state, disabled included");
+      ok(!/>\s*(Buy|Search)\s*<\/(a|button)>/.test(code),
+        "…and the old Buy/Search labels are gone from the rendered markup",
+        (code.match(/>\s*(Buy|Search)\s*<\/(a|button)>/g) || []).slice(0, 3));
     }
 
     let af = await jpost("/api/resources/affiliate", { amazon: "not a tag!!" });
@@ -2134,7 +2153,28 @@ async function stopHub() {
       (r.body.rows || []).filter(x => x.buy && /tag=/.test(x.buy.url)).map(x => x.buy.url).slice(0, 2));
     ok(r.body.affiliate.tagged_rows === 0,
       "…so the disclosure line stops claiming something is earned", r.body.affiliate);
+    // v2.21: the switch is readable without the rollup, because Settings now
+    // carries it too. Danny went looking for it in Settings and it was not
+    // there — a switch findable only from the right tab in the right state is
+    // not a setting.
+    let ag = await jget("/api/resources/affiliate");
+    ok(ag.status === 200 && ag.body.affiliate && ag.body.affiliate.enabled === false,
+      "GET /api/resources/affiliate reports the state the POST just set", ag.body);
     await jpost("/api/resources/affiliate", { enabled: true });
+    ag = await jget("/api/resources/affiliate");
+    ok(ag.body.affiliate.enabled === true && ag.body.affiliate.tag_set === true,
+      "…and tracks it back on, tag intact", ag.body);
+    {
+      const idx = fs.readFileSync(path.join(REPO, "public", "index.html"), "utf8");
+      ok(/setAffOn/.test(idx) && /receives a small commission/.test(idx) && /uncheck this box/.test(idx),
+        "Settings carries the affiliate choice, in plain words, with the box Danny asked for");
+      // And the slicing warning: the feature ships unfinished, so ticking its
+      // box must say so BEFORE it lands in the config, and offer the fork.
+      ok(/not yet ready for use/.test(idx) && /github\.com\/dlgambill\/u1hub/.test(idx.slice(idx.indexOf("not yet ready"))),
+        "ticking In-app slicing warns that it is unfinished and points at the fork");
+      ok(/if\(!goAhead\)\s*sl\.checked=false/.test(idx),
+        "…and declining the warning puts the checkbox back");
+    }
 
     // Restore the shelf for the checks that follow.
     fs.writeFileSync(spoolsPath, JSON.stringify({
@@ -2778,6 +2818,116 @@ async function stopHub() {
     ok(bare.length === 0,
       "every non-key colour in dispatch-ui.js resolves through a token",
       [...new Set(bare)].slice(0, 12));
+  }
+
+  // ---- KLIPPER: each printer's own UI, proxied through the Hub (v2.21) ----
+  // Danny: "if I'm outside of the network I can't access the printers Klipper
+  // pages." The tunnel publishes ONE origin — the Hub — so nine LAN hosts were
+  // unreachable from anywhere but the house, and the ↗ on every Dash card was a
+  // link that only worked when you did not need it.
+  //
+  // These checks cover the RELAY. The parts that need a real Fluidd — the app
+  // booting under a path prefix, config.json steering it back through the
+  // proxy, and Moonraker answering JSON-RPC over the proxied socket — are
+  // live-gated by scripts/gate-klipper.js against a real printer, because a
+  // mock that answers the way I expect proves only that I am consistent.
+  console.log("\n== KLIPPER: printer UIs behind the Hub (v2.21) ==");
+  {
+    const jfetch = async (p, init) => {
+      const res = await fetch(HUB + p, init);
+      const text = await res.text();
+      let body = null; try { body = JSON.parse(text); } catch {}
+      return { status: res.status, headers: res.headers, text, body };
+    };
+
+    let k = await jfetch("/api/klipper");
+    ok(k.status === 200 && Array.isArray(k.body.printers) && k.body.printers.length >= 2,
+      "the Hub publishes a proxied path for every configured printer", k.body);
+    ok(k.body.printers.every(p => p.path === "/p/" + p.id + "/"),
+      "…one path per printer index, so a renamed printer never moves", k.body.printers);
+    ok(k.body.printers.every(p => p.direct && p.direct !== p.path),
+      "…and still reports the direct address, for when the Hub is what is down");
+
+    // The relay itself. /machine/system_info is the mock's own route, so a
+    // correct answer here is the printer's answer, not the Hub's.
+    let m = await jfetch("/p/0/machine/system_info");
+    ok(m.status === 200 && m.body && m.body.result &&
+       m.body.result.system_info.product_info.device_name === "U1-mock",
+      "a request under /p/0/ reaches printer 0 and its own answer comes back", m.body);
+    m = await jfetch("/p/1/machine/system_info");
+    ok(m.status === 200 && m.body.result.system_info.product_info.device_name === "SV06-mock",
+      "…and /p/1/ reaches the OTHER printer — the index is not decorative", m.body);
+
+    // The trailing slash. Fluidd's assets are all relative (./assets/…), so a
+    // page served at /p/0 with no slash resolves every one of them against /p/
+    // and the app loads blank. This redirect is the whole reason it works.
+    const bare = await fetch(HUB + "/p/0", { redirect: "manual" });
+    ok(bare.status === 302 && bare.headers.get("location") === "/p/0/",
+      "/p/0 redirects to /p/0/ rather than serving one directory too high",
+      { status: bare.status, location: bare.headers.get("location") });
+
+    // Bounds. The id is the index into the printer list and nothing else.
+    ok((await jfetch("/p/99/machine/system_info")).status === 404,
+      "a printer index that does not exist is 404, not a proxy to nowhere");
+    ok((await jfetch("/p/abc/machine/system_info")).status === 404,
+      "a non-numeric id is refused — /p/ is not a general-purpose proxy");
+
+    // THE BODY. Core skips express.json() for this prefix on purpose: parsing
+    // the body drains the stream, and the proxy then forwards nothing. The
+    // failure is invisible from status codes — an empty POST still returns 200
+    // — so the mock echoes what actually arrived.
+    const payload = JSON.stringify({ jsonrpc: "2.0", method: "printer.gcode.script", id: 7 });
+    let e = await jfetch("/p/0/__echo", {
+      method: "POST", headers: { "content-type": "application/json" }, body: payload
+    });
+    ok(e.status === 200 && e.body && e.body.body === payload,
+      "a JSON POST arrives at the printer byte-for-byte, not drained by the Hub's parser",
+      e.body && { got: e.body.body, bytes: e.body.bytes, want: payload });
+    ok(e.body && e.body.method === "POST" && e.body.contentType === "application/json",
+      "…with its method and content-type intact", e.body);
+
+    // The printer must see ITS OWN host, or Moonraker's CORS check refuses a
+    // hostname it has never heard of.
+    ok(e.body && /^127\.0\.0\.1(:\d+)?$/.test(e.body.host),
+      "the printer is addressed by its own host, not the Hub's", e.body && e.body.host);
+    // And it must NOT see the Hub's session cookie. It means nothing to
+    // Moonraker and handing it to a device on the LAN is a leak for no benefit.
+    ok(e.body && e.body.cookie === "",
+      "the Hub's session cookie is not forwarded to the printer", e.body && e.body.cookie);
+
+    // Query strings survive — half of Moonraker's API is query-driven.
+    e = await jfetch("/p/0/__echo?root=gcodes&extended=true");
+    ok(e.body && e.body.query === "?root=gcodes&extended=true",
+      "the query string is relayed unchanged", e.body && e.body.query);
+
+    // config.json is the ONE response this proxy rewrites. The mock has no
+    // config.json, which exercises the fallback path: Fluidd still has to be
+    // told where to call back, even when the printer offers nothing to merge.
+    const cfg = await jfetch("/p/0/config.json");
+    ok(cfg.status === 200 && Array.isArray(cfg.body.endpoints) && cfg.body.endpoints.length === 1,
+      "config.json always names exactly one endpoint for Fluidd", cfg.body);
+    ok(String(cfg.body.endpoints[0]).endsWith("/p/0"),
+      "…pointing back through the proxy, not at the printer's LAN address", cfg.body.endpoints);
+    ok(/^http:\/\/127\.0\.0\.1:/.test(String(cfg.body.endpoints[0])),
+      "…built from the host the request actually arrived on, so it is right through a tunnel too",
+      cfg.body.endpoints);
+
+    // The gate. /p/ is not on auth.js's ALLOW list, and the upgrade handler
+    // asks isAuthed() itself — a WebSocket never passes through Express
+    // middleware, so without that call the socket is a hole straight past the
+    // password to printer control.
+    {
+      const kl = fs.readFileSync(path.join(REPO, "modules", "klipper.js"), "utf8");
+      const code = kl.split(/\r?\n/).map(l => l.replace(/^\s*\/\/.*$/, "")).join("\n");
+      ok(/ctx\.onUpgrade\(/.test(code) && /ctx\.isAuthed\(req\)/.test(code),
+        "the WebSocket upgrade is gated by the same session check as every other route");
+      const srv = fs.readFileSync(path.join(REPO, "server.js"), "utf8");
+      ok(/PRINTER_PROXY_PREFIX/.test(srv) && /req\.path\.startsWith\(PRINTER_PROXY_PREFIX\)/.test(srv),
+        "core skips the JSON body parser for the proxy prefix");
+      const idx = fs.readFileSync(path.join(REPO, "public", "index.html"), "utf8");
+      ok(/function klipperHref/.test(idx) && /"\/p\/"\s*\+\s*p\.id/.test(idx),
+        "the Dash card link goes through the Hub, not to the printer's LAN IP");
+    }
   }
 
   await stopHub();

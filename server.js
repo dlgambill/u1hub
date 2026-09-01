@@ -3,7 +3,7 @@
 // and pushes the chosen file to the chosen printer via Moonraker (server-side,
 // so no browser CORS headaches).
 
-const VERSION = "2.20.0";
+const VERSION = "2.21.0";
 
 const crypto = require("crypto");
 const express = require("express");
@@ -137,7 +137,7 @@ function saveConfigFile() {
 // fork). Default is everything ON: an untouched config behaves exactly like
 // 2.10. U1HUB_PROFILE=lite (the Lite binary's baked-in default) flips the
 // Lite set off unless config.json explicitly says otherwise.
-const MODULE_DEFAULTS = { power: true, camera: true, spools: true, match: true, mixer: true, "types-beta": true, dispatch: true, slicing: false, resources: true, updates: true };
+const MODULE_DEFAULTS = { power: true, camera: true, spools: true, match: true, mixer: true, "types-beta": true, dispatch: true, slicing: false, resources: true, updates: true, klipper: true };
 // resources (v2.16) needs dispatch for the schedule; with dispatch off it mounts
 // but every endpoint answers "nothing is scheduled" rather than erroring. It
 // reads spools.json off disk directly, so it does NOT need the spools module —
@@ -388,10 +388,22 @@ setInterval(pollPrintStarts, Math.max(250, parseInt(process.env.U1HUB_POLL_MS, 1
 pollPrintStarts();   // prime LAST_STATE at startup (won't stamp — prev is undefined)
 
 const app = express();
-app.use(express.json({ limit: "1mb" }));
+// v2.21: everything under PRINTER_PROXY_PREFIX is a byte-for-byte relay to a
+// printer's own web server (modules/klipper.js) and must NOT have its body
+// consumed here. express.json() reads the stream to parse it; once it has, the
+// proxy has nothing left to forward, and a Moonraker POST arrives empty. The
+// prefix is named in core rather than owned by the module because this is a
+// decision about the request pipeline, which is core's to make — the module
+// imports the same constant so the two can never disagree.
+const PRINTER_PROXY_PREFIX = "/p/";
+const jsonBody = express.json({ limit: "1mb" });
+app.use((req, res, next) =>
+  req.path.startsWith(PRINTER_PROXY_PREFIX) ? next() : jsonBody(req, res, next));
 // Access gate — fronts everything below (static included). Modes and the
 // off-switch live in auth.json; see auth.js for the design notes.
-require("./auth.js")(app, express, BASE_DIR, ASSET_DIR);
+// The returned isAuthed() is handed to modules that must gate a WebSocket
+// upgrade, which never passes through Express middleware.
+const AUTH = require("./auth.js")(app, express, BASE_DIR, ASSET_DIR);
 // Remote access — Hub-managed Cloudflare tunnel (see tunnel.js design notes).
 // Mounted after the gate so every /api/tunnel/* route requires login.
 require("./tunnel.js")(app, express, BASE_DIR, PORT);
@@ -2278,9 +2290,15 @@ const MODULE_TABLE = {
   // Last on purpose: it owns no data anyone else reads, and its only side
   // effect is one outbound HTTPS GET that must never delay a registration
   // above it.
-  updates: require("./modules/updates.js")
+  updates: require("./modules/updates.js"),
+  // v2.21: reverse-proxies each printer's own Klipper/Fluidd UI under /p/<id>/
+  // so it rides the Hub's tunnel and its password gate. Registered last-ish for
+  // the same reason as updates — it provides nothing, and its route is a
+  // catch-all under one prefix that must not shadow anything above it.
+  klipper: require("./modules/klipper.js")
 };
 const CAPS_PROVIDED = new Map();
+const UPGRADE_HANDLERS = [];   // v2.21: see ctx.onUpgrade below
 // Parse "estimated printing time (normal mode) = 1d 2h 3m" from gcode text.
 function parseEstMinutes(text) {
   const m = /estimated printing time[^=]*=\s*([^\n;]+)/i.exec(text || "");
@@ -2341,7 +2359,16 @@ const MODULE_CTX = Object.freeze({
   get types() { return TYPES; },
   get features() { return FEATURES; },
   provide: (key, fn) => CAPS_PROVIDED.set(key, fn),
-  use: key => CAPS_PROVIDED.get(key)
+  use: key => CAPS_PROVIDED.get(key),
+  // v2.21, for modules that proxy a WebSocket (klipper). A handler returns
+  // true if it took the socket; the first taker wins and anything nobody
+  // claims is closed rather than left hanging. Registered into a list because
+  // modules load BEFORE app.listen() — there is no server object yet.
+  onUpgrade: fn => UPGRADE_HANDLERS.push(fn),
+  // The same predicate the Express gate uses. An upgrade never reaches
+  // middleware, so a proxying module has to ask.
+  isAuthed: req => AUTH.isAuthed(req),
+  proxyPrefix: PRINTER_PROXY_PREFIX
 });
 for (const [name, mod] of Object.entries(MODULE_TABLE)) {
   if (FEATURES[name] === false) { hublog("info", "module '" + name + "' disabled by profile/config"); continue; }
@@ -2354,7 +2381,7 @@ for (const { name, fn } of INPLACE_MODULES) {
   catch (e) { hublog("error", "module '" + name + "' failed to register: " + e.message); }
 }
 
-app.listen(PORT, () => {
+const SERVER = app.listen(PORT, () => {
   const url = "http://localhost:" + PORT;
   console.log("\n  U1 Print Hub  v" + VERSION + "  →  " + url);
   console.log("  Folder:   " + FOLDER);
@@ -2366,4 +2393,22 @@ app.listen(PORT, () => {
       : process.platform === "darwin" ? `open "${url}"` : `xdg-open "${url}"`;
     try { require("child_process").exec(cmd); } catch {}
   }
+});
+
+// v2.21: WebSocket upgrades. Express never sees these — Node emits 'upgrade' on
+// the server and hands over the raw socket — so any module that needs one
+// registers a handler through ctx.onUpgrade during startup, and they are wired
+// here once the server exists.
+//
+// A handler returns true if it took the socket. Nothing claimed is CLOSED, not
+// ignored: an unanswered upgrade leaves the browser waiting on a socket that
+// will never speak, which looks exactly like a hung printer.
+SERVER.on("upgrade", (req, socket, head) => {
+  socket.on("error", () => {});   // a client that walks away mid-handshake is not an event
+  for (const h of UPGRADE_HANDLERS) {
+    try { if (h(req, socket, head) === true) return; }
+    catch (e) { hublog("error", "upgrade handler failed: " + e.message); break; }
+  }
+  try { socket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n"); } catch {}
+  try { socket.destroy(); } catch {}
 });

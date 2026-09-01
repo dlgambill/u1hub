@@ -65,7 +65,7 @@ failure appears 4–5 times, promote it to a hard rule below.
 
 ## Harness
 
-`npm test` → **481 checks**, expect **481 passed, 0 failed**. A red harness
+`npm test` → **510 checks**, expect **510 passed, 0 failed**. A red harness
 blocks everything.
 
 Takes ~2.5 min over SMB. Run it with `scripts/run-harness.cmd` and poll
@@ -84,7 +84,12 @@ Standalone suites — `npm run test:standalone` runs all of them in one go
 `test/inventory-reconcile-standalone.js` (17, deleting a roll leaves nothing
 behind — falsified by `scripts/falsify-reconcile.js`).
 
-Green on Windows against `X:` (2026-09-01 12:41, v2.20.0) — and verified in the
+Live gates that need REAL hardware (run by hand, results recorded in HANDOFF):
+`scripts/gate-klipper.js <printer-id>` — the v2.21 reverse proxy against a real
+Fluidd/Moonraker, byte-fidelity and a JSON-RPC round trip over the proxied
+WebSocket included.
+
+Green on Windows against `X:` (2026-09-01 13:38, v2.21.0) — and verified in the
 23:00 hour specifically, which is when the clock-sensitive checks used to fail.
 
 **Live gates without touching production.** `scripts/boot-4546.cmd` starts a

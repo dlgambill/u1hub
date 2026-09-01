@@ -29,6 +29,33 @@ Bridge quirks are operating facts, not judgment failures; a rule that says
 
 ---
 
+## 2026-09-01 — Three UX corrections from Danny in one afternoon, one lesson
+
+**What happened:** In quick succession: *"get rid of the add buy link button and
+just have the search button say something like 'replenish on Amazon'"*; *"there
+is nowhere in the settings to turn off the Amazon affiliate code"*; *"the in-app
+slicing is not ready… maybe have a warning that pops up when checked."*
+
+**Root cause, common to all three:** I placed controls where the CODE's
+structure put them, not where a person would look. The buy label exposed an
+internal distinction (saved URL vs search) nobody shopping for filament cares
+about. The affiliate switch lived only inside the Resources tab's disclosure
+line because that module owns the setting — but a person looking for a setting
+opens Settings. And an unfinished feature's checkbox looked exactly like every
+finished feature's checkbox, with the warning living only in a code comment.
+
+**Fix:** one label ("Replenish on Amazon") on both tabs; a "Supporting the
+project" section in Settings wired to the same `/api/resources/affiliate`
+switch (plus a GET so Settings can read it); a confirm() on the slicing box
+naming the fork URL, with Cancel reverting the tick.
+
+**Rule:** module boundaries are for code, not for controls. A setting belongs in
+Settings whatever module owns it; a label describes what the user gets, not
+which branch produced it; and a feature that is not ready has to say so at the
+moment of enabling, in the user's face, not in a comment.
+
+---
+
 ## 2026-09-01 — A notice that outlived the thing it was about
 
 **What happened:** Danny deleted a roll from his filament library. The Resources
