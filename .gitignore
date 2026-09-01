@@ -21,6 +21,15 @@ slots.json
 # v2.11: Dispatch state (never commit — schedules, deadlines, job history)
 dispatch.json
 
+# v2.16: Resource Monitor state (spool inventory, prices, buy links, colour map)
+resources.json
+
+# State-file backups and the stranded temp files that led to them (2026-09-01).
+# These hold real scheduling data — never commit them, never delete them either.
+dispatch.json.tmp
+*.json.bak-*
+*.json.tmp-*
+
 # local debris that should never ride along (v2.11 sweep)
 *.exe
 bridge.log
@@ -36,3 +45,7 @@ fp-before.json
 gstore*.json
 u3-check.json
 fix-v*-versions.txt
+test-out.txt
+slicejobs.json
+
+slicejobs.json

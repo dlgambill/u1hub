@@ -207,10 +207,40 @@ function register(ctx) {
     const day = DAY_KEYS[dt.getDay()];
     return (ov && ov[day]) || D.settings.week[day] || DAY(false, "00:00", "00:00");
   }
+  // Write, then swap. The swap is what makes a half-written file impossible —
+  // but it is ALSO what silently ate 17 hours of edits on 2026-08-31.
+  //
+  // Staging lives on an SMB share (X: -> \\192.168.12.81\share). Windows
+  // rename-over-an-existing-file across SMB does not reliably replace the
+  // destination, so renameSync threw every single time, the .tmp was left on
+  // disk holding the real state, dispatch.json kept its 07:37 contents, and the
+  // executor's `tick().catch(() => {})` swallowed the error on every 10 s pass.
+  // Removals vanished from the UI, came back on reload, and nothing anywhere
+  // said why. resources.json and spools.json were unaffected because they write
+  // straight to the file with no rename.
+  //
+  // So: keep the atomic path where the filesystem supports it, fall back to a
+  // direct write where it does not, and NEVER fail silently. A non-atomic write
+  // risks a torn file if the process dies mid-write; losing every edit for a day
+  // is worse, and certain.
+  let SAVE_FALLBACK = false;                     // latched, so we warn once
   function save() {
+    const data = JSON.stringify(D, null, 2);
     const tmp = FILE + ".tmp";
-    fs.writeFileSync(tmp, JSON.stringify(D, null, 2));
-    fs.renameSync(tmp, FILE);                    // atomic on the same volume
+    if (!SAVE_FALLBACK) {
+      try {
+        fs.writeFileSync(tmp, data);
+        fs.renameSync(tmp, FILE);                // atomic on a local volume
+        return;
+      } catch (e) {
+        SAVE_FALLBACK = true;
+        ctx.hublog("warn", "dispatch: atomic save failed (" + e.code + " " + e.message +
+          ") — this filesystem rejects rename-over-existing. Falling back to a " +
+          "direct write for the rest of this run.");
+      }
+    }
+    fs.writeFileSync(FILE, data);                // fallback: not atomic, but it lands
+    try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch {}
   }
   const newId = p => p + "_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
   // Sticky placement, in TWO layers (fixed v2.12). A plan is something a human
@@ -758,7 +788,20 @@ function register(ctx) {
     }
     if (dirty) save();
   }
-  const timer = setInterval(() => { tick().catch(() => {}); }, EXEC_TICK_MS);
+  // The executor must not die on a bad tick, but "must not die" is not "must
+  // not tell anyone": this empty catch is what hid the save failure above for a
+  // full day, firing every 10 s with nobody the wiser. Log it, rate-limited so a
+  // persistent fault does not flood the ring buffer.
+  let LAST_TICK_ERR = 0;
+  const timer = setInterval(() => {
+    tick().catch(e => {
+      const now = Date.now();
+      if (now - LAST_TICK_ERR > 60000) {
+        LAST_TICK_ERR = now;
+        ctx.hublog("error", "dispatch: executor tick failed — " + (e && e.message || e));
+      }
+    });
+  }, EXEC_TICK_MS);
   if (timer.unref) timer.unref();
   // Manual tick: "recheck the fleet now". Makes completions show up instantly
   // after you clear a bed by hand, and makes the harness deterministic instead

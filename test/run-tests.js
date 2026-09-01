@@ -985,10 +985,27 @@ async function stopHub() {
       const tomorrow0 = new Date(nowD.getFullYear(), nowD.getMonth(), nowD.getDate() + 1, 0, 0).getTime();
       const firstReal = (r.body.slots || []).find(s => !s.unplannable);
       ok(firstReal && firstReal.est_start >= tomorrow0, "today off (override) → plan starts tomorrow at the earliest", firstReal && new Date(firstReal.est_start).toString().slice(0, 21));
+      const withOverride = firstReal && firstReal.est_start;
       r = await jpost("/api/dispatch/settings", { clearOverride: iso(Date.now()) });
+      // The state change is the deterministic half and gets asserted directly.
+      ok(r.status === 200 && !(r.body.settings.weekOverrides || {})[iso(Date.now())],
+        "override cleared → the week override is gone from settings",
+        Object.keys((r.body.settings || {}).weekOverrides || {}));
       r = await jget("/api/dispatch/plan");
       const back = (r.body.slots || []).find(s => !s.unplannable);
-      ok(back && back.est_start < Date.now() + 10 * 60000, "override cleared → planning returns to now", back && new Date(back.est_start).toString().slice(0, 21));
+      // The timing half was `est_start < Date.now() + 10 min`, which is exactly
+      // the wall-clock assertion CLAUDE.md forbids — and it went red at 23:02 on
+      // 2026-08-31 for the documented reason: with today enabled again but only
+      // ~57 minutes of window left, a 62-minute job legitimately still plans for
+      // 00:00, so "returns to now" was never going to hold in the last hour of a
+      // day. What the override actually guarantees is DIRECTIONAL: putting today
+      // back can only move the plan earlier or leave it alone, never later.
+      // Derived from what the plan produced on both sides, so it means the same
+      // thing at 09:00 and at 23:59.
+      ok(back && withOverride && back.est_start <= withOverride,
+        "override cleared → planning is no later than it was with today switched off",
+        { withOverride: new Date(withOverride).toString().slice(0, 21),
+          cleared: back && new Date(back.est_start).toString().slice(0, 21) });
     }
     // Split days: real availability has gaps ("home 8-11, out, back 17-22").
     // A job that fits neither morning block must land in an evening block and
@@ -1083,7 +1100,6 @@ async function stopHub() {
       // section inherits from the finish-policy checks above.
       r = await jget("/api/dispatch/plan");
       const all = (r.body.slots || []).filter(s => !s.unplannable);
-      const busyAt = (printer, t) => all.some(s => s.printer === printer && s.est_start <= t && s.est_end > t);
       const lanesAll = new Set(all.map(s => s.printer));
       let wasteful = null;
       // "Later than NOW" was the wrong yardstick and it went red at 23:50
@@ -1095,17 +1111,33 @@ async function stopHub() {
       // earliest thing in this plan. Packing three jobs onto one lane still
       // trips it, because copies 2 and 3 land hours after copy 1.
       const earliestPlanned = all.length ? Math.min(...all.map(s => s.est_start)) : Date.now();
+      // Second pass at the same defect (2026-08-31, red at 23:02). Replacing
+      // Date.now() with earliestPlanned removed the wall clock from the
+      // COMPARISON but not from the PLAN: near a closing window some copies fit
+      // today and the rest move to 00:00, so a lane whose only slot is tomorrow
+      // reads as "idle right now" and the check called that waste. It isn't —
+      // starting there would have run past the window.
+      //
+      // A lane is only a real alternative if it is free for the job's WHOLE
+      // span, not merely at the instant it starts. That is what "could have run
+      // there instead" actually means, and it is entirely plan-derived: a lane
+      // holding a 00:00 slot overlaps a 23:28→00:30 job and is correctly not
+      // counted. Three copies stacked on one lane while the other has nothing
+      // still trips it, which is the regression this check exists for.
+      const idleThrough = (printer, t0, t1) =>
+        !all.some(s => s.printer === printer && s.est_start < t1 && s.est_end > t0);
       for (const s of mine) {
         for (const p of lanesAll) {
           if (p === s.printer) continue;
-          // another lane idle when this job starts, AND this job is genuinely
-          // queued behind something rather than merely starting when the farm does
-          if (!busyAt(p, s.est_start - 1) && s.est_start > earliestPlanned + 60000) { wasteful = { job: s.file, on: s.printerName, at: new Date(s.est_start).toTimeString().slice(0, 5), freeLane: p }; break; }
+          // another lane free for this job's entire duration, AND this job is
+          // genuinely queued behind something rather than merely starting when
+          // the farm does
+          if (idleThrough(p, s.est_start, s.est_end) && s.est_start > earliestPlanned + 60000) { wasteful = { job: s.file, on: s.printerName, at: new Date(s.est_start).toTimeString().slice(0, 5), freeLane: p }; break; }
         }
         if (wasteful) break;
       }
       ok(mine.length === 3 && !wasteful,
-        "no job waits on a busy printer while another printer is free at that moment",
+        "no job waits on a busy printer while another is free for its whole run",
         wasteful || { planned: mine.length, lanes: [...new Set(mine.map(s => s.printer))],
           starts: mine.map(s => ({ p: s.printerName, t: new Date(s.est_start).toTimeString().slice(0, 5) })) });
       for (const id of ids) await jpost("/api/dispatch/jobs/remove", { id });
@@ -1780,6 +1812,245 @@ async function stopHub() {
     const cfg3 = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
     delete cfg3.features;
     fs.writeFileSync(cfgPath, JSON.stringify(cfg3, null, 2));
+  }
+
+  console.log("\n== PERSIST: dispatch edits actually reach the disk (v2.16) ==");
+  {
+    // Field-found 2026-08-31, and it had been live for a full day: save() wrote
+    // dispatch.json.tmp and then renameSync'd it over dispatch.json, which the
+    // SMB share silently refused. The tmp kept the real state, the real file
+    // kept its morning contents, and `tick().catch(() => {})` ate the error
+    // every 10 s. Jobs removed in the UI came back on the next reload.
+    //
+    // Nothing here can reproduce an SMB rename on a local temp dir, so this
+    // tests the INVARIANT rather than the mechanism: after a mutation the file
+    // on disk must actually contain it, and no .tmp may be left behind. Either
+    // symptom is the signature of that bug returning by any route.
+    const dpath = path.join(hubDir, "dispatch.json");
+    r = await jpost("/api/dispatch/jobs", { file: "single.gcode", type: "u1", qty: 1 });
+    const PJOB = r.body.job.id;
+    let onDisk = JSON.parse(fs.readFileSync(dpath, "utf8"));
+    ok(onDisk.jobs.some(j => j.id === PJOB),
+      "adding a job lands in dispatch.json, not just in memory",
+      { looking: PJOB, found: onDisk.jobs.map(j => j.id) });
+
+    await jpost("/api/dispatch/jobs/remove", { id: PJOB });
+    onDisk = JSON.parse(fs.readFileSync(dpath, "utf8"));
+    ok(!onDisk.jobs.some(j => j.id === PJOB),
+      "REMOVING a job lands on disk — the removal cannot come back on reload",
+      onDisk.jobs.map(j => j.id));
+
+    ok(!fs.existsSync(dpath + ".tmp"),
+      "no dispatch.json.tmp is left behind — a stranded tmp means the swap failed",
+      fs.existsSync(dpath + ".tmp"));
+
+    // And it survives the round trip the user actually experiences: restart.
+    await stopHub(); await startHub(hubDir);
+    r = await jget("/api/dispatch");
+    ok(!(r.body.jobs || []).some(j => j.id === PJOB),
+      "the removed job is still gone after a restart", (r.body.jobs || []).map(j => j.id));
+  }
+
+  console.log("\n== UI: printer name links to its own Klipper UI (v2.16) ==");
+  {
+    // Community request: click the card's name, land on the printer's Klipper
+    // page. The browser cannot navigate somewhere it was never told about, so
+    // /api/fleet has to carry `url` — it previously carried name/state/caps only.
+    const fleet = (await jget("/api/fleet")).body || [];
+    const cfgNow = (await jget("/api/config")).body || {};
+    ok(fleet.length === cfgNow.printers.length && fleet.every(p => p.url),
+      "every printer in /api/fleet carries a url to link to",
+      fleet.map(p => ({ name: p.name, url: p.url })));
+    ok(fleet.every((p, i) => p.url === cfgNow.printers[i].url),
+      "the fleet url is exactly the configured url — the two surfaces cannot drift",
+      { fleet: fleet.map(p => p.url), cfg: cfgNow.printers.map(p => p.url) });
+    // The plug is deliberately NOT the same call: it is a third-party device the
+    // browser has no business addressing, so only its type crosses and the Hub
+    // proxies the rest through /api/power. Pin that distinction so a future
+    // "expose the url" change never quietly takes the plug's address with it.
+    ok(fleet.every(p => p.plug === null || (Object.keys(p.plug).length === 1 && "type" in p.plug)),
+      "the plug still exposes type only — never its address",
+      fleet.map(p => p.plug));
+  }
+
+  console.log("\n== RES: Resource Monitor (v2.16) ==");
+  {
+    // Deterministic shelf, written fresh so this section never inherits
+    // whatever the spool_id sections left behind. Two local spools whose hexes
+    // are EXACTLY two of multi.gcode's colours, so the match path under test is
+    // "exact", not "nearest" — colour-distance tuning belongs in
+    // test/de-nearwhite-standalone.js, not in a rollup check.
+    await stopHub();
+    const spoolsPath = path.join(hubDir, "spools.json");
+    const resPath = path.join(hubDir, "resources.json");
+    const rcfgPath = path.join(hubDir, "config.json");
+    fs.writeFileSync(spoolsPath, JSON.stringify({
+      spools: {}, tags: {}, local: [
+        { id: -101, brand: "TestCo", material: "PLA", material_variant: "PLA", color_name: "Red",   hex: "FF0000", lab: null, color_source: "user" },
+        { id: -102, brand: "TestCo", material: "PLA", material_variant: "PLA", color_name: "Green", hex: "00FF00", lab: null, color_source: "user" }
+      ]
+    }, null, 2));
+    fs.rmSync(resPath, { force: true });
+    await startHub(hubDir);
+
+    // Clear the board so the rollup is counting exactly what we add.
+    r = await jget("/api/dispatch");
+    for (const j of (r.body.jobs || [])) await jpost("/api/dispatch/jobs/remove", { id: j.id });
+
+    // multi.gcode: "filament used [g] = 10.0;12.5;3.2;0" against
+    // "#FF0000;#00FF00;#0000FF;#FFFFFF". At qty 2 every number below is exact.
+    r = await jpost("/api/dispatch/jobs", { file: "multi.gcode", type: "u1", qty: 2 });
+    const RESJOB = r.body.job.id;
+
+    r = await jget("/api/resources");
+    ok(r.status === 200 && Array.isArray(r.body.rows), "resources: rollup answers", r.status);
+    const row = h => (r.body.rows || []).find(x => x.color_hex === h);
+    ok(row("#FF0000") && row("#FF0000").needed_g === 20, "grams x quantity (10.0 g x2 = 20 g)", row("#FF0000"));
+    ok(row("#00FF00") && row("#00FF00").needed_g === 25, "second slot scales independently (12.5 x2)", row("#00FF00"));
+    ok(!row("#FFFFFF"), "a 0 g slot is defined-but-unused and produces NO row", r.body.rows.map(x => x.color_hex));
+    ok(r.body.totals.needed_g === 51.4, "totals sum the used slots only (20 + 25 + 6.4)", r.body.totals);
+    ok(r.body.counted_units === 2 && r.body.counted_jobs === 1, "counts units, not jobs", { u: r.body.counted_units, j: r.body.counted_jobs });
+    ok(row("#FF0000").match === "exact" && row("#FF0000").spool_id === "-101", "exact hex match wins over distance", row("#FF0000").match);
+    ok(row("#0000FF") && row("#0000FF").unassigned === true, "a colour with no spool is Unassigned but still counted", row("#0000FF"));
+
+    // Unknown inventory must never be reported as a shortfall.
+    ok(row("#FF0000").on_hand_g === null && row("#FF0000").shortfall_g === null,
+      "no remaining_g set -> on hand and shortfall stay null, never 0", row("#FF0000"));
+    ok(r.body.totals.est_cost === 0 && r.body.totals.rolls_to_buy === 0,
+      "nothing is bought against inventory nobody entered", r.body.totals);
+
+    // Now give it inventory, and only then does a shortfall exist.
+    r = await jpost("/api/resources/inventory", { spool_id: "-101", remaining_g: 5 });
+    ok(r.status === 200, "inventory POST accepted", r.status);
+    r = await jget("/api/resources");
+    ok(row("#FF0000").shortfall_g === 15 && row("#FF0000").rolls_to_buy === 1,
+      "shortfall = needed - on hand; rolls = ceil(shortfall / net weight)", row("#FF0000"));
+    ok(row("#FF0000").est_cost === null && row("#FF0000").no_price === true,
+      "rolls without a price show rolls and NO money", row("#FF0000"));
+    ok(r.body.totals.est_cost === 0 && r.body.totals.unpriced_rows === 1,
+      "an unpriced row is excluded from the spend total and counted", r.body.totals);
+
+    r = await jpost("/api/resources/inventory", { spool_id: "-101", cost_per_roll: 24.99 });
+    r = await jget("/api/resources");
+    ok(row("#FF0000").est_cost === 24.99 && r.body.totals.est_cost === 24.99,
+      "price set -> cost appears and reaches the total", { row: row("#FF0000").est_cost, tot: r.body.totals.est_cost });
+
+    // A spool with enough on the shelf is not a shortfall.
+    await jpost("/api/resources/inventory", { spool_id: "-102", remaining_g: 500 });
+    r = await jget("/api/resources");
+    ok(row("#00FF00").shortfall_g === 0 && row("#00FF00").rolls_to_buy === 0,
+      "enough on hand -> zero shortfall, nothing to buy", row("#00FF00"));
+    ok(r.body.rows[0].shortfall_g > 0, "rows sort shortfall-first", r.body.rows.map(x => x.color_hex));
+
+    // Explicit colour map beats everything, including a wrong-looking hex.
+    r = await jpost("/api/resources/map", { color_hex: "#0000FF", spool_id: "-102" });
+    ok(r.status === 200, "colour map POST accepted", r.status);
+    r = await jget("/api/resources");
+    ok(row("#0000FF").match === "mapped" && row("#0000FF").spool_id === "-102",
+      "a mapped colour overrides distance entirely", row("#0000FF"));
+
+    // A map pointing at a spool that no longer exists. Field-found 2026-08-31:
+    // a Bambu Black was forgotten and replaced with an Overture Black, and the
+    // row silently rendered "unassigned" — the mapping, the 600 g and the $25
+    // gone from the table with nothing anywhere saying why. Losing a human's
+    // deliberate decision quietly is the one thing this whole tab is built not
+    // to do.
+    // #FF0000 matches -101 by EXACT HEX, so it has to be mapped explicitly for
+    // the orphan path to be the one under test — otherwise removing the spool
+    // just exercises the ordinary nearest-match fallback.
+    r = await jpost("/api/resources/map", { color_hex: "#FF0000", spool_id: "-101" });
+    ok(r.status === 200, "red mapped explicitly before its spool is removed", r.status);
+    fs.writeFileSync(spoolsPath, JSON.stringify({
+      spools: {}, tags: {}, local: [
+        { id: -102, brand: "TestCo", material: "PLA", material_variant: "PLA", color_name: "Green", hex: "00FF00", lab: null, color_source: "user" }
+      ]
+    }, null, 2));                                    // -101 (Red) is now gone
+    await stopHub(); await startHub(hubDir);
+    r = await jget("/api/resources");
+    ok(row("#0000FF") && row("#0000FF").match === "mapped",
+      "a map to a spool that still exists is unaffected", row("#0000FF"));
+    ok(row("#FF0000") && row("#FF0000").match === "orphan",
+      "a map to a forgotten spool reports ORPHAN, not a silent fallback", row("#FF0000"));
+    ok(row("#FF0000").orphan_of === "-101",
+      "the orphaned row names the spool that went missing", row("#FF0000").orphan_of);
+    ok(row("#FF0000").needed_g === 20,
+      "an orphaned colour still counts its grams — the filament is still needed", row("#FF0000").needed_g);
+    ok(r.body.totals.orphaned === 1 && r.body.totals.unassigned === 0,
+      "orphaned is counted separately from never-mapped", r.body.totals);
+    const oi = (r.body.orphaned_inv || []).find(o => o.spool_id === "-101");
+    ok(oi && oi.remaining_g === 5 && oi.cost_per_roll === 24.99,
+      "inventory left behind by a forgotten spool is reported, not left to rot", r.body.orphaned_inv);
+    // Restore the shelf for the checks that follow.
+    fs.writeFileSync(spoolsPath, JSON.stringify({
+      spools: {}, tags: {}, local: [
+        { id: -101, brand: "TestCo", material: "PLA", material_variant: "PLA", color_name: "Red",   hex: "FF0000", lab: null, color_source: "user" },
+        { id: -102, brand: "TestCo", material: "PLA", material_variant: "PLA", color_name: "Green", hex: "00FF00", lab: null, color_source: "user" }
+      ]
+    }, null, 2));
+    await stopHub(); await startHub(hubDir);
+    r = await jget("/api/resources");
+    ok(row("#FF0000").match === "mapped" && (r.body.orphaned_inv || []).length === 0,
+      "put the spool back and the orphan clears itself — the mapping was never discarded",
+      { match: row("#FF0000").match, orphanInv: r.body.orphaned_inv });
+
+    // Badge and table are the same computation — they must never disagree.
+    const badge = (await jget("/api/resources/badge")).body;
+    ok(badge.short === r.body.totals.short_colors && badge.est_cost === r.body.totals.est_cost,
+      "badge agrees with the table it links to", { badge, tot: r.body.totals });
+
+    // An unreadable file is a warning, never a silent omission.
+    fs.writeFileSync(path.join(gcodeDir, "vanish.gcode"), GCODE_SINGLE);
+    r = await jpost("/api/dispatch/jobs", { file: "vanish.gcode", type: "u1", qty: 3 });
+    const VANISH = r.body.job.id;
+    fs.rmSync(path.join(gcodeDir, "vanish.gcode"), { force: true });
+    r = await jget("/api/resources");
+    const un = (r.body.unresolved || []).find(u => u.file === "vanish.gcode");
+    ok(un && un.units === 3, "missing gcode -> UNRESOLVED, with its quantity, never dropped", r.body.unresolved);
+    ok(r.body.counted_jobs === 1, "an unresolved job is not counted as if it were fine", r.body.counted_jobs);
+    await jpost("/api/dispatch/jobs/remove", { id: VANISH });
+
+    // Date filter. The job carries no deadline, so deadline_only must drop it.
+    r = await jget("/api/resources?deadline_only=1");
+    ok(r.body.rows.length === 0 && r.body.counted_units === 0,
+      "deadline_only excludes jobs with no deadline set", r.body.counted_units);
+    r = await jget("/api/resources");
+    ok(r.body.counted_units === 2, "...and the unfiltered view still shows everything scheduled", r.body.counted_units);
+
+    // Input guards. A negative gram count is a typo, not data.
+    r = await jpost("/api/resources/inventory", { spool_id: "-101", remaining_g: -5 });
+    ok(r.status === 400, "negative remaining_g rejected", r.status);
+    r = await jpost("/api/resources/inventory", {});
+    ok(r.status === 400, "inventory POST with no spool_id rejected", r.status);
+    r = await jpost("/api/resources/map", { color_hex: "nonsense" });
+    ok(r.status === 400, "map POST with a bad hex rejected", r.status);
+
+    // Inventory survives a restart — it is a file, not a cache.
+    await stopHub(); await startHub(hubDir);
+    r = await jget("/api/resources");
+    ok(row("#FF0000").on_hand_g === 5 && row("#FF0000").cost_per_roll === 24.99,
+      "inventory persists across a real Hub restart", row("#FF0000"));
+    ok(!fs.existsSync(path.join(hubDir, "spools.json.bak")) &&
+       JSON.parse(fs.readFileSync(spoolsPath, "utf8")).local.length === 2,
+      "resources never writes to spools.json — rfid.js keeps sole ownership");
+
+    // Feature off: routes gone, script not injected, page still fine.
+    await stopHub();
+    const rcfg = JSON.parse(fs.readFileSync(rcfgPath, "utf8"));
+    rcfg.features = { resources: false };
+    fs.writeFileSync(rcfgPath, JSON.stringify(rcfg, null, 2));
+    await startHub(hubDir);
+    r = await jget("/api/resources");
+    ok(r.status === 404, "resources off: API absent", r.status);
+    const rpage = await (await fetch(HUB + "/")).text();
+    ok(!/\/modules\/resources-ui\.js/.test(rpage), "resources off: client script not injected");
+    await stopHub();
+    const rcfg2 = JSON.parse(fs.readFileSync(rcfgPath, "utf8"));
+    delete rcfg2.features;
+    fs.writeFileSync(rcfgPath, JSON.stringify(rcfg2, null, 2));
+    await startHub(hubDir);
+    const rpage2 = await (await fetch(HUB + "/")).text();
+    ok(/\/modules\/resources-ui\.js/.test(rpage2), "resources on: client script injected");
+    await jpost("/api/dispatch/jobs/remove", { id: RESJOB });
   }
 
   await stopHub();

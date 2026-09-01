@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- U1 Print Hub — index v2.15.0 -->
+<!-- U1 Print Hub — index v2.16.0 -->
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
@@ -189,6 +189,13 @@
   .pcard.offline{opacity:.55;}
   .pcard .top{display:flex; align-items:center; justify-content:space-between; gap:10px;}
   .pcard .pn{font-size:15px; font-weight:700;}
+  /* v2.16: the card name links to the printer's own Klipper/Fluidd UI. Styled
+     as text, not a blue link — it sits in a dense card and should read as the
+     heading it already was, with the arrow as the only standing affordance. */
+  .pcard a.pnlink{color:inherit; text-decoration:none; display:inline-flex; align-items:baseline; gap:5px;}
+  .pcard a.pnlink:hover{color:var(--signal);}
+  .pcard a.pnlink:hover .pnout{opacity:1;}
+  .pcard .pnout{font-size:11px; font-weight:400; opacity:.4; transition:opacity var(--dur,.18s) ease;}
   .pill{font-family:var(--mono); font-size:10px; letter-spacing:.12em; text-transform:uppercase; padding:4px 9px; border-radius:20px; display:flex; align-items:center; gap:6px; white-space:nowrap;}
   .pill .dot{width:7px; height:7px; border-radius:50%;}
   .pill.idle{color:var(--ok); background:rgba(70,193,140,.12);} .pill.idle .dot{background:var(--ok);}
@@ -266,6 +273,24 @@
   .mpct.full{color:var(--signal);}
   .mprint{font-size:12px; padding:5px 12px; flex:none;}
   .mempty{padding:12px 14px; font-family:var(--mono); font-size:12px; color:var(--ink-faint);}
+  /* v2.16: spool inventory chips (grams left / price / buy link). Dashed border
+     is the affordance — "this is blank and you can fill it in" — and it wraps
+     so three chips never widen the row on a phone. */
+  .spoolinv{display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; align-items:center;}
+  .invf{background:transparent; border:1px dashed var(--line); border-radius:6px;
+    color:var(--ink-dim); font-family:var(--mono); font-size:11px; padding:3px 8px;
+    cursor:pointer; max-width:190px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .invf:hover{color:var(--ink); border-color:color-mix(in srgb, var(--signal) 45%, var(--line));}
+  .invf.unset{color:var(--ink-faint); font-style:italic;}
+  .invf.editing{border-style:solid; min-width:110px; cursor:text;}
+  .invbuy{font-family:var(--mono); font-size:11px; color:var(--signal); text-decoration:none;
+    border:1px solid color-mix(in srgb, var(--signal) 40%, var(--line)); border-radius:6px; padding:3px 8px;}
+  /* v2.16: top-5 preview footer. Full-width so it is a thumb target on a phone,
+     and quiet enough that it never competes with the Print buttons above it. */
+  .mmorewrap{padding:8px 14px 12px; border-top:1px solid rgba(255,255,255,.05);}
+  .mmore{width:100%; padding:9px 12px; background:transparent; border:1px solid var(--line);
+    border-radius:8px; color:var(--ink-dim); font-family:var(--mono); font-size:12px; cursor:pointer;}
+  .mmore:hover{color:var(--ink); border-color:color-mix(in srgb, var(--signal) 45%, var(--line));}
   .pcard.flash{box-shadow:0 0 0 2px var(--signal); transition:box-shadow .2s;}
   .mname{cursor:pointer;}
   .mname:hover, .mrow.exp .mname{color:var(--ink);}
@@ -682,7 +707,7 @@
 
 <script>
 const $ = id => document.getElementById(id);
-const VERSION = "2.15.0";
+const VERSION = "2.16.0";
 let FILES = [], SELECTED = null, MAP = null, FLEET = [], MAPSEL = {};
 let ONBOARD = [], ACT = null; // onboard = /api/printer-files cache; ACT = open per-printer action strip {name,pid}
 let SRCSEL = { hub:true, p:{} }; // source-filter checkboxes; p[pid]=false hides that printer (default: everything on)
@@ -1529,6 +1554,12 @@ document.addEventListener("keydown",e=>{ if(e.key==="Escape") closeCamBig(); });
 let LIBPAL = null;
 const MATCHOPEN = new Set();
 let EXPANDED = null;          // pid|name of the one open inline preview
+// v2.16: a printer with four common colors loaded matches most of the library
+// (U1 currently returns 93), and a 93-row wall is not an answer to "what can I
+// print right now" — the top of a list sorted by coverage is. Show five, then
+// let the list be opened. MATCHMORE holds the pids the user has opened.
+const MATCH_PREVIEW = 5;
+const MATCHMORE = new Set();
 const MAPCACHE = {};          // name -> /api/map result, cached across expands
 async function loadLibPalettes(){
   try{ const d=await (await fetch("/api/library-palettes?"+tparam())).json(); LIBPAL=d.files||[]; }
@@ -1567,7 +1598,16 @@ async function renderMatch(){
       return `<span class="msw" style="background:${bg}" title="T${i+1} ${h.hex||''}"></span>`;
     }).join("");
     const open=MATCHOPEN.has(p.id);
-    const rows = matches.length ? matches.map(x=>{
+    // Truncate to the top MATCH_PREVIEW by coverage — unless the user opened
+    // this printer's full list, or the one expanded preview card belongs to a
+    // file below the cut (collapsing the row you just opened is worse than a
+    // long list).
+    const expandedHere = EXPANDED && EXPANDED.startsWith(p.id + "|") ? EXPANDED.slice(String(p.id).length + 1) : null;
+    const expandedRank = expandedHere ? matches.findIndex(x => x.f.name === expandedHere) : -1;
+    const showAll = MATCHMORE.has(p.id) || expandedRank >= MATCH_PREVIEW;
+    const shown = showAll ? matches : matches.slice(0, MATCH_PREVIEW);
+    const hidden = matches.length - shown.length;
+    const rows = matches.length ? shown.map(x=>{
       const dots=x.f.colors.map((c,ci)=>`<span class="mdot${x.m.matchedIdx.includes(ci)?' on':''}" style="background:${c}"></span>`).join("");
       const pctTxt = x.m.matched===x.m.total ? "exact" : Math.round(x.m.pct*100)+"%";
       const key=p.id+"|"+x.f.name, exp=(EXPANDED===key);
@@ -1577,13 +1617,31 @@ async function renderMatch(){
              `<button class="btn primary mprint" data-file="${encodeURIComponent(x.f.name)}" data-pid="${p.id}">Print</button></div>`;
       return row + (exp ? jobCardHtml(x.f.name, MAPCACHE[x.f.name]) : "");
     }).join("") : `<div class="mempty">No library files match these loaded colors yet.</div>`;
+    // "Show all" / "Show top 5" footer. Only when there is something to reveal
+    // — a printer with four matches never grows a control that does nothing.
+    const moreBtn = (hidden > 0 || (showAll && matches.length > MATCH_PREVIEW))
+      ? `<div class="mmorewrap"><button class="mmore" data-more="${p.id}">`
+        + (showAll ? `Show top ${MATCH_PREVIEW}` : `Show all ${matches.length} →`)
+        + `</button></div>`
+      : "";
     return `<div class="matchcard${open?' open':''}">`+
       `<button class="matchhead" data-mtoggle="${p.id}"><span class="mpn">${esc(p.name)}</span><span class="mswrow">${swrow}</span>`+
       `<span class="mcount">${matches.length} match${matches.length===1?'':'es'}</span><span class="mchev">${open?'▾':'▸'}</span></button>`+
-      `<div class="mlist" style="${open?'':'display:none'}">${rows}</div></div>`;
+      `<div class="mlist" style="${open?'':'display:none'}">${rows}${moreBtn}</div></div>`;
   }).join("") || `<div class="mempty">No printers online.</div>`;
   grid.querySelectorAll("[data-mtoggle]").forEach(b=>b.addEventListener("click",()=>{
     const id=+b.dataset.mtoggle; MATCHOPEN.has(id)?MATCHOPEN.delete(id):MATCHOPEN.add(id); renderMatch();
+  }));
+  // Show all / show top 5. Collapsing also drops the expanded preview if it
+  // belonged to a row that is about to be hidden — otherwise the card would
+  // survive with no row above it.
+  grid.querySelectorAll("[data-more]").forEach(b=>b.addEventListener("click",()=>{
+    const id=+b.dataset.more;
+    if(MATCHMORE.has(id)){
+      MATCHMORE.delete(id);
+      if(EXPANDED && EXPANDED.startsWith(id+"|")) EXPANDED=null;
+    } else MATCHMORE.add(id);
+    renderMatch();
   }));
   // Click a file name → toggle an inline preview card (single open across the list).
   grid.querySelectorAll(".mname[data-expand]").forEach(el=>el.addEventListener("click", async ()=>{
@@ -1755,18 +1813,26 @@ function renderScanCtl(){
   const camOk = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
   const qrBtn = camOk ? `<button class="scanbtn" id="qrscan" style="background:var(--panel-2);color:var(--ink);border:1px solid var(--line)">⌗ Scan QR label</button>` : "";
   const labelLink = `<a class="gear" href="/labels.html" target="_blank" style="text-decoration:none">🏷 Print QR labels</a>`;
+  // v2.16: most filament arrives on a plain disposable roll with no tag on it.
+  // The bind panel never needed a UID — /api/spools/bind treats `uid` as
+  // optional and mints a tagless spool_id without it — but the ONLY caller was
+  // handleUid(), so every route in started with a tag you don't have. This is
+  // that missing door: identity first, printed QR label second, no NFC anywhere.
+  const newBtn = `<button class="scanbtn" id="newroll" style="background:var(--panel-2);color:var(--ink);border:1px solid var(--line)">＋ New roll (no tag)</button>`;
   if(nfcSupported()){
-    ctl.innerHTML=`<div class="row" style="gap:10px;flex-wrap:wrap"><button class="scanbtn" id="nfcscan">📶 Tap to scan a spool tag</button>${qrBtn}${labelLink}</div>
-      <div class="subnote" style="margin-top:8px">NFC: hold the tag to the back of the phone (HTTPS + Android Chrome). QR: point the camera at a printed spool label.</div>
+    ctl.innerHTML=`<div class="row" style="gap:10px;flex-wrap:wrap"><button class="scanbtn" id="nfcscan">📶 Tap to scan a spool tag</button>${qrBtn}${newBtn}${labelLink}</div>
+      <div class="subnote" style="margin-top:8px">NFC: hold the tag to the back of the phone (HTTPS + Android Chrome). QR: point the camera at a printed spool label. No tag at all? <b>New roll</b> makes the record first and prints its own label.</div>
       <div class="row" style="margin-top:10px"><input class="field" id="uidmanual" placeholder="…or type a tag UID (hex)" style="max-width:260px"><button class="btn ghost" id="uidgo">Look up</button></div>`;
     $("nfcscan").addEventListener("click",startScan);
   } else {
-    ctl.innerHTML=`<div class="row" style="gap:10px;flex-wrap:wrap">${qrBtn}${labelLink}</div>
-      <div class="subnote" style="margin-top:8px">No Web NFC in this browser (Android Chrome over HTTPS is the NFC scanner)${camOk?" — but QR labels scan fine with this camera":""}. You can also look a tag up by UID, or manage bound spools below.</div>
+    ctl.innerHTML=`<div class="row" style="gap:10px;flex-wrap:wrap">${qrBtn}${newBtn}${labelLink}</div>
+      <div class="subnote" style="margin-top:8px">No Web NFC in this browser (Android Chrome over HTTPS is the NFC scanner)${camOk?" — but QR labels scan fine with this camera":""}. <b>New roll</b> needs no tag or NFC at all: describe the filament, print the QR, stick it on.</div>
       <div class="row" style="margin-top:10px"><input class="field" id="uidmanual" placeholder="tag UID (hex)" style="max-width:260px"><button class="btn ghost" id="uidgo">Look up</button></div>`;
   }
   const qb=$("qrscan");
   if(qb) qb.addEventListener("click",startQrScan);
+  const nb=$("newroll");
+  if(nb) nb.addEventListener("click",()=>openBindPanel(null));   // null uid ⇒ tagless spool
   $("uidgo").addEventListener("click",()=>{ const v=$("uidmanual").value.trim(); if(v) handleUid(v); });
   $("uidmanual").addEventListener("keydown",e=>{ if(e.key==="Enter"){ const v=$("uidmanual").value.trim(); if(v) handleUid(v); } });
 }
@@ -1900,7 +1966,7 @@ function showSpoolResult(sp, sid, uid){
   const fleet=(FLEET||[]);
   const loc=spoolLocation(sid);
   const popts=fleet.map(p=>`<option value="${p.id}">${esc(p.name)}${p.online?"":" (offline)"}</option>`).join("");
-  bp.innerHTML=`<div class="fshead">Scanned spool</div>
+  bp.innerHTML=`<div class="fshead">${uid?"Scanned spool":"Spool"}</div>
     <div class="spoolrow"><span class="spoolsw" style="background:${esc(swatchCss(sp))}"></span>
     <div class="spoolmeta"><div class="spoolname">${esc(sp.color_name||("#"+sp.hex))}</div>
     <div class="spoolsub">${esc([sp.brand,sp.material_variant].filter(Boolean).join(" · "))}${sp.hot_end_temp?` · ${sp.hot_end_temp}°/${sp.bed_temp||"—"}°`:""} · #${esc(sp.hex)}${uid?` · tag ${esc(uid)}`:""}</div></div></div>
@@ -1913,7 +1979,10 @@ function showSpoolResult(sp, sid, uid){
     </div>
     <div class="row" style="margin-top:6px"><label class="hint" id="pushwrap" style="display:none;align-items:center;gap:5px;cursor:pointer"><input type="checkbox" id="pushcolor" checked> also set that head's color on the printer</label></div>
     <div class="subnote" id="loadhint" style="margin-top:4px"></div>`:""}
-    <div class="row" style="margin-top:8px"><button class="btn ghost" id="bindclose">Close</button><span class="pstatus" id="loadst"></span></div>`;
+    <div class="row" style="margin-top:8px;flex-wrap:wrap;gap:8px">
+      <a class="btn${uid?" ghost":" primary"}" href="/labels.html?id=${encodeURIComponent(sid)}" target="_blank" style="text-decoration:none">🏷 Print QR label</a>
+      <button class="btn ghost" id="bindclose">Close</button><span class="pstatus" id="loadst"></span></div>
+    ${uid?"":`<div class="subnote" style="margin-top:6px">This roll has no tag — the printed QR <b>is</b> its tag. Scanning it later opens this same card.</div>`}`;
   $("bindclose").addEventListener("click",()=>{ bp.style.display="none"; });
   if(!fleet.length) return;
   const psel=$("loadprinter"), ssel=$("loadslot");
@@ -2014,8 +2083,9 @@ function openBindPanel(uid){
   const bp=$("bindpanel"); bp.style.display="";
   const idle=(FLEET||[]).filter(p=>p.online && (p.ptype||"u1")===activeType().slug && p.caps && p.caps.multiColor);
   const sampleOpts=idle.flatMap(p=>(p.heads||[]).map((h,i)=>h&&h.loaded?`<option value="${p.id}:${i}">${esc(p.name)} · T${i+1}${h.hex?" · "+esc(h.hex):""}</option>`:"").filter(Boolean));
-  bp.innerHTML=`<div class="fshead">New tag ${esc(uid)} — what's on this spool?</div>
-    ${SPOOLS.length?`<div class="subnote" style="margin:0 0 8px">Already bound this filament? Tap it to attach this tag — no duplicate gets created:</div>
+  bp.innerHTML=`<div class="fshead">${uid?`New tag ${esc(uid)} — what's on this spool?`:`New roll — what's on it?`}</div>
+    ${uid?"":`<div class="subnote" style="margin:0 0 8px">No tag needed. Describe the filament, and the Hub gives it an ID you can print as a QR label for a disposable roll.</div>`}
+    ${uid&&SPOOLS.length?`<div class="subnote" style="margin:0 0 8px">Already bound this filament? Tap it to attach this tag — no duplicate gets created:</div>
     <div class="fcres" style="max-height:150px;margin-bottom:10px">${SPOOLS.map(sp=>`<button class="fcitem" data-attach="${esc(sp.spool_id)}"><span class="sw" style="background:${esc(swatchCss(sp))}"></span><span class="fi"><span class="fin">${esc(sp.color_name||("#"+sp.hex))}</span><div class="fim">${esc([sp.brand,sp.material_variant].filter(Boolean).join(" · "))}${sp.uids.length?` · tag ${sp.uids.map(esc).join(", ")}`:""}</div></span></button>`).join("")}</div>
     <div class="subnote" style="margin:0 0 8px">…or it's a new spool:</div>`:""}
     <div class="fcsearch">
@@ -2169,12 +2239,37 @@ async function loadSpools(){
   if (window.HUB_FEATURES && window.HUB_FEATURES.spools === false) { SPOOLS = []; return; }
   await loadSlotmap();   // loadout renders inline on the rows — fetch first
   try{ SPOOLS=(await (await fetch("/api/spools")).json()).spools||[]; }catch(e){ SPOOLS=[]; }
+  // v2.16: inventory (grams left / price / buy link) lives in the resources
+  // module, keyed by the same spool_id. Fetched separately and merged for
+  // display only — rfid.js still owns spools.json and nothing here writes to
+  // it, so the two features can never fight over the same file.
+  const RES_ON = !(window.HUB_FEATURES && window.HUB_FEATURES.resources === false);
+  let INV = {};
+  if (RES_ON) {
+    try {
+      const rs = await (await fetch("/api/resources/spools")).json();
+      for (const s of (rs.spools || [])) INV[s.id] = s;
+    } catch(e){}
+  }
+  const invCell = (id, key, val, pre, post, ph) =>
+    `<button class="invf${val==null||val===""?" unset":""}" data-inv="${esc(id)}" data-k="${key}">`
+    + (val==null||val===""? ph : (pre||"")+esc(String(val))+(post||"")) + `</button>`;
+  const invLine = sp => {
+    if (!RES_ON) return "";
+    const v = INV[sp.spool_id] || {};
+    return `<div class="spoolinv">`
+      + invCell(sp.spool_id,"remaining_g", v.remaining_g, "", " g left", "set grams")
+      + invCell(sp.spool_id,"cost_per_roll", v.cost_per_roll, "$", "/roll", "set price")
+      + invCell(sp.spool_id,"purchase_url", v.purchase_url, "", "", "add buy link")
+      + (v.purchase_url ? `<a class="invbuy" href="${esc(v.purchase_url)}" target="_blank" rel="noopener">Buy ↗</a>` : "")
+      + `</div>`;
+  };
   $("spoolcount").textContent=SPOOLS.length+" bound";
   const list=$("spoollist");
   if(!SPOOLS.length){ list.innerHTML='<div class="subnote">No spools bound yet — scan a tag to start.</div>'; return; }
   list.innerHTML=SPOOLS.map(sp=>{ const loc=spoolLocation(sp.spool_id); return `<div class="spoolrow"><span class="spoolsw" style="background:${esc(swatchCss(sp))}"></span>
     <div class="spoolmeta"><div class="spoolname">${esc(sp.color_name||("#"+sp.hex))}${loc?` <span style="font-family:var(--mono);font-size:10px;font-weight:400;color:var(--signal)">▸ ${esc(loc.name)} T${loc.slot+1}</span>`:""}</div>
-    <div class="spoolsub">${esc([sp.brand,sp.material_variant].filter(Boolean).join(" · "))}${sp.hot_end_temp?` · ${sp.hot_end_temp}°/${sp.bed_temp||"—"}°`:""}${sp.uids.length?` · tag ${sp.uids.map(esc).join(", ")}`:" · no tag"}${sp.color_source&&sp.color_source!=="measured"?` · ${esc(sp.color_source)}`:""}</div></div>
+    <div class="spoolsub">${esc([sp.brand,sp.material_variant].filter(Boolean).join(" · "))}${sp.hot_end_temp?` · ${sp.hot_end_temp}°/${sp.bed_temp||"—"}°`:""}${sp.uids.length?` · tag ${sp.uids.map(esc).join(", ")}`:" · no tag"}${sp.color_source&&sp.color_source!=="measured"?` · ${esc(sp.color_source)}`:""}</div>${invLine(sp)}</div>
     <a class="qbtn" href="/labels.html?id=${encodeURIComponent(sp.spool_id)}" target="_blank" title="Print QR label" style="text-decoration:none">🏷</a>
     <button class="qbtn" data-edit="${esc(sp.spool_id)}" title="Edit this spool">✎</button>
     <button class="qbtn" data-show="${esc(sp.spool_id)}" title="Details / load to printer">→</button>
@@ -2190,6 +2285,34 @@ async function loadSpools(){
   list.querySelectorAll("[data-forget]").forEach(b=>b.addEventListener("click",async ()=>{
     if(!confirm("Forget this spool and its tag binding?")) return;
     try{ await post("/api/spools/forget",{spool_id:b.dataset.forget}); loadSpools(); }catch(e){ alert(e.message); }
+  }));
+  // Inline inventory edit. Swaps the chip for an input in place — Enter or blur
+  // commits, Escape reverts. Blank clears the value back to unset rather than
+  // storing 0, because "I don't know" and "none left" are different answers and
+  // the Resources tab treats them differently.
+  list.querySelectorAll("[data-inv]").forEach(b=>b.addEventListener("click",()=>{
+    const id=b.dataset.inv, k=b.dataset.k, cur=(INV[id]||{})[k];
+    const inp=document.createElement("input");
+    inp.className="invf editing";
+    inp.type = k==="purchase_url" ? "url" : "number";
+    if(k!=="purchase_url"){ inp.min="0"; inp.step = k==="cost_per_roll" ? "0.01" : "10"; }
+    inp.value = cur==null ? "" : cur;
+    inp.placeholder = k==="purchase_url" ? "https://…" : (k==="cost_per_roll" ? "24.99" : "grams");
+    b.replaceWith(inp); inp.focus(); inp.select();
+    let done=false;
+    const commit=async ()=>{
+      if(done) return; done=true;
+      const raw=inp.value.trim();
+      try{
+        await post("/api/resources/inventory",{ spool_id:id, [k]: raw==="" ? null : (k==="purchase_url"?raw:Number(raw)) });
+      }catch(e){ alert("Could not save: "+e.message); }
+      loadSpools();
+    };
+    inp.addEventListener("keydown",e=>{
+      if(e.key==="Enter"){ e.preventDefault(); commit(); }
+      if(e.key==="Escape"){ done=true; loadSpools(); }
+    });
+    inp.addEventListener("blur",commit);
   }));
 }
 async function loadFcMeta(){
@@ -2340,7 +2463,9 @@ function renderFleet(){
       }
     }
     card.innerHTML=`
-      <div class="top"><span class="pn">${esc(p.name)}</span><span style="display:flex;align-items:center;gap:7px">${p.online?`<button class="statsbtn${STATSOPEN.has(p.id)?' on':''}" data-statsbtn="${p.id}" title="Temps &amp; job stats">▁▂▅</button>`:""}${diskChip(p)}<span class="pill ${pillCls}"><span class="dot"></span>${pillTxt}</span></span></div>
+      <div class="top">${p.url
+        ? `<a class="pn pnlink" href="${esc(p.url)}" target="_blank" rel="noopener" title="Open ${esc(p.url)} — the printer's own Klipper UI (same network only)">${esc(p.name)}<span class="pnout">↗</span></a>`
+        : `<span class="pn">${esc(p.name)}</span>`}<span style="display:flex;align-items:center;gap:7px">${p.online?`<button class="statsbtn${STATSOPEN.has(p.id)?' on':''}" data-statsbtn="${p.id}" title="Temps &amp; job stats">▁▂▅</button>`:""}${diskChip(p)}<span class="pill ${pillCls}"><span class="dot"></span>${pillTxt}</span></span></div>
       ${p.online ? (camShouldShow(p.id)
         ? `<div class="camtile" data-cam="${p.id}">${CAMMODE==="demand"?`<button class="camclose" data-camclose="${p.id}" title="Hide camera">✕</button>`:""}</div>`
         : `<button class="camopen" data-camopen="${p.id}">📷 Live view</button>`) : ""}

@@ -3,7 +3,7 @@
 // and pushes the chosen file to the chosen printer via Moonraker (server-side,
 // so no browser CORS headaches).
 
-const VERSION = "2.15.0";
+const VERSION = "2.16.0";
 
 const crypto = require("crypto");
 const express = require("express");
@@ -121,7 +121,11 @@ function saveConfigFile() {
 // fork). Default is everything ON: an untouched config behaves exactly like
 // 2.10. U1HUB_PROFILE=lite (the Lite binary's baked-in default) flips the
 // Lite set off unless config.json explicitly says otherwise.
-const MODULE_DEFAULTS = { power: true, camera: true, spools: true, match: true, mixer: true, "types-beta": true, dispatch: true, slicing: false };
+const MODULE_DEFAULTS = { power: true, camera: true, spools: true, match: true, mixer: true, "types-beta": true, dispatch: true, slicing: false, resources: true };
+// resources (v2.16) needs dispatch for the schedule; with dispatch off it mounts
+// but every endpoint answers "nothing is scheduled" rather than erroring. It
+// reads spools.json off disk directly, so it does NOT need the spools module —
+// which is why it stays on in Lite, where spools is off.
 // slicing ships OFF in 2.12: the engine is built and harness-green, but the CLI
 // path has no live hardware gate yet (Rule #1). Code stays; the tab does not.
 const LITE_OFF = ["spools", "match", "mixer", "types-beta", "slicing"];  // Lite = core + camera + power + dispatch
@@ -205,7 +209,10 @@ async function detectCaps(idx) {
   } catch (e) { hublog("warn", "caps[" + (p.name || idx) + "]: detection failed — " + (e && e.message || e)); return null; }
 }
 loadConfig();
-const PORT = CFG.port || 4545;
+// PORT env override (v2.16): lets a throwaway instance boot alongside the live
+// Hub for smoke tests without touching config.json — the live one is often
+// mid-print and its config is state, not settings.
+const PORT = +process.env.U1HUB_PORT || CFG.port || 4545;
 
 // --- last-printed tracking --------------------------------------------------
 // Stamps printlog.json (basename -> epoch ms) when a printer transitions INTO
@@ -384,7 +391,8 @@ require("./tunnel.js")(app, express, BASE_DIR, PORT);
 //      list is static for the same pkg reason as the server table.
 const CLIENT_TABLE = {
   dispatch: "/modules/dispatch-ui.js",  // public/modules/dispatch-ui.js, static-served
-  slicing: "/modules/slicing-ui.js"     // v2.12 Slice tab, same pattern
+  slicing: "/modules/slicing-ui.js",    // v2.12 Slice tab, same pattern
+  resources: "/modules/resources-ui.js" // v2.16 Resources tab
   // (named -ui deliberately: the server module is modules/dispatch.js, and two
   //  same-named files in different folders is a foot-gun during deploys)
 };
@@ -1501,8 +1509,16 @@ async function fleetSnapshot() {
   // return) so a plugged-but-offline printer still shows its power tile — that's
   // exactly when you'd want to switch it on. Only the type is exposed; the plug
   // IP stays server-side (the browser drives it through /api/power?id=N).
+  // v2.16: `url` is exposed so the card's name can link straight to the
+  // printer's own Klipper/Fluidd UI (community request). This is NOT the same
+  // call as the plug IP above: the plug is a third-party device the browser has
+  // no business addressing, so the Hub proxies it. The printer's URL is already
+  // served in full by /api/config behind the same auth, and the browser has to
+  // know it to navigate there at all — withholding it here would buy nothing.
+  // LAN-only by nature: over the Cloudflare tunnel a 192.168.x link won't
+  // resolve, which the UI says on the link itself rather than hiding it.
   return Promise.all((PRINTERS || []).map((p, i) =>
-    probeCached(p, i).then(r => ({ id: i, ptype: p.type || "u1", plug: (FEATURES.power && p.plug) ? { type: p.plug.type } : null, ...r }))));
+    probeCached(p, i).then(r => ({ id: i, ptype: p.type || "u1", url: p.url || null, plug: (FEATURES.power && p.plug) ? { type: p.plug.type } : null, ...r }))));
 }
 
 app.get("/api/fleet", async (req, res) => {
@@ -2226,7 +2242,11 @@ const MODULE_TABLE = {
   spools: require("./modules/spools.js"),
   mixer: require("./modules/mixer.js"),
   dispatch: require("./modules/dispatch.js"),
-  slicing: require("./modules/slicing.js")
+  slicing: require("./modules/slicing.js"),
+  // AFTER dispatch on purpose: resources consumes the "dispatch.jobs"
+  // capability, and provide()/use() is resolved at call time, not registration
+  // time — but keeping the order honest makes the dependency readable.
+  resources: require("./modules/resources.js")
 };
 const CAPS_PROVIDED = new Map();
 // Parse "estimated printing time (normal mode) = 1d 2h 3m" from gcode text.

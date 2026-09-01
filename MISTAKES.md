@@ -11,6 +11,167 @@ Running log of things that broke, why, and the rule that stops a repeat.
   a law in `CLAUDE.md`. Move the rule up; leave the entries here.
 - Before touching an area, grep this file for it.
 
+**Promoted so far** (the entries stay below as the evidence):
+
+| Cluster | Entries | Law |
+|---|---|---|
+| Test depends on when it runs / what else runs | 4 incidents, 5 checks | rule 7 |
+| Asserted or acted without checking first | 4 incidents | rule 8 |
+| Unverified shape trusted as complete | 2 incidents | rule 6 |
+| Version drift across the three files | 1 | rule 4 |
+| Staging vs git clone drift | 1 | rule 3 |
+| Bridge / tooling sharp edges | 4 incidents | *not a law* — reference block, "Working over the bridge" |
+
+Bridge quirks are operating facts, not judgment failures; a rule that says
+"remember these four things" is a lookup table wearing a rule's clothes.
+
+---
+
+## 2026-09-01 — "Atomic write" silently ate 17 hours of Dispatch edits
+
+**What happened:** Danny reported that jobs he had removed from Dispatch kept
+coming back. `dispatch.json` had a mtime of **07:37 the previous morning** and
+still held 41 jobs, while a `dispatch.json.tmp` sat beside it, written minutes
+earlier, holding the real 35-job state. Every removal, and every completion the
+executor recorded through the day, existed only in memory and in that tmp.
+
+**Root cause:** `save()` did the textbook atomic write —
+`writeFileSync(tmp)` then `renameSync(tmp, FILE)`. Staging is an SMB share
+(`X:` → `\\192.168.12.81\share`), and Windows rename-over-an-existing-file
+across SMB does not reliably replace the destination. `renameSync` threw on
+every save. The executor's `tick().catch(() => {})` swallowed it every 10 s, and
+the API handlers surfaced nothing, so the UI cheerfully showed the job gone and
+the next reload brought it back.
+
+`resources.json` and `spools.json` were untouched by this because they write
+straight to the file. Dispatch was the only writer using tmp-then-rename, and it
+is exactly the pattern this filesystem rejects.
+
+**Consequence:** A full day of scheduling decisions lost from disk, discovered by
+the user rather than by the software. Two things were wrong at once: the write
+failed, and nothing said so.
+
+**Rule:** Two, and the second matters more.
+(1) **An atomic write is a property of the filesystem, not of the code.** On this
+project, `save()` tries rename and falls back to a direct write when the share
+refuses, logging the fallback once. Anywhere else that grows a tmp+rename must do
+the same or it inherits this bug.
+(2) **A swallowed error on a repeating timer is a silent-failure generator.**
+`catch(() => {})` inside a 10 s interval will hide a permanent fault forever.
+Log it — rate-limited if need be — because the alternative is finding out from
+the person whose data it was. The harness now pins the invariant rather than the
+mechanism: a removal must reach the disk, no `.tmp` may be stranded, and it must
+still be gone after a restart.
+
+---
+
+## 2026-08-31 — A colour mapped to a forgotten spool went quietly "unassigned"
+
+**What happened:** Danny mapped `#000000` to a Bambu Black spool and set 600 g at
+$25. He later swapped it for an Overture Black — forgetting the old spool and
+binding the new one. The Resources row went back to reading `UNASSIGNED`, its
+grams and price gone, with nothing anywhere explaining why. Found by comparing a
+screenshot against `resources.json`, not by any warning the UI produced.
+
+**Root cause:** `matchSpool` looked up the mapped id, got `undefined` because the
+spool no longer existed, and **fell through to nearest-match** — which at the
+dE 7 ceiling matched nothing. A deliberate human decision was discarded and
+rendered identically to a colour that had never been mapped at all. The
+inventory row keyed to the dead id became invisible at the same time.
+
+**Consequence:** Small in data terms, large in trust: the one row he had
+configured was the one that appeared to lose his work.
+
+**Rule:** **A dangling reference is a state, not an absence.** When a stored id
+no longer resolves, say so — never fall through to the heuristic the id existed
+to override. Orphaned rows keep their grams, report `orphan` with the missing id
+named, and are counted separately from never-mapped ones; orphaned inventory is
+reported rather than left to rot in the file.
+
+---
+
+## 2026-08-31 — The wall-clock fix removed the clock from the test, not the plan
+
+**What happened:** The 23:02 run went red on two MOD5 checks — "override cleared
+→ planning returns to now" and "no job waits on a busy printer while another
+printer is free". Neither code path had been touched; the work that session was
+the Resource Monitor and a Spools-tab button.
+
+**Root cause:** Two variants of the same defect.
+
+`run-tests.js:991` was a bare `est_start < Date.now() + 10 * 60000` — the exact
+thing CLAUDE.md forbids, sitting in the file the whole time. With today
+re-enabled but ~57 minutes of window left, a 62-minute job correctly plans for
+00:00, so "returns to now" cannot hold in the last hour of any day.
+
+The spread check is the more interesting one: it was **already fixed** on
+2026-08-30, when `Date.now()` was replaced by `earliestPlanned`. That removed
+the wall clock from the *comparison* but not from the *plan*. Near a closing
+window some copies fit today and the rest move to 00:00 — so a lane whose only
+slot is tomorrow reads as "idle at 23:28" and the check called it waste. The
+lane was not available; starting there would have overrun the window.
+
+**Consequence:** A red harness blocking a ship, on a defect that had been
+diagnosed and half-fixed the day before. The first fix was verified by the run
+passing, which at 14:00 proves nothing about 23:02.
+
+**Rule:** Two things, both now in CLAUDE.md.
+(1) A lane, slot or resource is only a genuine alternative if it is free for the
+whole SPAN of the work, never merely at the instant it starts —
+`idleThrough(p, est_start, est_end)`, not `busyAt(p, est_start - 1)`.
+(2) When fixing a time-dependent test, ask what the assertion means at 23:59,
+not whether it passes now. Both fixes here were verified by falsification (flip
+the expectation, watch exactly those checks go red, revert) and by re-running
+inside the 23:00 hour that had just failed — 356/0 at 23:15.
+
+---
+
+## 2026-08-31 — Handed Danny a task this file already documents how to do
+
+**What happened:** With the v2.16 Resource Monitor built and needing its ship
+gate, I told Danny "`npm test` takes ~2.5 min over SMB and the bridge dies at
+60 s — that one's yours." He replied that he was not in a position to run it.
+
+**Root cause:** The workaround is four entries down in this very file
+("Desktop Commander works; the bridge times out at 60 s": write a `.cmd` that
+redirects to a log, `Start-Process -WindowStyle Hidden`, poll the log). I had
+read MISTAKES.md at the start of the session, applied its `X:`-is-truth and
+never-blanket-kill-node rules all the way through, and then failed to apply the
+one entry that was about the exact obstacle in front of me. Reading the file is
+not the same as consulting it at the moment of the decision.
+
+**Consequence:** A round trip spent handing back work that took three polls to
+do, at the point where the feature was otherwise finished.
+
+**Rule:** Before declaring anything blocked or "yours to run", grep this file
+for the obstacle. The entries are not history, they are the workarounds. A
+constraint that appears here has already been solved once.
+
+---
+
+## 2026-08-31 — 950 lines shipped with the harness count unchanged
+
+**What happened:** The Resource Monitor (parser extension, `modules/resources.js`,
+`public/modules/resources-ui.js`, Spools-tab inventory) was built and verified
+against real gcode by three standalone scripts. `npm test` stayed at **323
+passed** through the whole build — the same number as before a line was written.
+I reported that as "green" more than once before naming it as a gap.
+
+**Root cause:** Standalone harnesses feel like coverage. They test better inputs
+than fixtures do (real 54 MB Orca files, the actual shelf), but they only run
+when a human types the command, and `npm test` is what gates a ship. An
+unchanged check count after a large feature is the signal, and it was visible
+from the first run.
+
+**Consequence:** A window where a rename in `parser.js` would have silently
+broken the Resources tab with a green harness. Closed at 355 checks.
+
+**Rule:** A feature is not covered until the harness COUNT moves. Treat an
+unchanged total after new code as a red flag in its own right, and say so before
+calling the run green. Standalone scripts are a supplement to `npm test`, never
+a substitute — see hard rule #6 in CLAUDE.md for the other half of this
+(a check must be shown to fail before it counts).
+
 ---
 
 ## 2026-08-30 — SPREAD check asserted against the wall clock, went red at 23:50

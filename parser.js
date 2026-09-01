@@ -156,6 +156,101 @@ function parseMixedDefs(cfg, physHex) {
   return decodeMixedDefs(cfg["mixed_filament_definitions"], physHex);
 }
 
+// ---- Filament amounts (v2.16, Resource Monitor) -----------------------------
+// Verified against Snapmaker Orca 2.3.5 output on 2026-08-31. Three separator
+// shapes coexist in one file and all three are real:
+//   summary : "; filament used [g] = 0.00, 1.55, 1.11, 0.49, 119.23"   ", "
+//   config  : "; filament_colour = #FFF;#FFDCFF;..."                    ";"
+//   header  : "; filament_density: 1.26,1.26,..."                       ":" (!)
+// parseConfig only matches the "=" form, so the header colon-form is picked up
+// separately below — it is the only place density/diameter appear if a file is
+// ever truncated before its config block.
+//
+// PURGE: do NOT compute waste as (total - sum of slots). Measured on a real
+// 88-tool-change multicolour job, total 122.39 g vs slot sum 122.38 g — a
+// rounding penny, not purge. Orca charges flush extrusion to the slot doing the
+// purging, so per-slot grams ALREADY include it. The delta is kept only as an
+// integrity check; a non-trivial value means a slicer we have not characterised.
+const AMOUNT_KEYS = {
+  grams:  ["filament used [g]", "filament used [grams]", "filament_used_g"],
+  mm:     ["filament used [mm]", "filament used [millimeters]"],
+  cm3:    ["filament used [cm3]", "filament used [cm^3]"],
+  cost:   ["filament cost"]
+};
+function numsFrom(cfg, keys) {
+  const raw = firstKey(cfg, keys);
+  if (raw == null) return [];
+  return splitAligned(raw).map(v => { const n = parseFloat(v); return isNaN(n) ? null : n; });
+}
+function oneNum(cfg, keys) {
+  const raw = firstKey(cfg, keys);
+  if (raw == null) return null;
+  const n = parseFloat(String(raw).trim());
+  return isNaN(n) ? null : n;
+}
+// Header-block colon form: "; filament_density: 1.26,1.26,..." — used only as a
+// fallback when the "=" config block did not supply the key.
+function colonNums(text, key) {
+  const re = new RegExp("^\\s*;\\s*" + key + "\\s*:\\s*(.+)$", "mi");
+  const m = re.exec(text || "");
+  if (!m) return [];
+  return m[1].split(",").map(v => { const n = parseFloat(v); return isNaN(n) ? null : n; });
+}
+// grams = pi * (d/2)^2 * mm * density / 1000   (mm^3 * g/cm^3 -> g)
+function gramsFromLength(mm, diameter, density) {
+  if (!(mm > 0) || !(diameter > 0) || !(density > 0)) return null;
+  const r = diameter / 2;
+  return Math.PI * r * r * mm * density / 1000;
+}
+function parseAmounts(cfg, text) {
+  const grams = numsFrom(cfg, AMOUNT_KEYS.grams);
+  const mm    = numsFrom(cfg, AMOUNT_KEYS.mm);
+  const cm3   = numsFrom(cfg, AMOUNT_KEYS.cm3);
+  const cost  = numsFrom(cfg, AMOUNT_KEYS.cost);
+  let density  = numsFrom(cfg, ["filament_density"]);
+  let diameter = numsFrom(cfg, ["filament_diameter"]);
+  if (!density.length)  density  = colonNums(text, "filament_density");
+  if (!diameter.length) diameter = colonNums(text, "filament_diameter");
+
+  const n = Math.max(grams.length, mm.length, cm3.length, cost.length,
+                     density.length, diameter.length, 0);
+  const pick = (arr, i) => (arr.length ? (arr[i] != null ? arr[i] : arr[0]) : null);
+
+  const slots = [];
+  for (let i = 0; i < n; i++) {
+    const d  = pick(density, i);
+    const dia = pick(diameter, i);
+    let g = grams[i] != null ? grams[i] : null;
+    let derived = false;
+    if (g == null && mm[i] != null) { g = gramsFromLength(mm[i], dia, d); derived = g != null; }
+    slots.push({
+      i,
+      grams: g,
+      grams_derived: derived,
+      length_mm: mm[i] != null ? mm[i] : null,
+      volume_cm3: cm3[i] != null ? cm3[i] : null,
+      slicer_cost: cost[i] != null ? cost[i] : null,
+      density: d, diameter_mm: dia
+    });
+  }
+
+  const slotSum = slots.reduce((a, s) => a + (s.grams || 0), 0);
+  const totalG  = oneNum(cfg, ["total filament used [g]"]);
+  const delta   = (totalG != null) ? +(totalG - slotSum).toFixed(3) : null;
+
+  return {
+    slots,
+    slot_sum_g: +slotSum.toFixed(3),
+    total_g: totalG,
+    total_cost: oneNum(cfg, ["total filament cost"]),
+    tool_changes: oneNum(cfg, ["total filament change"]),
+    // Integrity check only — see note above. Not a purge estimate.
+    unaccounted_g: delta,
+    suspect_unaccounted: delta != null && Math.abs(delta) > Math.max(1, slotSum * 0.005),
+    have_grams: slots.some(s => s.grams != null)
+  };
+}
+
 function parseGcodeMap(text, opts = {}) {
   const { cfg, cfgLines } = parseConfig(text);
 
@@ -163,6 +258,10 @@ function parseGcodeMap(text, opts = {}) {
   const types   = splitAligned(firstKey(cfg, ["filament_type"]));
   const vendors = splitAligned(firstKey(cfg, ["filament_vendor"]));
   const weights = splitAligned(firstKey(cfg, ["filament used [g]","filament_used_g","filament used [grams]"]));
+  // v2.16: per-slot mm / cm3 / g / slicer-cost, index-aligned with the lists
+  // above. Additive — nothing below reads `amounts`, so every existing caller
+  // (/api/map, Spool Match, dispatch fileInfo) behaves exactly as before.
+  const amounts = parseAmounts(cfg, text);
 
   // Prefer per-colour weights to decide what's used (a 0 means that colour isn't
   // printed) — this avoids scanning the huge body. Only fall back to a body
@@ -186,7 +285,15 @@ function parseGcodeMap(text, opts = {}) {
     const wt = (weights[i] || "").trim();
     const present = !!(hex || type);
     const isUsed = any ? used.has(i) : present;
-    palette.push({ i, hex, type, vendor, wt, present, used: isUsed });
+    const amt = amounts.slots[i] || null;
+    palette.push({ i, hex, type, vendor, wt, present, used: isUsed,
+      grams: amt ? amt.grams : null,
+      grams_derived: amt ? amt.grams_derived : false,
+      length_mm: amt ? amt.length_mm : null,
+      volume_cm3: amt ? amt.volume_cm3 : null,
+      slicer_cost: amt ? amt.slicer_cost : null,
+      density: amt ? amt.density : null,
+      diameter_mm: amt ? amt.diameter_mm : null });
   }
 
   const usedIdx = palette.filter(s => s.used).map(s => s.i);
@@ -205,6 +312,7 @@ function parseGcodeMap(text, opts = {}) {
 
   return {
     palette, usedIdx, paletteCount,
+    amounts, estTime: ptime ? String(ptime).trim() : null,
     physicalHeads: 4,
     ...detectFS(cfg),
     mixed: parseMixedDefs(cfg, colours.map(normHex)),
@@ -213,4 +321,5 @@ function parseGcodeMap(text, opts = {}) {
   };
 }
 
-module.exports = { parseGcodeMap, decodeMixedDefs, decodeMixedDefEntry, blendHex };
+module.exports = { parseGcodeMap, decodeMixedDefs, decodeMixedDefEntry, blendHex,
+                   parseAmounts, parseConfig, gramsFromLength, normHex, splitAligned };

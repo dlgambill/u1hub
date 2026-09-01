@@ -58,11 +58,77 @@ any browser — on your network, or **securely from anywhere** — you can:
 - **Reach it from outside your network** — the Hub can run a Cloudflare tunnel for you:
   HTTPS end to end, no port forwarding, no router changes, and it **refuses to go
   public until the password gate is on**.
+- **Know what to buy before you run out** — **Resources** reads the G-code for every
+  scheduled job, totals the filament by material and colour, matches it against your
+  spools, and lists what's short and what it costs. Track grams left, price per roll
+  and a buy link on each spool; a colour with no spool stays **unassigned** rather
+  than being guessed at.
+- **Label a disposable roll with no RFID tag** — describe the filament, print the QR,
+  stick it on. The label *is* the tag.
+- **Jump to a printer's own Klipper interface** by clicking its name on the card.
 - See **lifetime farm stats** (total jobs, print hours, filament used) and per-printer
   **temperature sparklines and job history** in expandable panels.
 
 It talks straight to each printer's built-in Moonraker API. Nothing is installed on the
 printers, and nothing leaves your network unless you turn remote access on.
+
+---
+
+## New in 2.16 — the resources release
+
+- **Know what to buy before you run out.** The new **Resources** tab reads the
+  G-code for every job Dispatch has scheduled, adds up the filament by material
+  and colour, compares it to what's on your shelf, and tells you what to order.
+  It parses the real numbers out of each file — grams, length, the slicer's own
+  cost line — never an estimate from layer counts.
+
+![Resources — filament needed for the whole schedule, matched to your spools, shortfall first](docs/resources.png)
+
+- **It reads 220 sliced files without reading 30 GB.** Each file is touched at
+  the head and tail only (64 KB + 512 KB, where the slicer actually writes its
+  totals) and cached on `(path, mtime, size)`, so a re-slice invalidates itself
+  and nothing else. A cold pass over the whole library is ~2 s; a warm one is
+  ~0.3 s.
+- **It never invents a number.** A spool with no remaining-grams set shows a
+  blank, not a zero — an invented shortfall is worse than an honest gap. A spool
+  with no price shows its roll count and no money, and is left out of the total
+  with a note saying how many rows were excluded. A job whose G-code can't be
+  read is reported as **unresolved**, with its quantity, rather than quietly
+  dropped from the maths.
+- **Colour matching you can argue with.** Slicer hexes are matched to your
+  spools by CIEDE2000 in Lab space, using each spool's colorimeter-measured
+  values where the swatch library has them. Exact hex wins, an explicit mapping
+  beats everything, and anything past a ΔE ceiling is left **unassigned** rather
+  than guessed at — because "I don't know" beats a wrong shopping list. Map a
+  colour to a spool once and it sticks; if that spool is later forgotten the row
+  says **orphaned** and names what went missing, instead of pretending it was
+  never mapped.
+- **Track grams, price and a buy link per spool** — editable inline on both the
+  Spools tab and the Resources table, wherever you happen to be standing.
+
+![Spools — grams left, price per roll and a buy link on every spool, editable in place](docs/spools-inventory.png)
+
+- **Give a disposable roll an identity with no tag at all.** **＋ New roll**
+  describes the filament, mints a spool ID, and prints its **QR label** — the
+  label *is* the tag. Scanning it later opens the same card an RFID spool would.
+- **"3 colours short" on the Dispatch tab**, linking straight to the rows that
+  need attention. The badge and the table run the identical server-side
+  computation, so they cannot disagree.
+- **Click a printer's name to open its own Klipper UI.** Straight from the card
+  on the dashboard, in a new tab. (Same-network only — the printer's address
+  isn't reachable through the remote tunnel.)
+
+![Click a printer's name on its card to jump to that machine's own Klipper interface](docs/printer-link.png)
+
+- **Spool Match shows the top 5 first.** A printer with four common colours
+  loaded matches most of the library — a 200-row wall isn't an answer to "what
+  can I print right now". The best matches by coverage come first, with
+  **Show all** underneath.
+- **Fixed: Dispatch edits could be lost on a network share.** The scheduler
+  saved by writing a temp file and renaming it over the real one — correct on a
+  local disk, silently refused by SMB. Removals looked fine in the UI and came
+  back on the next reload. The save now falls back to a direct write where the
+  filesystem rejects the swap, and says so in the log rather than failing quietly.
 
 ---
 
