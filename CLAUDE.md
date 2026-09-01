@@ -10,6 +10,13 @@ failure appears 4–5 times, promote it to a hard rule below.
 
 1. **Rule #1 — read before writing.** Read every file you are about to change,
    in full, before the first edit. No patching from memory or from a grep hit.
+   **And read what it loads.** A file's behaviour is the whole chain it pulls
+   in — resolve every `<link>`, `<script src>`, `require` and `import` before
+   concluding anything, especially before claiming something is absent. An
+   "there is no X here" claim is a whole-project claim; a count from one file is
+   not evidence for it. (2026-09-01: audited index.html, missed the gold.css it
+   links one line later, and reported a stylesheet that already existed as
+   missing.)
 2. **Nothing ships unverified.** "Built" is not "shippable." A feature is done
    when the harness is green *and* its live hardware gate has passed. Unverified
    shapes and paths are not emitted at all.
@@ -50,11 +57,15 @@ failure appears 4–5 times, promote it to a hard rule below.
    an inference and present it as the reason. Four incidents: an unread config
    argued from twice, a `robocopy /E` that put 30 GB on the C: drive, a task
    handed back that this repo already documents how to do, and a harness called
-   green while its check count sat unchanged.
+   green while its check count sat unchanged. Fifth: a UI audit that counted one
+   file and reported the total as the project's, calling a stylesheet absent
+   that had shipped nine days earlier. Sixth: a backlog item quoted as still
+   open, twice, that measurement showed had already been fixed — a note is not
+   evidence, and re-measure before you work it or repeat it.
 
 ## Harness
 
-`npm test` → **371 checks**, expect **371 passed, 0 failed**. A red harness
+`npm test` → **450 checks**, expect **450 passed, 0 failed**. A red harness
 blocks everything.
 
 Takes ~2.5 min over SMB. Run it with `scripts/run-harness.cmd` and poll
@@ -63,8 +74,25 @@ Takes ~2.5 min over SMB. Run it with `scripts/run-harness.cmd` and poll
 `public/index.html`: `node --check` only covers `.js`, so a typo in the page's
 own 2,400-line inline script would otherwise ship silently.
 
-Green on Windows against `X:` (2026-09-01 00:36, v2.16.0) — and verified in the
+Standalone suites, run directly and not from `npm test`:
+`test/amounts-standalone.js` (44, real gcode) · `test/resources-standalone.js` ·
+`test/de-nearwhite-standalone.js` (the ΔE 7 gate) ·
+`test/gold-falsify-standalone.js` (rule-6 evidence for the CSS checks) ·
+`test/updates-standalone.js` (16, version ordering) ·
+`test/affiliate-standalone.js` (25, link shaping).
+
+Green on Windows against `X:` (2026-09-01 11:04, v2.19.0) — and verified in the
 23:00 hour specifically, which is when the clock-sensitive checks used to fail.
+
+**Live gates without touching production.** `scripts/boot-4546.cmd` starts a
+throwaway Hub on 4546 via `U1HUB_PORT` and leaves it running for a browser to
+hit; `scripts/stop-4546.cmd` kills it **by listening port**. Since v2.19 it runs
+with `U1HUB_DIR` pointing at an isolated state directory that `scripts/seed-4546.js`
+fills with a copy of production's config, queue and spools — so it can be clicked
+around freely, writes included, with nothing reaching the install. Prefer it to
+restarting 4545: that instance is dispatching nine printers, and a restart is
+the user's call, not the agent's. `scripts/restart-4545.cmd` exists for when they
+do ask.
 
 **State files on `X:` cannot be written with tmp+rename** — the share refuses
 rename-over-existing, silently. `modules/dispatch.js` `save()` documents the
@@ -73,20 +101,24 @@ fallback; any new state writer must follow it rather than reinventing the
 
 ### Known determinism debt (rule 7)
 
-Two items. Both are **defects**, not quirks — rule 7 is explicit that "re-run
-before believing it" is a bug report.
+**None as of v2.19.0.** Both outstanding items are fixed; a red harness now
+means a real failure, with no "re-run and see" exception. Kept here as the
+record of what the fixes were, because both patterns will recur.
 
-1. **"released job is free to be claimed against reality again"** races the 10 s
-   executor tick: the test leaves the mock printing, calls `/jobs/release`, and
-   reads the job back, while `tick()` legitimately re-adopts it in that window.
-   Fix by quieting the world first (set the mock to `standby` before asserting)
-   or driving the executor through `/api/dispatch/tick`. Until then it can go
-   red on a clean tree — which is exactly the exception rule 7 forbids.
-2. **`run-tests.js:1401`** still compares against `Date.now()` ("with today and
-   tomorrow closed, the copy waits for the next attended day"). The bound is
-   loose enough to hold at every hour of a normal day — the gap is always
-   24–48 h against a 23.5 h threshold — but a spring-forward day is 23 hours
-   long, so at 23:59 it would go red once a year.
+1. ~~**"released job is free to be claimed against reality again"**~~ raced the
+   10 s executor tick. An earlier pass tried quieting the mock before releasing,
+   which narrowed the window without closing it: the Hub could still be holding
+   a fleet snapshot taken while the mock said "printing", and `tick()` re-adopts
+   from that snapshot, not from the mock. **Fixed in v2.19** by waiting until
+   `/api/fleet` actually reports the printer idle before releasing. The
+   assertion is now true by construction — no tick, whenever it lands, has
+   anything to re-adopt. *Lesson: a race is closed by waiting for the observable
+   state you depend on, never by sleeping longer.*
+2. ~~**`run-tests.js:1401`**~~ compared against `Date.now()`. **Fixed in v2.19**
+   by using the plan's own `generated_at` as the baseline — the instant the
+   planner actually used. *Lesson: every time arithmetic in a test has a correct
+   baseline somewhere in the response; find it rather than reaching for the
+   clock.*
 
 ## Working over the bridge
 

@@ -3,7 +3,7 @@
 // and pushes the chosen file to the chosen printer via Moonraker (server-side,
 // so no browser CORS headaches).
 
-const VERSION = "2.16.0";
+const VERSION = "2.19.0";
 
 const crypto = require("crypto");
 const express = require("express");
@@ -35,9 +35,25 @@ for (const lvl of ["warn", "error"]) {
 // read-only bundle. User-editable files (config.json, the gcode folder) must
 // live NEXT TO THE EXE instead. Bundled assets (public/, parser.js) stay on
 // __dirname, which pkg maps into the snapshot.
+// U1HUB_DIR (v2.19) moves every user-editable and stateful file — config.json,
+// dispatch.json, spools.json, the lot — to a directory of your choosing, while
+// the code keeps running from wherever it is installed. Two reasons it exists:
+//
+//   * A container or a NAS wants the install read-only and the state on a
+//     mounted volume. Until now the two were the same folder by construction.
+//   * A second Hub on another port could not be run against the same install
+//     without both instances fighting over one dispatch.json. That made a live
+//     check of anything that WRITES state impossible without doing it to the
+//     production farm's own files.
 const IS_PKG = typeof process.pkg !== "undefined";
-const BASE_DIR = IS_PKG ? path.dirname(process.execPath) : __dirname;
+const BASE_DIR = process.env.U1HUB_DIR
+  ? path.resolve(process.env.U1HUB_DIR)
+  : (IS_PKG ? path.dirname(process.execPath) : __dirname);
 const ASSET_DIR = __dirname;
+if (process.env.U1HUB_DIR) {
+  try { fs.mkdirSync(BASE_DIR, { recursive: true }); }
+  catch (e) { console.error("U1HUB_DIR '" + BASE_DIR + "' could not be created: " + e.message); process.exit(1); }
+}
 
 const CONFIG_PATH = path.join(BASE_DIR, "config.json");
 const DEFAULT_CFG = { gcodeFolder: "./gcode", port: 4545, printers: [], tip: { label: "Buy me a beer 🍺", url: "https://venmo.com/u/dgambill" } };
@@ -121,7 +137,7 @@ function saveConfigFile() {
 // fork). Default is everything ON: an untouched config behaves exactly like
 // 2.10. U1HUB_PROFILE=lite (the Lite binary's baked-in default) flips the
 // Lite set off unless config.json explicitly says otherwise.
-const MODULE_DEFAULTS = { power: true, camera: true, spools: true, match: true, mixer: true, "types-beta": true, dispatch: true, slicing: false, resources: true };
+const MODULE_DEFAULTS = { power: true, camera: true, spools: true, match: true, mixer: true, "types-beta": true, dispatch: true, slicing: false, resources: true, updates: true };
 // resources (v2.16) needs dispatch for the schedule; with dispatch off it mounts
 // but every endpoint answers "nothing is scheduled" rather than erroring. It
 // reads spools.json off disk directly, so it does NOT need the spools module —
@@ -392,7 +408,8 @@ require("./tunnel.js")(app, express, BASE_DIR, PORT);
 const CLIENT_TABLE = {
   dispatch: "/modules/dispatch-ui.js",  // public/modules/dispatch-ui.js, static-served
   slicing: "/modules/slicing-ui.js",    // v2.12 Slice tab, same pattern
-  resources: "/modules/resources-ui.js" // v2.16 Resources tab
+  resources: "/modules/resources-ui.js", // v2.16 Resources tab
+  updates: "/modules/updates-ui.js"      // v2.18 version chip in the topbar (no tab)
   // (named -ui deliberately: the server module is modules/dispatch.js, and two
   //  same-named files in different folders is a foot-gun during deploys)
 };
@@ -2246,7 +2263,11 @@ const MODULE_TABLE = {
   // AFTER dispatch on purpose: resources consumes the "dispatch.jobs"
   // capability, and provide()/use() is resolved at call time, not registration
   // time — but keeping the order honest makes the dependency readable.
-  resources: require("./modules/resources.js")
+  resources: require("./modules/resources.js"),
+  // Last on purpose: it owns no data anyone else reads, and its only side
+  // effect is one outbound HTTPS GET that must never delay a registration
+  // above it.
+  updates: require("./modules/updates.js")
 };
 const CAPS_PROVIDED = new Map();
 // Parse "estimated printing time (normal mode) = 1d 2h 3m" from gcode text.
@@ -2290,6 +2311,9 @@ function fileInfoForModules(name, typeSlug) {
 const MODULE_CTX = Object.freeze({
   app, express, hublog,
   baseDir: BASE_DIR, assetDir: ASSET_DIR,
+  // v2.18: modules/updates.js compares this against the release manifest. A
+  // plain value, not a getter — VERSION is a build-time constant.
+  version: VERSION,
   detectCaps: (idx) => detectCaps(idx),
   fileInfo: (name, typeSlug) => fileInfoForModules(name, typeSlug),
   // v2.12: slicing writes produced gcode into a type's folder; fileInfo only

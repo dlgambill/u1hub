@@ -274,7 +274,10 @@
         exist${OI.length > 1 ? "" : "s"} (${OI.map(o =>
           (o.remaining_g == null ? "?" : Math.round(o.remaining_g) + " g")
           + (o.cost_per_roll == null ? "" : " @ $" + o.cost_per_roll)).join(", ")}) —
-        harmless, but nothing points at ${OI.length > 1 ? "them" : "it"} any more.`);
+        harmless, but nothing points at ${OI.length > 1 ? "them" : "it"} any more.
+        <span class="rforget">${OI.map(o => `<button class="invf" data-forget="${esc(o.spool_id)}"
+          title="Delete the inventory recorded against spool ${esc(o.spool_id)}. Its numbers are shown above; this cannot be undone.">
+          forget ${esc(o.spool_id)}</button>`).join(" ")}</span>`);
       w.push(`<div class="rwarn" style="border-color:color-mix(in srgb,var(--busy) 45%,var(--line));
         background:color-mix(in srgb,var(--busy) 8%,transparent)">${bits.join("<br>")}</div>`);
     }
@@ -287,13 +290,53 @@
         ${DATA.settings.assume_empty_when_unset ? "Stop assuming empty" : "Assume empty (worst case)"}</button>
       </div>`);
     }
+    // v2.19 affiliate disclosure. Shown only when a tag is actually riding on
+    // links that are actually on screen — a disclosure that appears when
+    // nothing is being earned teaches people to skip past it, and then it is
+    // not there when it matters. One line, plain words, and the off switch is
+    // in the same sentence rather than buried in Settings.
+    const A = DATA.affiliate || {};
+    if (A.active && A.tagged_rows > 0) {
+      w.push(`<div class="rwarn rdisc" style="border-color:var(--line);background:transparent">
+        <span class="rdisctxt">Buy and Search links on this page are Amazon affiliate links —
+        if you buy through one, this project earns a small commission at no extra cost to you.
+        Prices and availability are Amazon's; the Hub does not check them.</span>
+        <button class="btn" id="res-aff" style="margin-left:10px;padding:3px 9px;font-size:11.5px">Turn off</button>
+      </div>`);
+    } else if (A.enabled === false) {
+      // Shown whenever the switch is off, not only when a tag happens to be
+      // stored: the way back on must always be visible from the same place the
+      // way off was, or turning it off is a one-way door.
+      w.push(`<div class="rwarn rdisc" style="border-color:var(--line);background:transparent">
+        <span class="rdisctxt">Affiliate links are off — Buy and Search links go out untagged.${
+          A.tag_set ? "" : " No associate tag is stored, so turning this on will do nothing until one is set."}</span>
+        <button class="btn" id="res-aff" style="margin-left:10px;padding:3px 9px;font-size:11.5px">Turn on</button>
+      </div>`);
+    }
     $$("#res-warn").innerHTML = w.join("");
+    const affb = $$("#res-aff");
+    if (affb) affb.addEventListener("click", async () => {
+      affb.disabled = true;
+      await jpost("/api/resources/affiliate", { enabled: !(DATA.affiliate || {}).enabled });
+      load();
+    });
     const ab = $$("#res-assume");
     if (ab) ab.addEventListener("click", async () => {
       await jpost("/api/resources/settings",
         { assume_empty_when_unset: !DATA.settings.assume_empty_when_unset });
       load();
     });
+    // v2.19: act on the orphan warning instead of only reading it. The grams
+    // and price are printed immediately to the left of the button, so the
+    // "are you sure" is the sentence itself rather than a modal — and the
+    // server refuses to forget anything still on the shelf, so the worst a
+    // mis-click can lose is a number for a roll that no longer exists.
+    EL.querySelectorAll("[data-forget]").forEach(b => b.addEventListener("click", async () => {
+      b.disabled = true; b.textContent = "forgetting…";
+      const r = await jpost("/api/resources/inventory/forget", { spool_id: b.dataset.forget });
+      if (!r) { b.disabled = false; b.textContent = "couldn't — try again"; return; }
+      load();
+    }));
   }
 
   function matchTag(r) {
@@ -337,9 +380,19 @@
       // second list) is the whole reason it never got filled in.
       const price = inv(r.spool_id, "cost_per_roll",
         r.cost_per_roll == null ? null : "$" + r.cost_per_roll.toFixed(2), "set price");
-      const buy = r.purchase_url
-        ? `<button class="rbuy go" data-buy="${esc(r.purchase_url)}">Buy</button>`
-        : `<button class="rbuy" disabled title="No purchase link on this spool">Buy</button>`;
+      // v2.19: a row with no purchase link falls back to an Amazon SEARCH, and
+      // says "Search" rather than "Buy". The Hub has not checked that the
+      // filament exists there — it cannot, without the Product Advertising API
+      // — so a button that said "Buy" would be claiming something it does not
+      // know. The title spells out where the click goes either way.
+      const b = r.buy;
+      const buy = !b
+        ? `<button class="rbuy" disabled title="No purchase link, and not enough detail on this spool to search for one">Buy</button>`
+        : b.kind === "search"
+          ? `<button class="rbuy" data-buy="${esc(b.url)}"
+               title="No link saved on this spool — this searches Amazon for ${esc(r.material)} ${esc(r.spool_name || r.color_hex)}${b.tagged ? " (affiliate link)" : ""}">Search</button>`
+          : `<button class="rbuy go" data-buy="${esc(b.url)}"
+               title="${esc(b.url)}${b.tagged ? "\n(affiliate link)" : ""}">Buy</button>`;
       // On a phone the material cell is hidden and its value rides in the
       // colour cell instead — one line per row of chrome saved, and material
       // only ever matters next to the colour anyway.

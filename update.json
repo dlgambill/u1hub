@@ -1,0 +1,7 @@
+{
+  "_comment": "Release manifest. Every Hub with update checks on fetches this file and compares its own version against `version`. Bump it as part of cutting a release, not before — the harness pins it equal to package.json so a manifest that lies about the current release cannot ship.",
+  "version": "2.19.0",
+  "url": "https://github.com/dlgambill/u1hub/releases",
+  "notes": "Take a printer down for maintenance and the queue redistributes across the rest; bring it back and it redistributes again. Plus update notices, a keyboard-reachable UI, and a fix for phantom spools in the Resource Monitor.",
+  "published": "2026-09-01"
+}

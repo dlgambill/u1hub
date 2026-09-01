@@ -24,6 +24,13 @@ dispatch.json
 # v2.16: Resource Monitor state (spool inventory, prices, buy links, colour map)
 resources.json
 
+# v2.18: update-check cache — last check time, last seen release, dismissal.
+# NOTE the singular update.json at the repo root IS committed: that is the
+# published release manifest every Hub fetches. This one, plural-stem and
+# hyphenated, is per-install state. Do not confuse them.
+update-state.json
+update-state.json.tmp
+
 # State-file backups and the stranded temp files that led to them (2026-09-01).
 # These hold real scheduling data — never commit them, never delete them either.
 dispatch.json.tmp

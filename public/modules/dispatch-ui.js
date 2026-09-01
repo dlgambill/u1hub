@@ -73,6 +73,23 @@
     return { ok: r.ok, body: await r.json().catch(() => null) };
   }
 
+  // Take a printer out of service, or put it back. The server answers with the
+  // replanned board, so the redistribution this click caused is on screen in
+  // one round trip rather than after the next poll — you press it and you can
+  // see immediately where the work went.
+  //
+  // No confirm() and no prompt() anywhere in here: a browser modal blocks the
+  // page, and this is a control someone taps on a phone standing next to a
+  // printer with the panel already off. The action is one click to undo.
+  async function toggleMaint(idx, btn) {
+    const cur = ((PLAN.printers || []).find(p => p.idx === idx) || {}).maintenance || null;
+    btn.disabled = true;
+    const r = await jpost("/api/dispatch/maintenance", { printer: idx, down: !cur });
+    btn.disabled = false;
+    if (r.ok && r.body && r.body.plan && !r.body.plan.error) { PLAN = r.body.plan; render(); }
+    else await load();          // something disagreed — re-read rather than guess
+  }
+
   async function load() {
     const [d, p] = await Promise.all([jget("/api/dispatch"), jget("/api/dispatch/plan")]);
     STATE = d.body || { jobs: [], bundles: [], settings: {} };
@@ -423,17 +440,33 @@
           `${s.est_assumed ? "\n(no estimate in file — 1 h assumed)" : ""}${s.misses_deadline ? "\n⚠ MISSES ITS DEADLINE" : ""}">` +
           `<span class="dsp-gtext">${body}</span>${swapBadge}${clash}${idle}</div>`;
       }).join("");
-      const clearBtn = awaiting.has(+idx)
-        ? `<button class="dsp-clear" data-dsp-clear="${idx}">Bed cleared → next</button>`
-        : `<button class="dsp-clear dsp-idleclear" data-dsp-clear="${idx}" title="Hand this printer its next planned job now">▶ next</button>`;
+      // v2.19 maintenance. Deliberately its own word and its own colour: an
+      // offline machine is a fact the Hub discovered, a machine down for
+      // maintenance is a decision you made, and a farm where those two look the
+      // same is a farm where you go hunting for a fault you caused.
+      const maint = ((PLAN.printers || []).find(p => p.idx === +idx) || {}).maintenance || null;
       const busyNow = RUN.find(r => r.printer === +idx);
-      const first = busyNow
+      const wrench = `<button class="dsp-maint${maint ? " dsp-maint-on" : ""}" data-dsp-maint="${idx}"` +
+        ` title="${maint ? "Bring this printer back into service" : "Take this printer down for maintenance"}"` +
+        ` aria-pressed="${maint ? "true" : "false"}">${maint ? "↩ back in service" : "⚒ take down"}</button>`;
+      // Nothing new can be started on a machine that is down, so the button
+      // that starts things does not appear on it.
+      const clearBtn = maint ? "" : (awaiting.has(+idx)
+        ? `<button class="dsp-clear" data-dsp-clear="${idx}">Bed cleared → next</button>`
+        : `<button class="dsp-clear dsp-idleclear" data-dsp-clear="${idx}" title="Hand this printer its next planned job now">▶ next</button>`);
+      const first = maint
+        // A print already on the bed keeps running — taking a machine down
+        // stops it being GIVEN work, it does not reach in and cancel yours.
+        ? `<span class="dsp-gsub dsp-gmaint">${busyNow
+            ? "⚒ finishing, then down"
+            : "⚒ down for maintenance"}${maint.note ? " — " + esc(maint.note) : ""}</span>`
+        : busyNow
         ? `<span class="dsp-gsub dsp-grunning">${busyNow.paused ? "⏸ paused" : "▶ printing now"}</span>`
         : lane.slots.length
           ? `<span class="dsp-gsub">from ${esc(fmtClock(Math.min(...lane.slots.map(s => s.est_start))))}</span>`
           : `<span class="dsp-gsub dsp-lidle">idle — nothing planned</span>`;
-      return `<div class="dsp-grow">
-        <div class="dsp-gcell"><span class="dsp-gpname">${esc(lane.name)}</span>${first}${clearBtn}</div>
+      return `<div class="dsp-grow${maint ? " dsp-rowmaint" : ""}">
+        <div class="dsp-gcell"><span class="dsp-gpname">${esc(lane.name)}</span>${first}${clearBtn}${wrench}</div>
         <div class="dsp-gtime" style="width:${W}px">${closed}${nowLine}${runBlocks(+idx)}${blocks}</div>
       </div>`;
     }).join("");
@@ -458,11 +491,27 @@
       (bad.length ? `<div class="dsp-empty">⚠ ${bad.length} cop${bad.length === 1 ? "y" : "ies"} unplannable: ${esc(bad[0].unplannable)}</div>` : "");
 
     box.querySelectorAll("[data-dsp-clear]").forEach(b => b.onclick = () => clearBed(+b.dataset.dspClear, b));
+    box.querySelectorAll("[data-dsp-maint]").forEach(b => b.onclick = () => toggleMaint(+b.dataset.dspMaint, b));
     // Touch has no hover, so the title attribute is invisible on a phone.
     // Tapping opens everything the block could not say.
-    box.querySelectorAll("[data-slot]").forEach(b => b.onclick = () => showSlot(good[+b.dataset.slot]));
-    box.querySelectorAll("[data-run]").forEach(b => b.onclick = () =>
-      showRunning(RUN.filter(r => r.printer === +b.dataset.runp)[+b.dataset.run]));
+    //
+    // v2.19: these are divs with click handlers, which means they were not in
+    // the tab order at all — the entire timeline was unreachable by keyboard,
+    // and a focus ring in gold.css could never have fired on them because
+    // nothing could focus them in the first place. tabindex puts them in the
+    // order, role tells a screen reader what they are, and Enter/Space do what
+    // a click does. No CSS could have fixed this; it needed the markup.
+    const activatable = (b, fn) => {
+      b.onclick = fn;
+      b.tabIndex = 0;
+      b.setAttribute("role", "button");
+      b.onkeydown = e => {
+        if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") { e.preventDefault(); fn(); }
+      };
+    };
+    box.querySelectorAll("[data-slot]").forEach(b => activatable(b, () => showSlot(good[+b.dataset.slot])));
+    box.querySelectorAll("[data-run]").forEach(b => activatable(b, () =>
+      showRunning(RUN.filter(r => r.printer === +b.dataset.runp)[+b.dataset.run])));
     box.querySelectorAll("[data-pph]").forEach(b => b.onclick = () => {
       PPH = +b.dataset.pph;
       try { localStorage.setItem("u1.dspZoom", String(PPH)); } catch {}
@@ -496,7 +545,7 @@
         <div class="dsp-sheettitle">${esc((r.file || "Running print").replace(/\.gcode$/i, ""))}</div>
         <table class="dsp-sheettab">${rows.map(x2 => `<tr><td>${esc(x2[0])}</td><td>${esc(x2[1])}</td></tr>`).join("")}</table>
         <div class="dsp-sheetsub">This is what the machine is doing, not a plan</div>
-        <div style="color:#889;font-size:12px">Dispatch never schedules over a running print, and never moves one.</div>
+        <div style="color:var(--ink-faint, #889);font-size:12px">Dispatch never schedules over a running print, and never moves one.</div>
         <button class="dsp-sheetclose">Close</button>
       </div>`;
     $$("#dsp-sheet").style.display = "flex";
@@ -805,100 +854,114 @@
     <style>
       .dsp-wrap{padding:6px 0}
       .dsp-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:8px 0}
-      .dsp-row input,.dsp-row select{font:inherit;padding:6px 8px;border-radius:6px;border:1px solid #444;background:#1b1e24;color:inherit}
-      .dsp-row button,.dsp-clear{font:inherit;font-size:13px;padding:6px 12px;border:1px solid #666;border-radius:6px;background:#23262d;color:inherit;cursor:pointer}
+      .dsp-row input,.dsp-row select{font:inherit;padding:6px 8px;border-radius:6px;border:1px solid var(--line, #444);background:var(--panel, #1b1e24);color:inherit}
+      .dsp-row button,.dsp-clear{font:inherit;font-size:13px;padding:6px 12px;border:1px solid var(--line, #666);border-radius:6px;background:var(--panel-2, #23262d);color:inherit;cursor:pointer}
       .dsp-hoursbar{margin:6px 0}
-      .dsp-toggle{font:inherit;font-size:12.5px;padding:6px 12px;border:1px solid #333;border-radius:8px;background:#1b1e24;color:#aab;cursor:pointer;text-align:left;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-      .dsp-toggle b{color:#d6a832}
+      .dsp-toggle{font:inherit;font-size:12.5px;padding:6px 12px;border:1px solid var(--line-soft, #333);border-radius:8px;background:var(--panel, #1b1e24);color:var(--ink-dim, #aab);cursor:pointer;text-align:left;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      .dsp-toggle b{color:var(--signal, #FFB200)}
       .dsp-days{display:flex;gap:8px;flex-wrap:wrap;margin:6px 0}
       .dsp-wins{display:flex;flex-direction:column;gap:3px}
       .dsp-win{display:flex;align-items:center;gap:4px;flex-wrap:wrap}
-      .dsp-win b{cursor:pointer;color:#a55;font-size:13px;padding:4px 7px;line-height:1}
-      .dsp-addwin{font:inherit;font-size:11px;padding:2px 7px;border:1px dashed #4a4f57;border-radius:5px;background:transparent;color:#889;cursor:pointer}
-      .dsp-day{display:flex;flex-direction:column;gap:4px;padding:7px 9px;border:1px solid #2f333a;border-radius:8px;font-size:12px;flex:1 1 240px;min-width:0;max-width:340px}
-      .dsp-day.dsp-ov{border-color:#d6a832}
-      .dsp-day input[type=time]{font-size:12px;padding:4px 6px;border-radius:5px;border:1px solid #444;background:#1b1e24;color:inherit;width:auto;min-width:112px;flex:1 1 auto;box-sizing:content-box}
-      .dsp-chipbox{min-height:56px;border:1px dashed #3a3f47;border-radius:8px;padding:8px;display:flex;gap:6px;flex-wrap:wrap;align-items:center}
-      .dsp-chipbox.dsp-over{border-color:#4cd07a;background:#12281a}
-      #dsp-drop{display:none;position:absolute;inset:0;z-index:9;align-items:center;justify-content:center;background:rgba(18,40,26,.82);border:2px dashed #4cd07a;border-radius:12px;pointer-events:none}
-      #dsp-drop div{font-size:16px;font-weight:700;color:#4cd07a}
+      .dsp-win b{cursor:pointer;color:var(--bad, #a55);font-size:13px;padding:4px 7px;line-height:1}
+      .dsp-addwin{font:inherit;font-size:11px;padding:2px 7px;border:1px dashed var(--line, #4a4f57);border-radius:5px;background:transparent;color:var(--ink-faint, #889);cursor:pointer}
+      .dsp-day{display:flex;flex-direction:column;gap:4px;padding:7px 9px;border:1px solid var(--line-soft, #2f333a);border-radius:8px;font-size:12px;flex:1 1 240px;min-width:0;max-width:340px}
+      .dsp-day.dsp-ov{border-color:var(--signal, #FFB200)}
+      .dsp-day input[type=time]{font-size:12px;padding:4px 6px;border-radius:5px;border:1px solid var(--line, #444);background:var(--panel, #1b1e24);color:inherit;width:auto;min-width:112px;flex:1 1 auto;box-sizing:content-box}
+      .dsp-chipbox{min-height:56px;border:1px dashed var(--line, #3a3f47);border-radius:8px;padding:8px;display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+      .dsp-chipbox.dsp-over{border-color:var(--ok, #4cd07a);background:#12281a}
+      #dsp-drop{display:none;position:absolute;inset:0;z-index:9;align-items:center;justify-content:center;background:rgba(18,40,26,.82);border:2px dashed var(--ok, #4cd07a);border-radius:12px;pointer-events:none}
+      #dsp-drop div{font-size:16px;font-weight:700;color:var(--ok, #4cd07a)}
       .dsp-cname{max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-      .dsp-q{font:inherit;font-size:13px;line-height:1;width:24px;height:24px;border:1px solid #4a4f57;border-radius:5px;background:#1b1e24;color:inherit;cursor:pointer;padding:0}
-      .dsp-qty{width:46px;font:inherit;font-size:12.5px;padding:2px 4px;text-align:center;border:1px solid #444;border-radius:5px;background:#12151a;color:inherit}
-      .dsp-bump{outline:2px solid #4cd07a}
-      .dsp-chip{display:inline-flex;align-items:center;gap:5px;background:#23262d;border:1px solid #444;border-radius:14px;padding:4px 10px;font-size:12.5px}
-      .dsp-chip b{margin-left:7px;cursor:pointer;color:#c66}
-      .dsp-hinttext{color:#778;font-size:12px}
-      .dsp-job{display:flex;gap:12px;align-items:center;padding:7px 10px;border-bottom:1px solid #2a2d33;font-size:13px;flex-wrap:wrap}
+      .dsp-q{font:inherit;font-size:13px;line-height:1;width:24px;height:24px;border:1px solid var(--line, #4a4f57);border-radius:5px;background:var(--panel, #1b1e24);color:inherit;cursor:pointer;padding:0}
+      .dsp-qty{width:46px;font:inherit;font-size:12.5px;padding:2px 4px;text-align:center;border:1px solid var(--line, #444);border-radius:5px;background:var(--chassis, #12151a);color:inherit}
+      .dsp-bump{outline:2px solid var(--ok, #4cd07a)}
+      .dsp-chip{display:inline-flex;align-items:center;gap:5px;background:var(--panel-2, #23262d);border:1px solid var(--line, #444);border-radius:14px;padding:4px 10px;font-size:12.5px}
+      .dsp-chip b{margin-left:7px;cursor:pointer;color:var(--bad, #c66)}
+      .dsp-hinttext{color:var(--ink-faint, #778);font-size:12px}
+      .dsp-job{display:flex;gap:12px;align-items:center;padding:7px 10px;border-bottom:1px solid var(--line-soft, #2a2d33);font-size:13px;flex-wrap:wrap}
       .dsp-inbundle{padding-left:26px}
-      .dsp-bundle{border:1px solid #34383f;border-radius:8px;margin:8px 0;overflow:hidden}
-      .dsp-bhead{display:flex;gap:12px;align-items:center;background:#1e2127;padding:7px 10px;font-size:13px;font-weight:700}
-      .dsp-bhead span{color:#9aa;font-weight:400}
+      .dsp-bundle{border:1px solid var(--line, #34383f);border-radius:8px;margin:8px 0;overflow:hidden}
+      .dsp-bhead{display:flex;gap:12px;align-items:center;background:var(--panel-2, #1e2127);padding:7px 10px;font-size:13px;font-weight:700}
+      .dsp-bhead span{color:var(--ink-dim, #9aa);font-weight:400}
       .dsp-bhead button{margin-left:auto}
       .dsp-jfile{font-weight:700;min-width:180px}
-      .dsp-jstate{color:#9aa}
+      .dsp-jstate{color:var(--ink-dim, #9aa)}
       .dsp-done{opacity:.55}
       .dsp-swatches i{display:inline-block;width:13px;height:13px;border-radius:3px;border:1px solid #0006;margin-right:2px;vertical-align:middle}
-      .dsp-job button,.dsp-bhead button{font-size:12px;padding:3px 9px;border:1px solid #555;border-radius:5px;background:#23262d;color:inherit;cursor:pointer}
+      .dsp-job button,.dsp-bhead button{font-size:12px;padding:3px 9px;border:1px solid var(--line, #555);border-radius:5px;background:var(--panel-2, #23262d);color:inherit;cursor:pointer}
       /* .dsp-lane/.dsp-track/.dsp-blk went with the percentage-width timeline
          the guide replaced in v2.15 — don't reintroduce them. */
-      .dsp-clear{border-color:#0a7a33;color:#4cd07a;font-size:11.5px;padding:3px 8px;align-self:flex-start}
-      .dsp-idleclear{border-color:#555;color:#9aa}
+      .dsp-clear{border-color:#0a7a33;color:var(--ok, #4cd07a);font-size:11.5px;padding:3px 8px;align-self:flex-start}
+      .dsp-idleclear{border-color:var(--line, #555);color:var(--ink-dim, #9aa)}
+    /* v2.19 maintenance. Reads as neither "running" green nor "fault" red:
+       taking a machine down is a decision, not an incident. */
+    .dsp-maint{font:inherit;font-size:11.5px;padding:3px 8px;align-self:flex-start;
+      border:1px dashed var(--line,#3C4250);border-radius:var(--r-sm,6px);
+      background:transparent;color:var(--ink-faint,#828B9A);cursor:pointer;white-space:nowrap}
+    .dsp-maint:hover{color:var(--ink,#F4F6FA);border-color:var(--ink-faint,#828B9A)}
+    .dsp-maint-on{border-style:solid;color:var(--signal,#FFB200);
+      border-color:color-mix(in srgb, var(--signal,#FFB200) 55%, var(--line,#3C4250))}
+    .dsp-gmaint{color:var(--signal,#FFB200);font-weight:700}
+    /* The whole lane recedes, so the eye reads "this machine is not in play"
+       before it reads any of the words. The bars still draw: a print already on
+       the bed is still real and still occupies the machine. */
+    .dsp-rowmaint .dsp-gtime{opacity:.42}
+    .dsp-rowmaint .dsp-gpname{color:var(--ink-dim,#AEB6C4)}
       .dsp-swapn{color:#ffd166;font-weight:700}
-      .dsp-idle{color:#8ab;font-weight:700;margin-left:4px}
-      .dsp-lidle{color:#667;font-weight:400;font-size:11.5px}
+      .dsp-idle{color:var(--busy, #8ab);font-weight:700;margin-left:4px}
+      .dsp-lidle{color:var(--ink-faint, #667);font-weight:400;font-size:11.5px}
       #dsp-sheet{display:none;position:fixed;inset:0;z-index:60;background:rgba(0,0,0,.62);align-items:center;justify-content:center;padding:16px}
-      .dsp-sheetbox{background:#161920;border:1px solid #343941;border-radius:12px;padding:16px;max-width:440px;width:100%;max-height:80vh;overflow:auto}
+      .dsp-sheetbox{background:var(--panel, #161920);border:1px solid var(--line, #343941);border-radius:12px;padding:16px;max-width:440px;width:100%;max-height:80vh;overflow:auto}
       .dsp-sheettitle{font-size:15px;font-weight:800;margin-bottom:10px;word-break:break-word}
       .dsp-sheettab{width:100%;font-size:13px;border-collapse:collapse}
       .dsp-sheettab td{padding:4px 0;vertical-align:top}
-      .dsp-sheettab td:first-child{color:#889;width:96px}
-      .dsp-sheetsub{margin:12px 0 4px;font-size:11.5px;letter-spacing:.07em;color:#d6a832;font-weight:800}
-      .dsp-anyslot{color:#889;font-weight:400;letter-spacing:0;text-transform:none}
+      .dsp-sheettab td:first-child{color:var(--ink-faint, #889);width:96px}
+      .dsp-sheetsub{margin:12px 0 4px;font-size:11.5px;letter-spacing:.07em;color:var(--signal, #FFB200);font-weight:800}
+      .dsp-anyslot{color:var(--ink-faint, #889);font-weight:400;letter-spacing:0;text-transform:none}
       .dsp-mounts{list-style:none;padding:0;margin:0;font-size:13px}
       .dsp-mounts li{display:flex;align-items:center;gap:8px;padding:3px 0}
       .dsp-mounts i{width:15px;height:15px;border-radius:4px;border:1px solid #0006;flex:none}
-      .dsp-sheetclose{margin-top:14px;width:100%;font:inherit;font-size:13px;padding:9px;border:1px solid #555;border-radius:8px;background:#23262d;color:inherit;cursor:pointer}
+      .dsp-sheetclose{margin-top:14px;width:100%;font:inherit;font-size:13px;padding:9px;border:1px solid var(--line, #555);border-radius:8px;background:var(--panel-2, #23262d);color:inherit;cursor:pointer}
       .dsp-blk{cursor:pointer}
       .dsp-clash{color:#ff9f43;font-weight:800;margin-left:4px}
       .dsp-moverow{display:flex;gap:6px;margin-top:4px}
-      .dsp-moveto{flex:1;font:inherit;font-size:13px;padding:7px;border:1px solid #444;border-radius:7px;background:#1b1e24;color:inherit}
-      .dsp-movego{font:inherit;font-size:13px;padding:7px 14px;border:1px solid #555;border-radius:7px;background:#23262d;color:inherit;cursor:pointer}
-      .dsp-targetbar{border:1px solid #2f333a;border-radius:8px;padding:7px 10px;font-size:12.5px}
-      .dsp-targetbar span{color:#c9cbd1}
+      .dsp-moveto{flex:1;font:inherit;font-size:13px;padding:7px;border:1px solid var(--line, #444);border-radius:7px;background:var(--panel, #1b1e24);color:inherit}
+      .dsp-movego{font:inherit;font-size:13px;padding:7px 14px;border:1px solid var(--line, #555);border-radius:7px;background:var(--panel-2, #23262d);color:inherit;cursor:pointer}
+      .dsp-targetbar{border:1px solid var(--line-soft, #2f333a);border-radius:8px;padding:7px 10px;font-size:12.5px}
+      .dsp-targetbar span{color:var(--ink-dim, #c9cbd1)}
       .dsp-rep{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:8px 11px;border-radius:8px;font-size:13px;margin:6px 0}
-      .dsp-rep span{color:#9aa;font-weight:400}
+      .dsp-rep span{color:var(--ink-dim, #9aa);font-weight:400}
       .dsp-rep-ok{background:#12261a;border:1px solid #2c6b41;color:#8fe0ac}
       .dsp-rep-bad{background:#2a1414;border:1px solid #8a3b32;color:#f0a89f}
-      .dsp-rep-none{background:#1b1e24;border:1px solid #2f333a;color:#889}
+      .dsp-rep-none{background:var(--panel, #1b1e24);border:1px solid var(--line-soft, #2f333a);color:var(--ink-faint, #889)}
       .dsp-repmore{margin-left:auto;font:inherit;font-size:12px;padding:3px 10px;border:1px solid #7a4c46;border-radius:6px;background:transparent;color:inherit;cursor:pointer}
-      .dsp-replist{border:1px solid #2a2d33;border-radius:8px;overflow:hidden;margin-bottom:8px}
-      .dsp-repitem{padding:8px 11px;border-bottom:1px solid #23262d;font-size:12.5px}
+      .dsp-replist{border:1px solid var(--line-soft, #2a2d33);border-radius:8px;overflow:hidden;margin-bottom:8px}
+      .dsp-repitem{padding:8px 11px;border-bottom:1px solid var(--panel-2, #23262d);font-size:12.5px}
       .dsp-repitem:last-child{border-bottom:0}
       .dsp-repline{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
       .dsp-repfile{font-weight:700}
-      .dsp-repfile i{color:#889;font-style:normal;font-weight:400}
+      .dsp-repfile i{color:var(--ink-faint, #889);font-style:normal;font-weight:400}
       .dsp-replate{color:#f0a89f;font-weight:700}
-      .dsp-repwhere{color:#889}
+      .dsp-repwhere{color:var(--ink-faint, #889)}
       .dsp-repcause{margin-left:auto;color:#ffd166;font-size:11.5px;border:1px solid #5c4a1f;border-radius:10px;padding:1px 8px}
-      .dsp-repwhy{color:#b9bcc4;margin-top:4px;line-height:1.45}
+      .dsp-repwhy{color:var(--ink-dim, #b9bcc4);margin-top:4px;line-height:1.45}
       .dsp-repfix{color:#8fb7e0;margin-top:3px;line-height:1.45}
       .dsp-repnote{color:#ff9f43;margin-top:3px}
-      .dsp-empty{color:#889;font-size:13px;padding:10px 2px}
-      .dsp-h{font-size:12px;letter-spacing:.08em;color:#d6a832;font-weight:800;margin:14px 0 4px}
+      .dsp-empty{color:var(--ink-faint, #889);font-size:13px;padding:10px 2px}
+      .dsp-h{font-size:12px;letter-spacing:.08em;color:var(--signal, #FFB200);font-weight:800;margin:14px 0 4px}
       /* ---- the guide (v2.15) --------------------------------------------- */
       /* One scale governs everything: distance is time. The channel column and
          the ruler are sticky so you never lose the machine or the day. */
       .dsp-gtools{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:6px 0 4px}
       .dsp-gsub{color:var(--ink-faint,#828B9A);font-size:11.5px}
       .dsp-gz,.dsp-gjump{font:inherit;font-size:11.5px;padding:3px 9px;border:1px solid var(--line,#3C4250);border-radius:6px;background:var(--panel,#1b1e24);color:var(--ink-dim,#AEB6C4);cursor:pointer}
-      .dsp-gzon{border-color:var(--signal,#d6a832);color:var(--signal,#d6a832);font-weight:700}
+      .dsp-gzon{border-color:var(--signal, #FFB200);color:var(--signal, #FFB200);font-weight:700}
       .dsp-gkey{display:flex;gap:8px;align-items:center;margin-left:auto;color:var(--ink-faint,#828B9A);font-size:11px;flex-wrap:wrap}
       .dsp-gkey i{display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:3px;vertical-align:-1px}
-      .dsp-krun{background:#1d5c3a;border:1px solid #3DD68C}
+      .dsp-krun{background:#1d5c3a;border:1px solid var(--ok,#3DD68C)}
       .dsp-kblk{background:#274a72;border:1px solid #3a6ca8}
       .dsp-kmiss{background:#6e2020;border:1px solid #c0392b}
-      .dsp-kclosed{background:repeating-linear-gradient(45deg,#171a20,#171a20 3px,#12151a 3px,#12151a 6px);border:1px solid #23262d}
+      .dsp-kclosed{background:repeating-linear-gradient(45deg,#171a20,#171a20 3px,var(--chassis, #12151a) 3px,var(--chassis, #12151a) 6px);border:1px solid var(--panel-2, #23262d)}
       .dsp-guide{overflow-x:auto;overflow-y:hidden;border:1px solid var(--line-soft,#2a2d33);border-radius:9px;background:var(--chassis,#12151a);-webkit-overflow-scrolling:touch}
       .dsp-gtrack{position:relative}
       .dsp-grow{display:flex;align-items:stretch;border-bottom:1px solid var(--line-soft,#23262d)}
@@ -913,7 +976,7 @@
       .dsp-gcorner{justify-content:flex-end;padding-bottom:5px}
       .dsp-gday{position:absolute;top:0;height:17px;line-height:17px;border-left:1px solid var(--line,#3C4250);
         background:var(--panel-2,#23262d);font-size:11px;font-weight:800;letter-spacing:.04em;
-        color:var(--signal,#d6a832);overflow:hidden;white-space:nowrap}
+        color:var(--signal, #FFB200);overflow:hidden;white-space:nowrap}
       .dsp-gday span{padding-left:6px}
       .dsp-gtick{position:absolute;top:17px;bottom:0;border-left:1px solid var(--line-soft,#23262d)}
       .dsp-gtick.dsp-gmid{border-left-color:var(--line,#3C4250)}
@@ -934,8 +997,8 @@
       .dsp-grun:hover{filter:brightness(1.18)}
       .dsp-grun .dsp-gtext span{color:#bff0d4}
       .dsp-grunicon{flex:none;font-size:10px;color:var(--ok,#3DD68C)}
-      .dsp-grunp{background:#5c4a1d;border-color:#d6a832}
-      .dsp-grunp .dsp-grunicon{color:#d6a832}
+      .dsp-grunp{background:#5c4a1d;border-color:var(--signal, #FFB200)}
+      .dsp-grunp .dsp-grunicon{color:var(--signal, #FFB200)}
       /* ETA unknown: striped, so an 8-hour pessimistic bar never reads as a measurement */
       .dsp-grunq{background:repeating-linear-gradient(45deg,#1d5c3a,#1d5c3a 6px,#164a2e 6px,#164a2e 12px)}
       .dsp-grunning{color:var(--ok,#3DD68C);font-weight:700}
@@ -946,7 +1009,7 @@
       /* ---- replan progress + change list ---------------------------------- */
       .dsp-pbar{margin:6px 0}
       .dsp-pbtrack{height:4px;border-radius:3px;background:var(--panel-2,#23262d);overflow:hidden}
-      .dsp-pbfill{height:100%;width:0;background:var(--signal,#d6a832);transition:width .22s var(--ease,ease)}
+      .dsp-pbfill{height:100%;width:0;background:var(--signal, #FFB200);transition:width .22s var(--ease,ease)}
       .dsp-pblabel{font-size:11.5px;color:var(--ink-faint,#828B9A);margin-top:4px}
       .dsp-pbbad .dsp-pbfill{background:var(--bad,#F26B5E)}
       .dsp-pbbad .dsp-pblabel{color:var(--bad,#F26B5E)}
@@ -974,7 +1037,7 @@
       .dsp-dtfield{display:inline-flex;align-items:center;gap:6px;font:inherit;font-size:12.5px;
         padding:6px 10px;border:1px solid var(--line,#444);border-radius:6px;background:var(--panel,#1b1e24);
         color:inherit;cursor:pointer;min-width:170px;text-align:left}
-      .dsp-dtfield:hover{border-color:var(--signal,#d6a832)}
+      .dsp-dtfield:hover{border-color:var(--signal, #FFB200)}
       .dsp-dtempty .dsp-dtval{color:var(--ink-faint,#828B9A)}
       .dsp-dtcal{font-size:12px;opacity:.85}
       .dsp-pop{position:fixed;z-index:70;background:var(--panel,#161920);border:1px solid var(--line,#343941);
@@ -991,7 +1054,7 @@
       .dsp-pd:hover{background:var(--panel-2,#23262d)}
       .dsp-pdo{color:var(--ink-faint,#5C6474)}
       .dsp-pdtoday{border-color:var(--line,#3C4250)}
-      .dsp-pdsel{background:var(--signal,#d6a832);color:#12151a;font-weight:800;border-color:var(--signal,#d6a832)}
+      .dsp-pdsel{background:var(--signal, #FFB200);color:var(--chassis, #12151a);font-weight:800;border-color:var(--signal, #FFB200)}
       .dsp-ptime{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:9px;padding-top:9px;
         border-top:1px solid var(--line-soft,#2a2d33)}
       .dsp-pclock{font-size:13px}
@@ -1000,12 +1063,12 @@
       .dsp-pchips{display:flex;gap:3px;flex-wrap:wrap}
       .dsp-pchip{font:inherit;font-size:11px;padding:4px 7px;border:1px solid var(--line,#3C4250);border-radius:11px;
         background:transparent;color:var(--ink-dim,#AEB6C4);cursor:pointer}
-      .dsp-pchip:hover{border-color:var(--signal,#d6a832);color:var(--signal,#d6a832)}
+      .dsp-pchip:hover{border-color:var(--signal, #FFB200);color:var(--signal, #FFB200)}
       .dsp-pfoot{display:flex;align-items:center;gap:8px;margin-top:9px;padding-top:9px;border-top:1px solid var(--line-soft,#2a2d33)}
       .dsp-ppreview{flex:1;font-size:11.5px;color:var(--ink-faint,#828B9A);text-align:center}
       .dsp-pclear,.dsp-pset{font:inherit;font-size:12.5px;padding:6px 12px;border-radius:7px;cursor:pointer;border:1px solid var(--line,#555)}
       .dsp-pclear{background:transparent;color:var(--ink-dim,#AEB6C4)}
-      .dsp-pset{background:var(--signal,#d6a832);border-color:var(--signal,#d6a832);color:#12151a;font-weight:800}
+      .dsp-pset{background:var(--signal, #FFB200);border-color:var(--signal, #FFB200);color:var(--chassis, #12151a);font-weight:800}
       @media (max-width:560px){
         .dsp-gcell{width:104px;min-width:104px;padding:5px 7px}
         .dsp-chgfile{min-width:0}
@@ -1032,7 +1095,7 @@
             </select>
           </label>
         </div>
-        <div style="color:#889;font-size:12px;margin:2px 0 6px">Jobs always START inside these hours - that is when you are around to swap spools and clear beds. Add a second block for days you're out in the middle. • = overridden day. Auto-start stays off — a human taps "Bed cleared".</div>
+        <div style="color:var(--ink-faint, #889);font-size:12px;margin:2px 0 6px">Jobs always START inside these hours - that is when you are around to swap spools and clear beds. Add a second block for days you're out in the middle. • = overridden day. Auto-start stays off — a human taps "Bed cleared".</div>
         <div class="dsp-days" id="dsp-days"></div>
       </div>
       <div class="dsp-row dsp-targetbar">
@@ -1040,7 +1103,7 @@
         ${dtFieldHTML("dsp-target", "pick a date and time")}
         <button id="dsp-target-clear" style="display:none">Clear</button>
       </div>
-      <div class="dsp-h">ADD JOB <span style="color:#889;font-weight:400">— several files become one bundle (multi-plate prints)</span></div>
+      <div class="dsp-h">ADD JOB <span style="color:var(--ink-faint, #889);font-weight:400">— several files become one bundle (multi-plate prints)</span></div>
       <div class="dsp-row">
         <select id="dsp-file"></select><button id="dsp-stage">+ add file</button>
         deadline ${dtFieldHTML("dsp-dl", "none")}

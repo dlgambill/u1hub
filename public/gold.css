@@ -146,5 +146,149 @@ body{
    TABS, never the document: `html, body { overflow-x: hidden }` here broke
    Cloudflare Access on 2026-08-30 (see MISTAKES.md). ---- */
 @media (max-width:880px){
-  .vtab{letter-spacing:0;}
+  .vtab{letter-spacing:0; flex:0 0 auto;}
+  /* v2.19: five tabs no longer fit one row on a phone, and the row was solving
+     that by truncating — "Dispa…", "Resou…". A tab you have to decode is worse
+     than a tab on a second line, so let the row wrap and let every label say
+     what it is. Verified at 390px: the document still does not scroll
+     sideways, which is the thing that must never regress here. */
+  .viewtabs{flex-wrap:wrap; row-gap:6px;}
 }
+
+/* ============================================================================
+   v2.17 discipline pass — appended to the v2.11 layer above, same rules.
+   Four findings from a full audit of the inline <style>, this file, and the
+   module style blocks. Nothing here restyles; it finishes what 2.11 started
+   and covers the components added since.
+   ========================================================================== */
+
+/* ---- 1. Token repair (a live bug, not polish). --------------------------
+   index.html's filament-memory bar references var(--accent, #FFB200) and
+   var(--card, #161a22). Neither custom property is defined anywhere in the
+   project — this file defines --dur and --ease, but not those two — so both
+   have always resolved to their hardcoded fallbacks.
+
+   Visible symptom: switch to a non-U1 printer type and the whole UI re-accents
+   around applyAccent()'s new --signal while .fmembar's select and buttons stay
+   pinned to U1 amber. Aliasing the two names fixes every existing reference
+   without touching a line of the inline CSS. ---- */
+:root{
+  --accent:var(--signal);
+  --card:var(--panel);
+}
+
+/* ---- 2. Radius scale. ---------------------------------------------------
+   The inline CSS uses 2,3,4,5,6,7,8,9,10,11,12,20,50%,99 and 999px with no
+   system behind the choice. Five steps, assigned by role. Only families a user
+   reads as the same kind of object are normalised; swatches, status dots,
+   progress fills and the 4/3 camera tile keep their own geometry because their
+   shape carries meaning. ---- */
+:root{
+  --r-xs:4px;      /* chips, swatch tiles, tight inline controls */
+  --r-sm:6px;      /* small buttons, inputs, row actions         */
+  --r-md:8px;      /* standard buttons, selects, tabs            */
+  --r-lg:12px;     /* panels, cards, modals                      */
+  --r-pill:999px;  /* status pills, filter chips                 */
+}
+.spoolcard,.jobcard,.pcard,.matchcard,.jobloading,.cpop,.fmembar,
+.setcard,.modalbox,.cammodal .cambox,.cammodal #cambig{border-radius:var(--r-lg);}
+.scanbtn,.ttab,.vtab,.mmore,.camopen,.sortsel,.filter input,
+.fmembar select,.fmembar button{border-radius:var(--r-md);}
+.refresh,.qbtn,.jact .ab,.actstrip .sb,.statsbtn,.invf,.invbuy,.typerow .rm,
+.typerow .taccent,.bedrow .bedset,.cpop .cpin,.cpop .cpprev,.fcitem,.job,
+.qitem{border-radius:var(--r-sm);}
+.chip,.betachip,.msw,.mdot,.fssw,.fscell,.h,.mchip .sw,.need .sw,
+.fmembar .fmchip .sw{border-radius:var(--r-xs);}
+.pill,.srcbar label,.fmembar .fmchip{border-radius:var(--r-pill);}
+
+/* ---- 3. Tabular figures on live readouts. -------------------------------
+   Outfit is a geometric sans with proportional digits: a 1 is visibly narrower
+   than a 0. The Hub is a wall of numbers that re-render on a timer, so a temp
+   ticking 199→200 or a percentage crossing 9→10 shifts everything to its right
+   by a pixel or two, on every poll, on nine cards at once. Tabular figures pin
+   the column. Mono-family labels already have fixed advance widths and are not
+   listed here. ---- */
+.pcard .pn,.pill,.h .hm,.bedrow .bedtemp,.powerrow .pdraw,.statspanel .snow,
+.statspanel .lifeline,.mcount,.mpct,.sechead .count,.qpos,.invf,
+.dsp-jfile,.dsp-gtext b,.dsp-gtext span,.dsp-pblabel,.dsp-chgfile{
+  font-variant-numeric:tabular-nums;
+  font-feature-settings:"tnum" 1;
+}
+
+/* ---- 4. Focus coverage for everything added since 2.11. -----------------
+   The block above covers .btn/.gear/.refresh/.qbtn/.ttab/.vtab/.scanbtn/.job/
+   .fcitem/.cmsw/.modalx and the four field types. Everything below postdates
+   it — the Resources tab, the Match top-5 footer, the inline $/roll editor,
+   the row action buttons, the camera controls, the printer-name link — and had
+   no keyboard treatment at all. Same outline language, same accent-following
+   color-mix, so the two blocks are indistinguishable in use. ---- */
+.mmore:focus-visible,.camopen:focus-visible,.camclose:focus-visible,
+.jact .ab:focus-visible,.actstrip .sb:focus-visible,.statsbtn:focus-visible,
+.invf:focus-visible,.invbuy:focus-visible,.chip.act:focus-visible,
+.typerow .rm:focus-visible,.qhead:focus-visible,
+.matchhead:focus-visible,.cpop .cpsw:focus-visible,
+.cpop .cpprev:focus-visible,.bedrow .bedbtn:focus-visible,
+.powerrow .pbtn:focus-visible,.pcard a.pnlink:focus-visible,
+.mprint:focus-visible,.spoolrow button:focus-visible,
+.dsp-row button:focus-visible,.dsp-toggle:focus-visible,.dsp-q:focus-visible,
+.dsp-clear:focus-visible,.dsp-addwin:focus-visible,.dsp-movego:focus-visible,
+.dsp-sheetclose:focus-visible,.dsp-repmore:focus-visible,.dsp-pd:focus-visible,
+.dsp-pnav:focus-visible,.dsp-pchip:focus-visible,.dsp-pset:focus-visible,
+.dsp-pclear:focus-visible,.dsp-gz:focus-visible,.dsp-gjump:focus-visible,
+.dsp-dtfield:focus-visible{
+  outline:2px solid color-mix(in srgb, var(--signal) 65%, transparent);
+  outline-offset:2px;
+}
+.dsp-row input:focus,.dsp-row select:focus,.dsp-qty:focus,.dsp-moveto:focus,
+.dsp-ptin:focus,.dsp-day input[type=time]:focus,.cpop .cpin:focus,
+.bedrow .bedset:focus,.invf.editing:focus{
+  outline:none;
+  border-color:color-mix(in srgb, var(--signal) 55%, var(--line));
+  box-shadow:0 0 0 3px color-mix(in srgb, var(--signal) 16%, transparent);
+}
+
+/* Press feedback on the same post-2.11 controls, matching the translateY(1px)
+   the 2.11 block already gives the older buttons. Touch users get no :hover,
+   so :active is the only confirmation a tap registered. */
+.mmore:active,.camopen:active,.jact .ab:active,.actstrip .sb:active,
+.statsbtn:active,.dsp-row button:active,.dsp-toggle:active,.dsp-q:active,
+.dsp-movego:active,.dsp-sheetclose:active,.dsp-pset:active,.dsp-pclear:active,
+.dsp-gz:active,.dsp-gjump:active,.dsp-pchip:active{transform:translateY(1px);}
+
+/* The source-filter chips hide their checkbox with `display:none`, which also
+   removes it from the tab order — those filters were unreachable by keyboard,
+   not merely unstyled. Swap to a clipped-but-focusable input so the checkbox
+   still takes focus, and put the ring on the label the user actually sees. */
+.srcbar input{
+  display:revert;
+  position:absolute; width:1px; height:1px;
+  margin:-1px; padding:0; border:0;
+  clip-path:inset(50%); overflow:hidden; white-space:nowrap;
+}
+.srcbar label:has(input:focus-visible){
+  outline:2px solid color-mix(in srgb, var(--signal) 65%, transparent);
+  outline-offset:2px;
+}
+
+/* ---- Deliberately not done, so the next pass doesn't re-find them. ------
+   dispatch-ui.js carries ~200 lines of its own inline style block with ~60
+   hardcoded hex values (#444, #1b1e24, #23262d, #889, #9aa, #c66 …) that
+   bypass the token system entirely, and its var(--signal, …) fallbacks are
+   #d6a832 rather than the real #FFB200. It is the single largest consistency
+   gap left in the UI. It is also a rewrite of another module's styling, not a
+   discipline pass, so it belongs in its own change with its own verification.
+
+   Keyboard reach on click-handler divs: .mname (Match row expander) and
+   .dsp-blk (Gantt blocks) carry click handlers on non-focusable elements, so
+   they cannot be tabbed to at all. No CSS rule can fix that — it needs
+   tabindex plus a keydown handler in the markup, which is a JS change and
+   therefore outside a CSS-only pass. Focus rules for them were written and
+   then removed rather than shipped: a selector that can never match is a check
+   that can never fail.
+
+   Mobile horizontal overflow on Match and Dispatch: still open, still a layout
+   fix rather than a token fix. Same shape as the .rscroll wrap that fixed
+   Resources in 2.16 — and never `html,body{overflow-x:hidden}` (2026-08-30).
+
+   Spacing rhythm on the dense panels: wants live screenshots at three
+   viewports, not a blind token sweep. */

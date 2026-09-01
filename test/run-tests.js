@@ -29,6 +29,7 @@ const { spawn } = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const http = require("http");           // v2.18: the mock release manifest
 const { createMock } = require("./mock-moonraker.js");
 
 const REPO = path.join(__dirname, "..");
@@ -1273,6 +1274,22 @@ async function stopHub() {
       // produced. Asserting across that live timer made this check flaky: it
       // failed once on Windows and passed on re-run (2026-08-30, MISTAKES.md).
       mockU1.state.printState = "standby"; mockU1.state.filename = "";
+      // v2.19: quieting the mock was not enough on its own, and this check
+      // stayed on the flaky list. Setting the mock's state and releasing in the
+      // next breath still races: the Hub can be holding a fleet snapshot taken
+      // while the mock still said "printing", and the executor tick re-adopts
+      // from THAT. Rule 7 says a test must not depend on what else is running,
+      // so wait for the Hub to have actually observed standby — then no tick,
+      // whenever it lands, has anything to re-adopt, and the assertion below is
+      // true by construction rather than by luck.
+      let sawIdle = false;
+      for (let i = 0; i < 40 && !sawIdle; i++) {
+        const fl = (await jget("/api/fleet")).body || [];
+        const st = String((fl[0] && (fl[0].status || fl[0].state)) || "").toLowerCase();
+        sawIdle = !/print|pause/.test(st);
+        if (!sawIdle) await sleep(250);
+      }
+      ok(sawIdle, "the Hub observed the printer go idle before the release (race removed, not slept through)");
       r = await jpost("/api/dispatch/jobs/release", { id: RID });
       ok(r.status === 200 && r.body.released_from === 0, "release detaches it from that printer", r.body);
       r = await jget("/api/dispatch");
@@ -1398,7 +1415,12 @@ async function stopHub() {
         const TWAIT = r.body.job.id;
         r = await jget("/api/dispatch/plan");
         let w = (r.body.slots || []).find(s => s.job_id === TWAIT && !s.unplannable);
-        ok(w && w.est_start - Date.now() >= 23.5 * 3600000,
+        // Rule 7: derive the baseline from the plan that produced this slot,
+        // never from the wall clock. `generated_at` is the instant the planner
+        // itself used, so this arithmetic is identical at 09:00 and at 23:59 —
+        // and identical on a spring-forward day, which a Date.now() baseline
+        // is not.
+        ok(w && w.est_start - r.body.generated_at >= 23.5 * 3600000,
           "with today and tomorrow closed, the copy waits for the next attended day", w && new Date(w.est_start).toString());
         await jpost("/api/dispatch/settings", { target: w.est_end - 10 * 60000 });
         r = await jget("/api/dispatch/plan");
@@ -1876,19 +1898,27 @@ async function stopHub() {
   console.log("\n== RES: Resource Monitor (v2.16) ==");
   {
     // Deterministic shelf, written fresh so this section never inherits
-    // whatever the spool_id sections left behind. Two local spools whose hexes
-    // are EXACTLY two of multi.gcode's colours, so the match path under test is
+    // whatever the spool_id sections left behind. Two spools whose hexes are
+    // EXACTLY two of multi.gcode's colours, so the match path under test is
     // "exact", not "nearest" — colour-distance tuning belongs in
     // test/de-nearwhite-standalone.js, not in a rollup check.
+    //
+    // v2.19: these live under `spools`, NOT `local`. STATE.local in spools.json
+    // is rfid.js's local COLOUR LIBRARY — swatches concatenated with the 2,266
+    // FilamentColors entries for searching when you bind a tag. It is not a
+    // shelf of physical rolls, and readShelf() treating it as one was a real
+    // defect (seven phantom spools with invented 1000 g net weights polluting
+    // the match pool). The ids stay negative and identical so every downstream
+    // assertion, including the orphan block's "-101", is unchanged.
     await stopHub();
     const spoolsPath = path.join(hubDir, "spools.json");
     const resPath = path.join(hubDir, "resources.json");
     const rcfgPath = path.join(hubDir, "config.json");
     fs.writeFileSync(spoolsPath, JSON.stringify({
-      spools: {}, tags: {}, local: [
-        { id: -101, brand: "TestCo", material: "PLA", material_variant: "PLA", color_name: "Red",   hex: "FF0000", lab: null, color_source: "user" },
-        { id: -102, brand: "TestCo", material: "PLA", material_variant: "PLA", color_name: "Green", hex: "00FF00", lab: null, color_source: "user" }
-      ]
+      tags: {}, local: [], spools: {
+        "-101": { id: -101, brand: "TestCo", material: "PLA", material_variant: "PLA", color_name: "Red",   hex: "FF0000", lab: null, color_source: "user" },
+        "-102": { id: -102, brand: "TestCo", material: "PLA", material_variant: "PLA", color_name: "Green", hex: "00FF00", lab: null, color_source: "user" }
+      }
     }, null, 2));
     fs.rmSync(resPath, { force: true });
     await startHub(hubDir);
@@ -1961,9 +1991,9 @@ async function stopHub() {
     r = await jpost("/api/resources/map", { color_hex: "#FF0000", spool_id: "-101" });
     ok(r.status === 200, "red mapped explicitly before its spool is removed", r.status);
     fs.writeFileSync(spoolsPath, JSON.stringify({
-      spools: {}, tags: {}, local: [
-        { id: -102, brand: "TestCo", material: "PLA", material_variant: "PLA", color_name: "Green", hex: "00FF00", lab: null, color_source: "user" }
-      ]
+      tags: {}, local: [], spools: {
+        "-102": { id: -102, brand: "TestCo", material: "PLA", material_variant: "PLA", color_name: "Green", hex: "00FF00", lab: null, color_source: "user" }
+      }
     }, null, 2));                                    // -101 (Red) is now gone
     await stopHub(); await startHub(hubDir);
     r = await jget("/api/resources");
@@ -1980,18 +2010,118 @@ async function stopHub() {
     const oi = (r.body.orphaned_inv || []).find(o => o.spool_id === "-101");
     ok(oi && oi.remaining_g === 5 && oi.cost_per_roll === 24.99,
       "inventory left behind by a forgotten spool is reported, not left to rot", r.body.orphaned_inv);
+    // v2.19: the warning is now actionable. It has named the stranded grams and
+    // price since 2.16 and offered nothing to do about it — a report you cannot
+    // act on stops being read.
+    let f = await jpost("/api/resources/inventory/forget", { spool_id: "-102" });
+    ok(f.status === 409, "forgetting inventory for a spool still ON the shelf is refused", f.status);
+    f = await jpost("/api/resources/inventory/forget", { spool_id: "-999" });
+    ok(f.status === 404, "forgetting inventory that was never recorded is refused", f.status);
+    f = await jpost("/api/resources/inventory/forget", { spool_id: "-101" });
+    ok(f.status === 200 && f.body.dropped && f.body.dropped.remaining_g === 5,
+      "the orphaned entry can be forgotten, and the response says what it dropped", f.body);
+    r = await jget("/api/resources");
+    ok((r.body.orphaned_inv || []).length === 0, "…and the warning clears", r.body.orphaned_inv);
+    // The COLOUR mapping is a separate decision and must survive: forgetting a
+    // dead roll's grams is not the same as throwing away which spool you said
+    // that colour was.
+    ok(row("#FF0000").match === "orphan" && row("#FF0000").orphan_of === "-101",
+      "…while the colour mapping itself is untouched", row("#FF0000"));
+    // Put it back so the restore below lands on the state the rest expects.
+    await jpost("/api/resources/inventory", { spool_id: "-101", remaining_g: 5, cost_per_roll: 24.99 });
+
+    // --- v2.19 affiliate links, end to end -------------------------------------
+    // The link-SHAPING rules live in test/affiliate-standalone.js (25 cases).
+    // What matters here is that the wiring is real: the tag reaches the rows,
+    // the disclosure flag reaches the client, and the off switch actually
+    // reaches the URLs rather than only the settings file.
+    r = await jget("/api/resources");
+    ok(r.body.affiliate && r.body.affiliate.active === true,
+      "affiliate links are on by default and the client is told so", r.body.affiliate);
+    let taggedRow = (r.body.rows || []).find(x => x.buy && x.buy.tagged);
+    ok(taggedRow && /[?&]tag=/.test(taggedRow.buy.url),
+      "rows carry a Buy link with the tag applied", taggedRow && taggedRow.buy);
+    ok(r.body.affiliate.tagged_rows > 0,
+      "…and the count that drives the disclosure line matches", r.body.affiliate);
+
+    let af = await jpost("/api/resources/affiliate", { amazon: "not a tag!!" });
+    ok(af.status === 400, "a malformed associate tag is refused", af.status);
+
+    af = await jpost("/api/resources/affiliate", { enabled: false });
+    ok(af.status === 200 && af.body.affiliate.active === false, "affiliate links can be turned off", af.body);
+    // Regression, found by a live gate and not by this harness: the handler read
+    // the RAW config block, so the first "turn off" on an untouched install
+    // wrote amazon:"" — which this module reads as "deliberately cleared" and
+    // keeps. The switch destroyed the tag on its way past, turning it back on
+    // restored nothing, and the UI had no button left to offer. Off must mean
+    // off, not gone.
+    ok(af.body.affiliate.tag_set === true,
+      "…turning OFF must not destroy the tag — off is not the same as cleared", af.body.affiliate);
+    af = await jpost("/api/resources/affiliate", { enabled: true });
+    ok(af.body.affiliate.active === true,
+      "…so turning it back on actually restores tagged links", af.body.affiliate);
+    af = await jpost("/api/resources/affiliate", { enabled: false });
+    r = await jget("/api/resources");
+    ok((r.body.rows || []).every(x => !x.buy || !/[?&]tag=/.test(x.buy.url)),
+      "…and OFF reaches the URLs themselves, not just the settings file",
+      (r.body.rows || []).filter(x => x.buy && /tag=/.test(x.buy.url)).map(x => x.buy.url).slice(0, 2));
+    ok(r.body.affiliate.tagged_rows === 0,
+      "…so the disclosure line stops claiming something is earned", r.body.affiliate);
+    await jpost("/api/resources/affiliate", { enabled: true });
+
     // Restore the shelf for the checks that follow.
     fs.writeFileSync(spoolsPath, JSON.stringify({
-      spools: {}, tags: {}, local: [
-        { id: -101, brand: "TestCo", material: "PLA", material_variant: "PLA", color_name: "Red",   hex: "FF0000", lab: null, color_source: "user" },
-        { id: -102, brand: "TestCo", material: "PLA", material_variant: "PLA", color_name: "Green", hex: "00FF00", lab: null, color_source: "user" }
-      ]
+      tags: {}, local: [], spools: {
+        "-101": { id: -101, brand: "TestCo", material: "PLA", material_variant: "PLA", color_name: "Red",   hex: "FF0000", lab: null, color_source: "user" },
+        "-102": { id: -102, brand: "TestCo", material: "PLA", material_variant: "PLA", color_name: "Green", hex: "00FF00", lab: null, color_source: "user" }
+      }
     }, null, 2));
     await stopHub(); await startHub(hubDir);
     r = await jget("/api/resources");
     ok(row("#FF0000").match === "mapped" && (r.body.orphaned_inv || []).length === 0,
       "put the spool back and the orphan clears itself — the mapping was never discarded",
       { match: row("#FF0000").match, orphanInv: r.body.orphaned_inv });
+
+    // --- v2.19 regression guard: the colour library is not a shelf -----------
+    // v2.16 read STATE.local as if it held physical rolls. It does not: rfid.js
+    // concatenates it with the 2,266 FilamentColors swatches purely as a search
+    // pool for binding a tag. The result was seven invented spools on Danny's
+    // farm — one with no brand or name at all, two whose hex was the #888888
+    // placeholder rather than the colour they claim — each handed a default
+    // 1000 g of filament that does not exist, in the match pool and in the
+    // map-to-spool dropdown.
+    //
+    // This writes a library entry that could not be mistaken for anything else
+    // and asserts it never reaches the shelf. Put the `local` loop back in
+    // readShelf() and this check fails immediately.
+    fs.writeFileSync(spoolsPath, JSON.stringify({
+      tags: {},
+      local: [
+        { id: -901, brand: "", material: "", color_name: "", hex: "C44FFF", color_source: "user" },
+        { id: -902, brand: "Panchroma", material: "PLA", color_name: "Yellow", hex: "888888", color_source: "user" }
+      ],
+      spools: {
+        "-101": { id: -101, brand: "TestCo", material: "PLA", material_variant: "PLA", color_name: "Red",   hex: "FF0000", lab: null, color_source: "user" },
+        "-102": { id: -102, brand: "TestCo", material: "PLA", material_variant: "PLA", color_name: "Green", hex: "00FF00", lab: null, color_source: "user" }
+      }
+    }, null, 2));
+    await stopHub(); await startHub(hubDir);
+    const shelf = (await jget("/api/resources/spools")).body.spools || [];
+    ok(shelf.length === 2,
+      "the shelf holds only real spools — the colour library is not counted",
+      shelf.map(s => s.id));
+    ok(!shelf.some(s => s.id === "-901" || s.id === "-902"),
+      "no phantom spool from STATE.local reaches the shelf",
+      shelf.filter(s => s.id === "-901" || s.id === "-902"));
+    ok(!shelf.some(s => (s.color_hex || "").toUpperCase() === "#888888"),
+      "…so the grey placeholder hex never enters the colour-match pool",
+      shelf.map(s => s.color_hex));
+    ok(shelf.every(s => s.brand && s.material),
+      "every spool on the shelf has the brand and material a real roll has",
+      shelf.map(s => ({ id: s.id, brand: s.brand, material: s.material })));
+    // Refresh so the badge comparison below is against this Hub, not the one
+    // that was running before the restart above.
+    r = await jget("/api/resources");
 
     // Badge and table are the same computation — they must never disagree.
     const badge = (await jget("/api/resources/badge")).body;
@@ -2051,6 +2181,405 @@ async function stopHub() {
     const rpage2 = await (await fetch(HUB + "/")).text();
     ok(/\/modules\/resources-ui\.js/.test(rpage2), "resources on: client script injected");
     await jpost("/api/dispatch/jobs/remove", { id: RESJOB });
+  }
+
+  await stopHub();
+  console.log("\n== MNT: printers down for maintenance (v2.19) ==");
+  {
+    await startHub(hubDir);
+    // A clean board: this section is about WHERE copies land, so anything left
+    // over from an earlier section would make "it moved" unreadable.
+    let r0 = await jget("/api/dispatch");
+    for (const j of (r0.body.jobs || [])) await jpost("/api/dispatch/jobs/remove", { id: j.id });
+    mockU1.state.printState = "standby"; mockU1.state.filename = "";
+    mockSv.state.printState = "standby"; mockSv.state.filename = "";
+
+    const fleetN = ((await jget("/api/fleet")).body || []).length;
+    ok(fleetN >= 2, "the fixture farm has at least two printers to redistribute across", fleetN);
+
+    // Enough copies that both machines are certain to be used.
+    let r = await jpost("/api/dispatch/jobs", { file: "single.gcode", type: "u1", qty: 6 });
+    const MJOB = r.body.job.id;
+
+    const lanesOf = p => {
+      const m = {};
+      for (const s of (p.slots || [])) if (!s.unplannable) m[s.printer] = (m[s.printer] || 0) + 1;
+      return m;
+    };
+    let plan = (await jget("/api/dispatch/plan")).body;
+    const before = lanesOf(plan);
+    const planned = n => Object.values(n).reduce((a, b) => a + b, 0);
+    ok(Object.keys(before).length >= 2, "with everything up, the copies spread across machines", before);
+    const totalBefore = planned(before);
+
+    // --- take printer 0 down --------------------------------------------------
+    r = await jpost("/api/dispatch/maintenance", { printer: 0, note: "extruder rebuild" });
+    ok(r.status === 200 && r.body.maintenance["0"], "a printer can be marked down for maintenance", r.body.maintenance);
+    ok(r.body.plan && !r.body.plan.error,
+      "the response carries the replanned board, so the redistribution is visible in one round trip");
+
+    plan = (await jget("/api/dispatch/plan")).body;
+    const during = lanesOf(plan);
+    ok(!during["0"], "nothing new is planned onto a printer that is down", during);
+    ok(planned(during) === totalBefore,
+      "…and every copy is still planned — the work redistributed, it did not vanish",
+      { before: totalBefore, during: planned(during) });
+    ok((plan.printers || []).find(p => p.idx === 0).maintenance.note === "extruder rebuild",
+      "the note survives to the UI that has to explain the gap",
+      (plan.printers || []).find(p => p.idx === 0));
+    ok((plan.printers || []).find(p => p.idx === 1).maintenance === null,
+      "…and only the machine you named is affected");
+
+    // Marking it down again must not reset how long it has been down.
+    const since0 = r.body.maintenance["0"].since;
+    await sleep(30);
+    r = await jpost("/api/dispatch/maintenance", { printer: 0, note: "extruder rebuild, waiting on a nozzle" });
+    ok(r.body.maintenance["0"].since === since0,
+      "re-marking updates the note without resetting how long it has been down",
+      { was: since0, now: r.body.maintenance["0"].since });
+
+    // --- it survives a restart -------------------------------------------------
+    await stopHub(); await startHub(hubDir);
+    r = await jget("/api/dispatch");
+    ok(r.body.maintenance && r.body.maintenance["0"],
+      "a machine left down is still down after a restart — the Hub does not quietly put it back to work",
+      r.body.maintenance);
+
+    // --- the executor and adopt both respect it --------------------------------
+    // Put a print on the DOWN machine and make sure nothing claims it.
+    mockU1.state.printState = "printing"; mockU1.state.filename = "single.gcode";
+    await jpost("/api/dispatch/tick", {});
+    r = await jget("/api/dispatch");
+    let mj = (r.body.jobs || []).find(j => j.id === MJOB);
+    ok(mj && mj.printing_on !== 0,
+      "the 10 s tick does not adopt onto a machine that is down", mj && mj.printing_on);
+    r = await jpost("/api/dispatch/adopt", {});
+    ok((r.body.unmatched || []).some(u => u.maintenance),
+      "…and /adopt reports the print it deliberately did not claim, rather than staying silent",
+      r.body.unmatched);
+    r = await jget("/api/dispatch");
+    mj = (r.body.jobs || []).find(j => j.id === MJOB);
+    ok(mj && mj.printing_on !== 0, "still unclaimed after an explicit adopt", mj && mj.printing_on);
+
+    // A machine that is down but still printing must stay visible. Going quiet
+    // about real work on a real bed is the one thing this must never do.
+    plan = (await jget("/api/dispatch/plan")).body;
+    const stillRunning = (plan.running || []).find(x => x.printer === 0);
+    ok(stillRunning && stillRunning.maintenance,
+      "a print still on the bed of a down machine is reported, flagged as finishing",
+      plan.running);
+
+    // Quiet printer 0 and WAIT for the Hub to see it. Same rule as the release
+    // check above: a mock that has gone idle is not the same fact as a Hub that
+    // knows it. While the Hub still reads printer 0 as printing with no ETA it
+    // plans that lane pessimistically 8 h out, which would push every copy onto
+    // printer 1 and make the redistribution assertion below fail for a reason
+    // that has nothing to do with maintenance.
+    mockU1.state.printState = "standby"; mockU1.state.filename = "";
+    let p0idle = false;
+    for (let i = 0; i < 40 && !p0idle; i++) {
+      const fl = (await jget("/api/fleet")).body || [];
+      const st = String((fl[0] && (fl[0].status || fl[0].state)) || "").toLowerCase();
+      p0idle = !/print|pause/.test(st);
+      if (!p0idle) await sleep(250);
+    }
+    ok(p0idle, "the Hub observed printer 0 finish before the redistribution is judged");
+
+    // --- every machine down ----------------------------------------------------
+    await jpost("/api/dispatch/maintenance", { printer: 1 });
+    plan = (await jget("/api/dispatch/plan")).body;
+    const un = (plan.slots || []).filter(s => s.unplannable);
+    ok(un.length > 0 && /every printer is down for maintenance/.test(un[0].unplannable),
+      "with the whole farm down, the plan says so in those words — not 'no eligible printer'",
+      un[0] && un[0].unplannable);
+
+    // --- and back again --------------------------------------------------------
+    await jpost("/api/dispatch/maintenance", { printer: 0, down: false });
+    await jpost("/api/dispatch/maintenance", { printer: 1, down: false });
+    r = await jget("/api/dispatch");
+    ok(Object.keys(r.body.maintenance || {}).length === 0, "both machines are back in service", r.body.maintenance);
+    plan = (await jget("/api/dispatch/plan")).body;
+    const after = lanesOf(plan);
+    ok(after["0"] > 0,
+      "bringing a printer back puts it straight back in the rotation", after);
+    ok(planned(after) === totalBefore,
+      "…and the board is whole again, same copies, spread across everything",
+      { before: totalBefore, after: planned(after) });
+
+    // --- refusals --------------------------------------------------------------
+    ok((await jpost("/api/dispatch/maintenance", { printer: 99 })).status === 404,
+      "a printer index that does not exist is refused");
+    ok((await jpost("/api/dispatch/maintenance", {})).status === 400,
+      "a request with no printer is refused");
+
+    await jpost("/api/dispatch/jobs/remove", { id: MJOB });
+    await stopHub();
+
+    // --- U1HUB_DIR: state somewhere other than the install ---------------------
+    // Added in v2.19 so a second Hub can be run against the same install for a
+    // live check without the two instances fighting over one dispatch.json —
+    // and so a container can keep the install read-only with state on a volume.
+    // The invariant worth pinning: writes land in the state dir and nowhere
+    // near the install.
+    {
+      const altDir = path.join(tmp, "statedir");
+      const installDispatch = path.join(hubDir, "dispatch.json");
+      const beforeInstall = fs.existsSync(installDispatch) ? fs.readFileSync(installDispatch, "utf8") : null;
+      // The alt dir needs a config naming the same mock printers, or the Hub
+      // comes up with an empty farm and proves nothing.
+      fs.mkdirSync(altDir, { recursive: true });
+      const altCfg = JSON.parse(fs.readFileSync(path.join(hubDir, "config.json"), "utf8"));
+      // gcodeFolder is resolved against BASE_DIR, which is now altDir — point
+      // it back at the real fixture folder so the job below has a file to find.
+      altCfg.gcodeFolder = path.join(hubDir, "gcode");
+      fs.writeFileSync(path.join(altDir, "config.json"), JSON.stringify(altCfg, null, 2));
+      await startHub(hubDir, { U1HUB_DIR: altDir });
+      const rv = await jget("/api/version");
+      ok(rv.status === 200, "U1HUB_DIR: the Hub still runs from its install dir", rv.status);
+      const rj = await jpost("/api/dispatch/jobs", { file: "single.gcode", type: "u1", qty: 1 });
+      ok(rj.status === 200, "U1HUB_DIR: it accepts work normally", rj.status);
+      await stopHub();
+      const altDispatch = path.join(altDir, "dispatch.json");
+      ok(fs.existsSync(altDispatch) && /single\.gcode/.test(fs.readFileSync(altDispatch, "utf8")),
+        "U1HUB_DIR: state is written to the state dir");
+      const afterInstall = fs.existsSync(installDispatch) ? fs.readFileSync(installDispatch, "utf8") : null;
+      ok(afterInstall === beforeInstall,
+        "U1HUB_DIR: and the install dir's own state was not touched at all");
+    }
+  }
+
+  console.log("\n== UPD: update notifier (v2.18) ==");
+  {
+    // A counting mock manifest. Every check the Hub makes lands here, so
+    // "turning it off means no request is made" is provable rather than
+    // asserted — the strongest form of the privacy promise this feature makes.
+    let hits = 0, serve = { version: "9.9.9", url: "https://example.invalid/rel", notes: "mock" };
+    const manifest = http.createServer((rq, rs) => {
+      hits++;
+      // "hang" accepts the connection and never answers — the case a timeout
+      // exists for, and deterministic in a way a real unroutable address is not.
+      if (serve === "hang") return;
+      if (serve === null) { rs.writeHead(500).end("nope"); return; }
+      rs.writeHead(200, { "Content-Type": "application/json" });
+      rs.end(JSON.stringify(serve));
+    });
+    await new Promise(r => manifest.listen(45991, "127.0.0.1", r));
+    const MANIFEST = "http://127.0.0.1:45991/update.json";
+    await startHub(hubDir);
+
+    // The published manifest must never claim a version other than the one
+    // this commit actually is. A manifest that lies tells every install in the
+    // field to chase a release that does not exist.
+    {
+      const manV = JSON.parse(fs.readFileSync(path.join(REPO, "update.json"), "utf8")).version;
+      ok(EXPECTED_VERSION === manV,
+        "update.json declares exactly the version this build is (" + manV + ")",
+        { pkg: EXPECTED_VERSION, manifest: manV });
+    }
+
+    let r = await jget("/api/updates");
+    ok(r.status === 200 && r.body && r.body.current, "/api/updates reports the running version", r.body && r.body.current);
+    ok(r.body.enabled === true, "checks are on by default");
+
+    // Point at the mock and force a check.
+    r = await jpost("/api/updates/settings", { url: MANIFEST, interval_hours: 1 });
+    ok(r.status === 200 && r.body.url === MANIFEST, "an http manifest on a private address is accepted", r.body && r.body.url);
+    r = await jpost("/api/updates/settings", { url: "http://example.com/u.json" });
+    ok(r.status === 400, "…but plain http to a public host is refused", r.status);
+
+    r = await jpost("/api/updates/check", {});
+    ok(r.status === 200 && r.body.latest === "9.9.9", "a manual check reads the manifest", r.body && r.body.latest);
+    ok(r.body.newer === true && r.body.notify === true, "9.9.9 is correctly seen as newer than this build", r.body);
+
+    // Dismissal, and its persistence — the notice must not come back on restart.
+    r = await jpost("/api/updates/dismiss", { version: "9.9.9" });
+    ok(r.status === 200 && r.body.notify === false && r.body.newer === true,
+      "dismissing stops the notice without pretending the update is gone", r.body);
+    await stopHub(); await startHub(hubDir);
+    r = await jget("/api/updates");
+    ok(r.body.dismissed === "9.9.9" && r.body.notify === false,
+      "the dismissal survives a restart", r.body && { d: r.body.dismissed, n: r.body.notify });
+
+    // An older manifest must never produce a notice. This is the string-compare
+    // trap in its live form: "2.9.0" > this build lexically, never numerically.
+    serve = { version: "2.9.0" };
+    r = await jpost("/api/updates/check", {});
+    ok(r.body.latest === "2.9.0" && r.body.newer === false,
+      "an older release is not reported as newer (2.9.0 vs " + r.body.current + ")", r.body);
+
+    // A malformed manifest must be inert, not fatal.
+    serve = { notes: "no version here" };
+    const beforeBad = (await jget("/api/updates")).body.latest;
+    r = await jpost("/api/updates/check", {});
+    ok(r.status === 200 && r.body.latest === beforeBad,
+      "a manifest with no version is ignored, and the last good answer is kept", r.body && r.body.latest);
+    ok((await jget("/api/fleet")).status === 200, "a bad manifest does not wedge the rest of the Hub");
+
+    // OFF means no outbound request. Not "made and discarded".
+    serve = { version: "9.9.9" };
+    await jpost("/api/updates/settings", { enabled: false });
+    const hitsAtOff = hits;
+    await jget("/api/updates"); await jget("/api/updates"); await jget("/api/updates");
+    ok(hits === hitsAtOff, "with checks off, GET /api/updates makes no outbound request at all",
+      { before: hitsAtOff, after: hits });
+    r = await jpost("/api/updates/check", {});
+    ok(r.status === 409 && hits === hitsAtOff, "…and an explicit check is refused rather than quietly performed", r.status);
+    await jpost("/api/updates/settings", { enabled: true });
+
+    // A manifest host that accepts the connection and then says nothing. This
+    // is the shape that actually hurts: a refused connection fails in
+    // milliseconds on its own, so only a silent socket proves the abort works.
+    serve = "hang";
+    const lastGood = (await jget("/api/updates")).body.latest;
+    const t0 = Date.now();
+    r = await jpost("/api/updates/check", {});
+    const took = Date.now() - t0;
+    // Both bounds matter. The upper one proves the abort fires at all; the
+    // lower one proves this actually exercised it rather than failing fast for
+    // some unrelated reason and passing by accident.
+    ok(r.status === 200 && took >= 5000 && took < 10000,
+      "a silent manifest host aborts on the 6 s timeout rather than hanging (" + took + " ms)", took);
+    ok(r.body.last_error && r.body.latest === lastGood,
+      "…and the failure is recorded without discarding the last good answer",
+      { err: r.body.last_error, latest: r.body.latest });
+    ok(r.body.newer === false,
+      "offline never invents an update", r.body && { latest: r.body.latest, newer: r.body.newer });
+
+    // GET answers from cache and never awaits the network.
+    const t1 = Date.now();
+    r = await jget("/api/updates");
+    ok(r.status === 200 && Date.now() - t1 < 1500, "GET answers from cache, immediately", Date.now() - t1);
+    serve = { version: "9.9.9" };   // release the hang before anything else runs
+
+    r = await jpost("/api/updates/settings", { interval_hours: 0 });
+    ok(r.status === 400, "an interval below the floor is refused — no polling loops", r.status);
+
+    // Feature flag off removes the surface entirely, same contract as resources.
+    await stopHub();
+    const ucfg = JSON.parse(fs.readFileSync(path.join(hubDir, "config.json"), "utf8"));
+    ucfg.features = { updates: false };
+    fs.writeFileSync(path.join(hubDir, "config.json"), JSON.stringify(ucfg, null, 2));
+    await startHub(hubDir);
+    ok((await jget("/api/updates")).status === 404, "updates off: API absent");
+    ok(!/\/modules\/updates-ui\.js/.test(await (await fetch(HUB + "/")).text()),
+      "updates off: client script not injected");
+    await stopHub();
+    const ucfg2 = JSON.parse(fs.readFileSync(path.join(hubDir, "config.json"), "utf8"));
+    delete ucfg2.features;
+    fs.writeFileSync(path.join(hubDir, "config.json"), JSON.stringify(ucfg2, null, 2));
+    await startHub(hubDir);
+    ok(/\/modules\/updates-ui\.js/.test(await (await fetch(HUB + "/")).text()),
+      "updates on: client script injected");
+
+    // The aborted request left a socket the server still considers open;
+    // close() alone would wait on it forever.
+    if (manifest.closeAllConnections) manifest.closeAllConnections();
+    await new Promise(r2 => manifest.close(r2));
+  }
+
+  console.log("\n== UI: gold.css discipline layer (v2.17) ==");
+  {
+    // Restart with default features so this exercises the stylesheet the way
+    // a browser actually receives it, over HTTP rather than off disk. The Hub
+    // is already running with default features from the end of the UPD section.
+    const gres = await fetch(HUB + "/gold.css");
+    const gold = gres.ok ? await gres.text() : "";
+    ok(gres.ok && gold.length > 0, "gold.css is served", gres.status);
+
+    const page = await (await fetch(HUB + "/")).text();
+    const closeStyle = page.indexOf("</style>");
+    const linkGold  = page.indexOf('href="gold.css"');
+    ok(closeStyle > -1 && linkGold > closeStyle,
+      "gold.css is linked AFTER the inline <style> — the override layer must win on cascade order",
+      { closeStyle, linkGold });
+
+    // --- the v2.17 token repair -------------------------------------------
+    // index.html references var(--accent, …) and var(--card, …); neither was
+    // ever defined, so .fmembar stayed U1 amber while applyAccent() re-signalled
+    // the rest of the UI. These two aliases are the whole fix.
+    ok(/--accent:\s*var\(--signal\)/.test(gold),
+      "--accent aliases --signal, so the filament-memory bar follows the per-type accent");
+    ok(/--card:\s*var\(--panel\)/.test(gold),
+      "--card aliases --panel instead of falling back to a literal");
+    // Falsification note: both of the above fail if the alias block is removed,
+    // and the symptom is visible on any non-U1 printer type.
+
+    // --- the radius scale --------------------------------------------------
+    const radii = ["--r-xs", "--r-sm", "--r-md", "--r-lg", "--r-pill"];
+    ok(radii.every(t => new RegExp(t + ":").test(gold)),
+      "all five radius tokens are defined",
+      radii.filter(t => !new RegExp(t + ":").test(gold)));
+
+    // --- the file's own standing rules, now enforced ------------------------
+    // gold.css's header promises it never sets a semantic colour, because
+    // applyAccent() owns --signal at runtime. A future edit that breaks that
+    // promise silently freezes the per-type accent, so pin it.
+    ok(!/--(signal|ok|bad|busy|idle)\s*:/.test(gold),
+      "gold.css never assigns a semantic colour token — applyAccent() keeps ownership of --signal",
+      (gold.match(/--(signal|ok|bad|busy|idle)\s*:[^;]*/g) || []));
+
+    // `transition: all` would animate every repaint the SSE fleet poll causes.
+    ok(!/transition:\s*all\b/.test(gold),
+      "no `transition: all` — nine printers repaint on a timer",
+      (gold.match(/transition:\s*all[^;]*/g) || []));
+
+    // Every timing function is a real curve, never a CSS keyword.
+    const keywordEase = (gold.match(/transition:[^;]*\b(ease|ease-in|ease-out|ease-in-out|linear)\b[^;]*/g) || [])
+      .filter(s => !/var\(--ease/.test(s));
+    ok(keywordEase.length === 0,
+      "no CSS keyword easing in a transition — every curve is a token",
+      keywordEase);
+
+    // --- focus coverage ----------------------------------------------------
+    // The 2.11 block covered the controls that existed then. These postdate it
+    // and had no keyboard treatment at all until 2.17.
+    const newlyFocusable = [".mmore", ".invf", ".statsbtn", ".camopen",
+      ".matchhead", ".qhead", ".pnlink", ".dsp-toggle", ".dsp-pd"];
+    const missing = newlyFocusable.filter(sel =>
+      !new RegExp(sel.replace(".", "\\.") + "[^,{]*:focus-visible").test(gold));
+    ok(missing.length === 0,
+      "every control added since 2.11 has a focus-visible ring", missing);
+
+    // The source-filter checkboxes were display:none, which took them out of
+    // the tab order entirely — unreachable, not merely unstyled.
+    ok(/\.srcbar input\{[^}]*display:revert/.test(gold.replace(/\s+/g, m => m.includes("\n") ? "" : m)) ||
+       /\.srcbar input\{[\s\S]*?display:revert/.test(gold),
+      "the source-filter checkboxes are focusable again, not display:none");
+
+    // --- no dead selectors -------------------------------------------------
+    // A rule whose class never appears in the shipped UI is a check that can
+    // never fail. Verify each focus-ring class actually exists in the markup
+    // or the module scripts that generate it.
+    const mods = ["dispatch-ui.js", "resources-ui.js", "slicing-ui.js"]
+      .map(f => { try { return fs.readFileSync(path.join(REPO, "public", "modules", f), "utf8"); }
+                  catch { return ""; } }).join("");
+    const shipped = page + mods;
+    const dead = newlyFocusable.filter(sel => !shipped.includes(sel.slice(1)));
+    ok(dead.length === 0,
+      "no focus rule targets a class that never ships", dead);
+
+    // --- v2.19: dispatch-ui.js is on the token system --------------------------
+    // It carried ~200 lines of its own style block with sixty hardcoded hex
+    // values, so the Dispatch tab did not follow --chassis/--panel/--line and
+    // did not re-accent with the fleet. Worse, its var(--signal, …) fallbacks
+    // were #d6a832 — not the U1 amber — so any install where the token failed
+    // to resolve rendered a different colour there than everywhere else.
+    const dsp = fs.readFileSync(path.join(REPO, "public", "modules", "dispatch-ui.js"), "utf8");
+    ok(!/#d6a832/i.test(dsp),
+      "dispatch-ui.js no longer carries the wrong accent fallback",
+      (dsp.match(/.{0,40}#d6a832.{0,20}/gi) || []).slice(0, 3));
+    // Every remaining bare hex must be one of the Gantt's semantic key colours,
+    // which stay literal on purpose: the legend tells the user what they mean,
+    // so they must not follow the accent.
+    const KEY = /#(274a72|3a6ca8|1d5c3a|164a2e|6e2020|c0392b|2c6b41|8fe0ac|f0a89f|2a1414|8a3b32|12261a|12281a|171a20|5c4a1f|5c4a1d|7a4c46|c07a2b|ffd166|ff9f43|bff0d4|cfe0f5|8fb7e0|0a7a33|0006|fff|000)$/i;
+    const bare = [];
+    dsp.replace(/(var\(\s*--[a-z0-9-]+\s*,\s*)?#([0-9a-fA-F]{3,8})\b/gi, (m, inVar, hex) => {
+      if (!inVar && !KEY.test("#" + hex)) bare.push("#" + hex);
+      return m;
+    });
+    ok(bare.length === 0,
+      "every non-key colour in dispatch-ui.js resolves through a token",
+      [...new Set(bare)].slice(0, 12));
   }
 
   await stopHub();

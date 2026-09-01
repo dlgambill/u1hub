@@ -16,14 +16,132 @@ Running log of things that broke, why, and the rule that stops a repeat.
 | Cluster | Entries | Law |
 |---|---|---|
 | Test depends on when it runs / what else runs | 4 incidents, 5 checks | rule 7 |
-| Asserted or acted without checking first | 4 incidents | rule 8 |
+| Asserted or acted without checking first | 6 incidents | rule 8 |
+| Harness green while the feature was broken | 1 incident | rule 2 — "green" is not "verified" |
 | Unverified shape trusted as complete | 2 incidents | rule 6 |
 | Version drift across the three files | 1 | rule 4 |
 | Staging vs git clone drift | 1 | rule 3 |
-| Bridge / tooling sharp edges | 4 incidents | *not a law* — reference block, "Working over the bridge" |
+| Bridge / tooling sharp edges | 5 incidents | *not a law* — reference block, "Working over the bridge" |
 
 Bridge quirks are operating facts, not judgment failures; a rule that says
 "remember these four things" is a lookup table wearing a rule's clothes.
+
+---
+
+## 2026-09-01 — The affiliate off switch destroyed the thing it switched off
+
+**What happened:** The new Amazon associate feature has an on/off toggle. On an
+install that had never configured it, one click of "turn off" wrote
+`affiliate: { amazon: "" }` — and this module treats an explicit empty string as
+"deliberately cleared", which sticks forever. Turning it back on restored
+nothing, and the UI then had no button to offer because its "turn on" branch
+required a stored tag. A one-way door, in a feature whose entire justification
+is that it is one click to reverse.
+
+**Root cause:** The POST handler read the RAW config block
+(`ctx.cfg.affiliate`) instead of resolving it through `affiliateConf()`, which
+is the function that applies the default. `cur.amazon` was `undefined`, the
+handler coerced it to `""`, and persisted that.
+
+**Why the harness missed it:** every harness case set a tag explicitly before
+toggling, so the default path — the one every real first-time user takes — was
+never exercised. A fixture that always supplies a value cannot test what happens
+when nobody does.
+
+**Consequence:** none in the field; caught on the throwaway instance during the
+live gate, before any commit.
+
+**Rule:** when a setting has a default, at least one test must start from
+*nothing configured* and drive the full round trip — set, unset, set again — and
+assert the value survives. And a handler that resolves defaults must read
+through the same resolver everything else reads through; two paths to the same
+setting is two chances to disagree. (Rule #2 earns its keep here: the harness
+was green and the feature was still broken. "Green" is not "verified".)
+
+---
+
+## 2026-09-01 — Carried a stale claim forward in my own handoff
+
+**What happened:** `HANDOFF.md` listed "mobile horizontal overflow on Match and
+Dispatch — still open" as a backlog item, and I repeated it to Danny twice as
+outstanding work. Measured at a real 390 px viewport, `scrollWidth ===
+clientWidth` on all five tabs. It had been fixed — most likely by the v2.11
+`.vtab{letter-spacing:0}` change and the v2.16 `.rscroll` wrap — and nobody had
+re-checked.
+
+**Root cause:** I wrote the claim into a document, then treated the document as
+evidence. A backlog is a list of things *believed* to be true when written; it
+decays like any other cache.
+
+**Consequence:** nearly "fixed" something that was not broken, which would have
+meant a change with no verifiable effect sitting in a release diff.
+
+**Rule:** re-measure a backlog item before working it, and again before quoting
+it as outstanding. Notes are a starting point for verification, never a
+substitute for it. Same rule-8 family, third form: after "didn't check", "read
+one file and generalised", now "believed my own note".
+*(Also worth keeping: the way this was measured. The window would not resize, so
+the page was loaded into a 390 px `<iframe>` — which gets its own layout
+viewport, so `@media` queries evaluate against it. That is a reliable way to
+test a mobile layout from a desktop browser.)*
+
+---
+
+## 2026-09-01 — Audited a stylesheet without reading the stylesheet
+
+**What happened:** Asked for a "sleeker UI" pass, I audited `public/index.html`,
+counted the inline `<style>` block, and reported to Danny that the Hub had **0
+custom easing curves, 5 transitions, 1 `:focus-visible`, and no display font** —
+framed as "across all 3,184 lines." I proposed a whole new override layer,
+`hub-ui.css`, and wrote 200 lines of it.
+
+`public/gold.css` had been sitting in the repo since 2026-08-30. 150 lines. It
+already had a self-hosted Outfit variable font (with the exact "LAN installs
+have no internet" reasoning I re-derived as though it were novel),
+`--ease:cubic-bezier(.22,1,.36,1)`, `--dur`, focus-visible rings, elevation,
+atmosphere, and a header comment banning entry animations on SSE content. I had
+shipped v2.16.0 through that file without ever opening it.
+
+**Root cause:** I read the file I was told about and stopped. `index.html` links
+`gold.css` on line 535 — one line below the `</style>` I had just finished
+counting. The grep counts were scoped to one file and reported as if scoped to
+the app. Every number was literally true and the conclusion drawn from them was
+false.
+
+**Consequence:** A confidently wrong audit delivered to Danny, a proposed
+second override layer that would have fought the first over `.pcard:hover`, and
+200 lines of work deleted. Caught only because wiring the `<link>` meant reading
+the `<head>`, where the existing `<link>` was.
+
+**Rule:** Rule #1 says read every file you are about to change. Extend it: read
+every file the file you are about to change *loads*. A stylesheet's behaviour is
+the whole cascade, not one block of it. Before reporting an absence — "there is
+no X in this project" — resolve every `<link>`, `<script src>`, `require` and
+`import` on the path first. An absence claim is a whole-project claim and needs
+whole-project evidence. This is a rule-8 repeat (asserted without checking),
+now 5 incidents.
+
+---
+
+## 2026-09-01 — The bridge strips `$` from PowerShell commands
+
+**What happened:** Roughly eight `start_process` calls failed in a row with
+`The term '.Groups[1].Value' is not recognized`, `You must provide a value
+expression following the '+' operator`, and `=X:\path is not recognized`.
+
+**Root cause:** Desktop Commander's `start_process` drops `$` characters before
+handing the string to PowerShell. `$f='X:\...'` arrives as `='X:\...'`;
+`$_.Groups[1]` arrives as `.Groups[1]`. Nothing is escaped or quoted wrong — the
+character is simply gone.
+
+**Consequence:** Wasted calls against a 60 s ceiling, and one command that
+silently returned partial output rather than erroring.
+
+**Rule:** Write `$`-free PowerShell over the bridge. No variables, no `$_`, no
+`$PSItem` — pipe into `Select-Object`/`Format-Table` with `-Property` instead,
+or use `Select-String` directly. When a command genuinely needs variables, write
+a `.ps1` to `scripts\` with `write_file` and invoke the file. Also note the
+shell is **PowerShell, not cmd**: `&&` is a parse error, use `;`.
 
 ---
 

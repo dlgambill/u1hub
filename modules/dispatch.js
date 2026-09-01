@@ -178,11 +178,16 @@ function register(ctx) {
     target: null,                                // ms, or null for "no target"
     auto_start: false
   };
-  let D = { jobs: [], bundles: [], settings: JSON.parse(JSON.stringify(DEFAULT_SETTINGS)) };
+  // maintenance: { "<printerIdx>": { since, note } } — machines deliberately
+  // taken out of service. v2.19. Keyed by printer INDEX, like printing_on and
+  // the assign/clear-bed endpoints, so it lines up with the rest of the module.
+  let D = { jobs: [], bundles: [], maintenance: {}, settings: JSON.parse(JSON.stringify(DEFAULT_SETTINGS)) };
   try {
     const raw = JSON.parse(fs.readFileSync(FILE, "utf8"));
     D.jobs = Array.isArray(raw.jobs) ? raw.jobs : [];
     D.bundles = Array.isArray(raw.bundles) ? raw.bundles : [];
+    D.maintenance = (raw.maintenance && typeof raw.maintenance === "object" && !Array.isArray(raw.maintenance))
+      ? raw.maintenance : {};
     D.settings = { ...JSON.parse(JSON.stringify(DEFAULT_SETTINGS)), ...(raw.settings || {}), auto_start: false };
     // pre-week dispatch.json: build the week from the legacy attended/weekend pair
     if (!raw.settings || !raw.settings.week) {
@@ -193,6 +198,11 @@ function register(ctx) {
     }
     if (typeof D.settings.weekOverrides !== "object" || !D.settings.weekOverrides) D.settings.weekOverrides = {};
   } catch {}
+  // Is this machine deliberately out of service? Distinct from `online: false`,
+  // which means the probe could not reach it — a fault, or a cable, or nothing
+  // at all. Maintenance is a decision a human made, and the two must never be
+  // rendered or reported as the same thing.
+  const maintOf = idx => D.maintenance[String(idx)] || null;
   // ISO week key, local time (Thursday-anchored per ISO 8601).
   function isoWeekKey(ms) {
     const dt = new Date(ms); dt.setHours(0, 0, 0, 0);
@@ -485,9 +495,14 @@ function register(ctx) {
       // busyUntil / lastEnd / queued exist for the FEASIBILITY REPORT, not for
       // planning: they are what lets a miss say "queued behind 3 copies" or
       // "waiting on the print already running" instead of just "it's late".
+      // A machine in maintenance STAYS in `lanes`. Dropping it here would hide
+      // a print it is genuinely still running from the timeline and from the
+      // running[] list — the Hub would go quiet about real work on the bed.
+      // It is excluded at the placement step instead, so nothing NEW lands on
+      // it while everything already true about it keeps being reported.
       return { idx: x.i, name: x.fp.name || ("printer " + (x.i + 1)),
                multiColor: !!(x.fp.caps && x.fp.caps.multiColor), fp: x.fp, cursor, note,
-               paused: /pause/.test(st),
+               paused: /pause/.test(st), maint: maintOf(x.i),
                busyUntil: cursor > now ? cursor : null, lastEnd: null, queued: 0 };
     });
     // Bundle deadlines tighten members'.
@@ -514,6 +529,16 @@ function register(ctx) {
       (b.priority || 0) - (a.priority || 0) ||
       ((effDeadline(a) || Infinity) - (effDeadline(b) || Infinity)) ||
       (a.created - b.created));
+    // Placement excludes machines in maintenance. Because plan() rebuilds from
+    // scratch on every call, this is the whole of the redistribution: mark a
+    // printer down and its share of the queue lands on the others on the very
+    // next plan; bring it back and the queue spreads to include it again.
+    // Nothing is moved or rewritten — the plan is simply recomputed against the
+    // machines actually available. Pins self-heal too: honoring a pin requires
+    // the pinned lane to be in `eligible`, so a pin to a machine that went down
+    // falls back to the open pool and is restored when it comes back up.
+    const usable = lanes.filter(l => !l.maint);
+    const down = lanes.length - usable.length;
     const slots = [];
     const placed = [];      // [{start,end,colors,printerName,file}] for exclusivity checks
     const seen = new Set(); // placement keys this run still uses (everything else is stale)
@@ -525,8 +550,17 @@ function register(ctx) {
       const est = job.est_minutes || 60;         // unknown estimate: assume an hour, honestly labeled
       for (let c = 0; c < copies; c++) {
         if (slots.length >= PLAN_SLOT_CAP) break;
-        const eligible = lanes.filter(l => !job.multi || l.multiColor);
-        if (!eligible.length) { slots.push({ job_id: job.id, file: job.file, unplannable: "no eligible printer (multi-color job, no multi-color machine online)" }); continue; }
+        const eligible = usable.filter(l => !job.multi || l.multiColor);
+        if (!eligible.length) {
+          // Name the real cause. "No eligible printer" when the truth is "you
+          // took them all down yourself" sends someone hunting for a fault.
+          const why = !usable.length
+            ? (down ? "every printer is down for maintenance" : "no printer is online")
+            : "no eligible printer (multi-color job, no multi-color machine available" +
+              (down ? "; " + down + " down for maintenance" : "") + ")";
+          slots.push({ job_id: job.id, file: job.file, unplannable: why });
+          continue;
+        }
         const key = job.id + "#" + c;              // per COPY, never per job
         seen.add(key);
         const pinned = PINS.get(job.id);           // hard: the user moved this job here
@@ -668,7 +702,10 @@ function register(ctx) {
         tracked: !!held,                 // false = running, but Dispatch doesn't own it
         est_end: l.cursor,
         eta_unknown: !!l.note || undefined,
-        paused: l.paused || undefined
+        paused: l.paused || undefined,
+        // A print still running on a machine that is on its way down. The UI
+        // says "finishing, then down" rather than pretending either half.
+        maintenance: l.maint ? { since: l.maint.since, note: l.maint.note || "" } : undefined
       });
     }
     // The guide draws a real clock, so it needs the span the plan occupies and
@@ -678,7 +715,8 @@ function register(ctx) {
     return { generated_at: now, slots, running, target: TARGET,
              report: feasibility(slots, TARGET, now),
              attended: attendedSpans(now, spanTo),
-             printers: lanes.map(l => ({ idx: l.idx, name: l.name, busy: !!l.note || l.cursor > now })) };
+             printers: lanes.map(l => ({ idx: l.idx, name: l.name, busy: !!l.note || l.cursor > now,
+               maintenance: l.maint ? { since: l.maint.since, note: l.maint.note || "" } : null })) };
   }
 
   // ---- claim reconciliation (v2.14) -----------------------------------------
@@ -771,7 +809,11 @@ function register(ctx) {
       //    machine that already holds one (two entries for the same file,
       //    added on different days, both landed on printer 0 in the field).
       const heldHere = D.jobs.some(j => j.printing_on === i && j.state === "printing");
-      if ((/print/.test(st) || /pause/.test(st)) && fname && !heldHere) {
+      // v2.19: the background tick must respect maintenance too. Guarding only
+      // the /adopt endpoint would be theatre — this runs every 10 s and would
+      // quietly re-attach a queue job to a machine the user has taken out of
+      // service, putting the job back on a bed the planner is routing around.
+      if ((/print/.test(st) || /pause/.test(st)) && fname && !heldHere && !maintOf(i)) {
         const job = D.jobs.find(j => j.state !== "done" && j.state !== "paused" &&
                                      j.file === fname && j.printing_on == null);
         if (job) {
@@ -815,7 +857,58 @@ function register(ctx) {
   const app = ctx.app;
   app.get("/api/dispatch", (req, res) => {
     res.json({ jobs: D.jobs, bundles: D.bundles, settings: D.settings,
+               maintenance: D.maintenance,
                awaiting: [...AWAITING], auto_start_available: false });
+  });
+
+  // ---- maintenance (v2.19) ---------------------------------------------------
+  // "U5 is down while I rebuild the extruder." Until now the only way to say
+  // that was to unplug the machine, which the Hub reads as `online: false` —
+  // indistinguishable from a fault, a dead switch port, or a printer someone
+  // carried off. Those are different facts and deserve different words.
+  //
+  // Marking a machine down does not touch a print already on its bed and does
+  // not move a single job by hand: plan() simply stops placing new work there,
+  // and because it replans from scratch every call, the queue redistributes
+  // across the remaining machines immediately — and redistributes back the
+  // moment the machine returns.
+  app.post("/api/dispatch/maintenance", async (req, res) => {
+    const b = req.body || {};
+    const idx = parseInt(b.printer, 10);
+    if (!Number.isInteger(idx) || idx < 0) return res.status(400).json({ error: "Body needs { printer } as a printer index" });
+    const fleet = (await ctx.fleet()) || [];
+    if (idx >= fleet.length) return res.status(404).json({ error: "No printer at index " + idx });
+    const down = b.down !== false;                      // default: take it down
+    const key = String(idx);
+    if (down) {
+      const note = String(b.note || "").slice(0, 200);
+      // Re-marking an already-down machine updates the note without resetting
+      // "since" — how long it has been down is the useful number.
+      D.maintenance[key] = { since: (D.maintenance[key] && D.maintenance[key].since) || Date.now(), note };
+    } else {
+      delete D.maintenance[key];
+    }
+    // Forget where copies sat last plan. STICKY_TOLERANCE_MIN normally keeps a
+    // copy on the machine it had before unless another finishes it 30 min
+    // sooner — that stability is right for ordinary replans, where moving bars
+    // around for no reason is just noise.
+    //
+    // A machine going down or coming back is not noise. Without this the copies
+    // pushed off a printer stayed put when it returned, and the machine sat
+    // idle next to a queue it was perfectly able to help with — a farm running
+    // at 1/9 capacity after a repair, which is the opposite of the point.
+    // Pins are NOT cleared: those are decisions a human made about a particular
+    // job, and they self-heal anyway (a pin to a down machine falls back to the
+    // open pool and is honoured again on its return).
+    PLACEMENT.clear();
+    save();
+    ctx.hublog("info", "dispatch: printer " + idx + " (" + ((fleet[idx] && fleet[idx].name) || idx) + ") " +
+      (down ? "marked DOWN for maintenance" : "returned to service") + " — placements reset for a clean redistribution");
+    // Hand back the replanned board, so the caller can see the redistribution
+    // its own click caused rather than having to ask again for it.
+    let replan = null;
+    try { replan = await plan(); } catch (e) { replan = { error: "Marked, but replanning failed: " + e.message }; }
+    res.json({ ok: true, maintenance: D.maintenance, plan: replan });
   });
   app.post("/api/dispatch/jobs", (req, res) => {
     const b = req.body || {};
@@ -1036,6 +1129,15 @@ function register(ctx) {
       // reporting those as "not in Dispatch" was flatly wrong.)
       const claimed = D.jobs.find(j => j.printing_on === i && j.state === "printing");
       if (claimed) { already.push({ printer: label, file: claimed.file, paused: paused || undefined }); continue; }
+      // A machine you took down deliberately does not get handed new work to
+      // own, even if something is running on it — you started that print, and
+      // Dispatch adopting it would put the job back in a queue that is supposed
+      // to be routing around this machine. Report it so it is never invisible.
+      if (maintOf(i)) {
+        unmatched.push({ printer: label, file: fname, paused: paused || undefined,
+                         maintenance: true, why: "down for maintenance — not adopted" });
+        continue;
+      }
       const job = D.jobs.find(j => j.state !== "done" && j.state !== "paused" &&
                                    j.file === fname && j.printing_on == null);
       if (job) {

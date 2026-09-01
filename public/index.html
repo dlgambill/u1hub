@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- U1 Print Hub — index v2.16.0 -->
+<!-- U1 Print Hub — index v2.19.0 -->
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
@@ -707,7 +707,7 @@
 
 <script>
 const $ = id => document.getElementById(id);
-const VERSION = "2.16.0";
+const VERSION = "2.19.0";
 let FILES = [], SELECTED = null, MAP = null, FLEET = [], MAPSEL = {};
 let ONBOARD = [], ACT = null; // onboard = /api/printer-files cache; ACT = open per-printer action strip {name,pid}
 let SRCSEL = { hub:true, p:{} }; // source-filter checkboxes; p[pid]=false hides that printer (default: everything on)
@@ -1644,14 +1644,28 @@ async function renderMatch(){
     renderMatch();
   }));
   // Click a file name → toggle an inline preview card (single open across the list).
-  grid.querySelectorAll(".mname[data-expand]").forEach(el=>el.addEventListener("click", async ()=>{
-    const name=decodeURIComponent(el.dataset.expand), key=(+el.dataset.pid)+"|"+name;
-    if(EXPANDED===key){ EXPANDED=null; renderMatch(); return; }
-    if(!MAPCACHE[name]){
-      try{ const m=await (await fetch("/api/map?file="+encodeURIComponent(name)+"&"+tparam())).json(); if(!m.error) MAPCACHE[name]=m; }catch(e){}
-    }
-    EXPANDED=key; renderMatch();
-  }));
+  // v2.19: the expander is a <span>, so it was never in the tab order — the
+  // whole Match list was mouse-only, and no focus ring could fire on something
+  // that cannot take focus. tabindex + role + Enter/Space fixes it in the one
+  // place that can: the markup. aria-expanded lets a screen reader say whether
+  // the card below is open.
+  grid.querySelectorAll(".mname[data-expand]").forEach(el=>{
+    const toggle = async ()=>{
+      const name=decodeURIComponent(el.dataset.expand), key=(+el.dataset.pid)+"|"+name;
+      if(EXPANDED===key){ EXPANDED=null; renderMatch(); return; }
+      if(!MAPCACHE[name]){
+        try{ const m=await (await fetch("/api/map?file="+encodeURIComponent(name)+"&"+tparam())).json(); if(!m.error) MAPCACHE[name]=m; }catch(e){}
+      }
+      EXPANDED=key; renderMatch();
+    };
+    el.tabIndex=0;
+    el.setAttribute("role","button");
+    el.setAttribute("aria-expanded", String(EXPANDED===((+el.dataset.pid)+"|"+decodeURIComponent(el.dataset.expand))));
+    el.addEventListener("click", toggle);
+    el.addEventListener("keydown", e=>{
+      if(e.key==="Enter"||e.key===" "||e.key==="Spacebar"){ e.preventDefault(); toggle(); }
+    });
+  });
   grid.querySelectorAll(".mprint").forEach(b=>b.addEventListener("click",(e)=>{
     e.stopPropagation(); matchPrint(decodeURIComponent(b.dataset.file), +b.dataset.pid);
   }));

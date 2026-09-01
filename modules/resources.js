@@ -199,10 +199,111 @@ function readShelf(baseDir, store) {
       notes: inv.notes || ""
     });
   };
+  // ONLY `spools`. STATE.local is deliberately not read here: despite the name
+  // it is rfid.js's local colour LIBRARY, concatenated with the 2,266
+  // FilamentColors swatches to search when binding a tag (rfid.js:142). It is
+  // a palette, not a shelf.
+  //
+  // v2.16 read it as a shelf and invented seven spools out of it — including a
+  // nameless #C44FFF and two "Panchroma" entries whose hex was the #888888
+  // placeholder rather than their actual colour. Each got a default 1000 g of
+  // filament it does not have, polluted the colour-match pool, and appeared in
+  // the map-to-spool dropdown. Tagless rolls created through "New roll (no
+  // tag)" land in `spools` like any other, so nothing real is lost by ignoring
+  // `local` here.
   for (const [id, s] of Object.entries(raw.spools || {})) add(id, s, "rfid");
-  for (const s of (raw.local || [])) if (s && s.id != null) add(String(s.id), s, "local");
   return out;
 }
+// ---- Amazon associate links (v2.19) ----------------------------------------
+// Two honest halves, and only one of them is buildable without credentials.
+//
+// BUILDABLE: tagging a link. If a spool already has a purchase URL and it points
+// at Amazon, the tag is applied to it; if it has no URL at all, a SEARCH link is
+// offered instead. Search links need no API key, no approval and no account
+// linkage — the tag rides in the query string and a purchase made through it is
+// credited. That is the whole feature.
+//
+// NOT BUILDABLE HERE: "check whether it is available on Amazon and build the
+// product link automatically". That needs the Product Advertising API, which
+// requires three qualifying sales before it is granted — and Amazon does not
+// pay commission on purchases by the account holder, their friends, relatives
+// or associates, so the operator cannot bootstrap those sales themselves. A
+// search link is therefore labelled as a search, never dressed up as a product
+// listing the Hub has verified exists. Claiming otherwise would be the Hub
+// inventing a fact, which is the one thing this codebase refuses to do.
+//
+// The tag is never applied to a non-Amazon URL a user typed. Rewriting someone
+// else's supplier link to earn a commission on it is not a feature.
+const AMZ_TAG_RE = /^[a-z0-9][a-z0-9._-]{1,19}$/i;
+// The project's own associate tag, used when config.json says nothing. An
+// EXPLICIT empty string turns it off and sticks — that is the difference
+// between "never configured" and "deliberately cleared", and conflating them
+// would silently re-enable it for someone who turned it off.
+//
+// Two notes for whoever runs this build. Amazon does not pay commission on
+// purchases by the account holder or their friends, relatives and associates,
+// so the person whose tag this is should clear it on their own install rather
+// than tag their own filament orders. And anyone self-hosting who would rather
+// not send commission upstream clears it the same way, in one click, from the
+// line on the Resources tab that tells them it is there.
+const DEFAULT_AMAZON_TAG = "3dfil06-20";
+// Host must actually BE Amazon, not merely contain it. The obvious regex
+// — /(^|\.)amazon\.[a-z.]+$/ — happily matches amazon.com.evil.example, which
+// would mean rewriting a lookalike's URL into an /dp/ link and stamping our tag
+// on it. So: find the `amazon` label and require exactly one or two labels
+// after it (amazon.com, amazon.co.uk) and nothing more.
+function isAmazonUrl(u) {
+  let host;
+  try { host = new URL(u).hostname.toLowerCase().replace(/\.$/, ""); } catch { return false; }
+  const parts = host.split(".");
+  const i = parts.lastIndexOf("amazon");
+  if (i === -1) return false;
+  const after = parts.length - i - 1;
+  return after >= 1 && after <= 2;
+}
+function asinOf(u) {
+  const m = /\/(?:dp|gp\/product|gp\/aw\/d|product)\/([A-Z0-9]{10})(?:[/?#]|$)/i.exec(u)
+         || /[?&]asin=([A-Z0-9]{10})\b/i.exec(u);
+  return m ? m[1].toUpperCase() : null;
+}
+// { enabled, tag } from config.json. Absent tag = feature off, whatever `enabled`
+// says: there is nothing to tag with.
+function affiliateConf(cfg) {
+  const c = (cfg && typeof cfg.affiliate === "object" && cfg.affiliate) || {};
+  const tag = typeof c.amazon === "string" ? c.amazon.trim() : DEFAULT_AMAZON_TAG;
+  return { enabled: c.enabled !== false, amazon: AMZ_TAG_RE.test(tag) ? tag : "" };
+}
+// Returns { url, kind, tagged } for a row's Buy control, or null for no link.
+//   kind "product" — the user's own Amazon URL, normalised to /dp/<ASIN>
+//   kind "supplier" — the user's own non-Amazon URL, returned untouched
+//   kind "search"  — no URL on the spool; an Amazon search for the material
+function buyLink(row, conf) {
+  const own = String(row.purchase_url || "").trim();
+  if (own && !isAmazonUrl(own)) return { url: own, kind: "supplier", tagged: false };
+  const live = conf.enabled && conf.amazon;
+  if (own) {
+    const asin = asinOf(own);
+    let u;
+    try { u = new URL(asin ? "https://www.amazon.com/dp/" + asin : own); }
+    catch { return { url: own, kind: "product", tagged: false }; }
+    if (live) u.searchParams.set("tag", conf.amazon); else u.searchParams.delete("tag");
+    return { url: u.toString(), kind: "product", tagged: !!live };
+  }
+  // No link on the spool. A search is only worth offering if we can describe
+  // the filament well enough for it to find anything.
+  // "Well enough" means at least a brand or a material. A search for the word
+  // "filament" alone is a button that wastes a click and teaches you the
+  // button is useless — better to have no button and let the empty Buy cell
+  // say what is actually true: nothing is known about where to get this.
+  const terms = [row.brand, row.material, row.color_name].filter(Boolean).join(" ").trim();
+  if (!row.brand && !row.material) return null;
+  if (!terms) return null;
+  const u = new URL("https://www.amazon.com/s");
+  u.searchParams.set("k", terms + " 3d printer filament");
+  if (live) u.searchParams.set("tag", conf.amazon);
+  return { url: u.toString(), kind: "search", tagged: !!live };
+}
+
 // Lab for a spool: measured when we have it, otherwise derived from the hex.
 function spoolLabs(sp) {
   if (sp.lab) return [sp.lab];
@@ -353,7 +454,8 @@ function rollup(opts) {
 }
 
 // Turn buckets into the shape the table renders, and total it up.
-function buildRows(agg) {
+function buildRows(agg, aff) {
+  aff = aff || { enabled: false, amazon: "" };
   const { buckets, shelf, colorMap, assumeEmpty, deMax } = agg;
   const rows = [];
   for (const row of buckets.values()) {
@@ -395,6 +497,15 @@ function buildRows(agg) {
       cost_per_roll: sp ? sp.cost_per_roll : null,
       purchase_url: sp ? sp.purchase_url : "",
       shortfall_g: shortfall,
+      // v2.19 Buy control. Computed server-side so the tag, the ASIN
+      // normalisation and the "is this a product or a search" decision live in
+      // one place rather than being re-derived by every client.
+      buy: buyLink({
+        purchase_url: sp ? sp.purchase_url : "",
+        brand: sp ? sp.brand : "",
+        material: row.material,
+        color_name: sp ? sp.color_name : ""
+      }, aff),
       rolls_to_buy: rolls,
       est_cost: cost,
       no_price: rolls > 0 && (!sp || sp.cost_per_roll == null),
@@ -460,13 +571,21 @@ function register(ctx) {
       from: num(q.from),
       to: num(q.to)
     });
-    const { rows, totals } = buildRows(agg);
+    const aff = affiliateConf(ctx.cfg);
+    const { rows, totals } = buildRows(agg, aff);
     return {
       rows, totals, orphaned_inv,
       unresolved: agg.unresolved,
       counted_jobs: agg.counted.length,
       counted_units: agg.totalUnits,
       settings: store.state.settings,
+      // The client needs to know whether a tag is actually riding on these
+      // links, because that is what decides whether the disclosure line shows.
+      // A disclosure that appears when nothing is being earned trains people to
+      // ignore it; one that is missing when something is, is the real problem.
+      affiliate: { enabled: aff.enabled, tag_set: !!aff.amazon,
+                   active: !!(aff.enabled && aff.amazon),
+                   tagged_rows: rows.filter(r => r.buy && r.buy.tagged).length },
       cache_entries: cache.size(),
       generated_at: Date.now()
     };
@@ -515,6 +634,67 @@ function register(ctx) {
     res.json({ ok: true, spool_id: id, inv });
   });
 
+  // POST /api/resources/inventory/forget { spool_id } — drop an inventory row
+  // whose spool no longer exists (v2.19).
+  //
+  // The orphan warning has named the stranded grams and price since 2.16 and
+  // offered no way to act on it: you could see that 600 g and $25 were pinned
+  // to a spool that isn't there any more, and your only options were to live
+  // with the warning forever or hand-edit resources.json. A report you cannot
+  // act on stops being read.
+  //
+  // Deliberately refuses to delete inventory for a spool that DOES still exist.
+  // Clearing a live roll's numbers is what the inventory editor is for, and a
+  // "forget" that quietly wipes real data because an id was mistyped is exactly
+  // the kind of silent loss the dispatch save bug already cost a day to.
+  app.post("/api/resources/inventory/forget", express.json ? express.json() : (q, s, n) => n(), (req, res) => {
+    const b = req.body || {};
+    const id = String(b.spool_id || "").trim();
+    if (!id) return res.status(400).json({ error: "Body needs { spool_id }" });
+    if (!(id in (store.state.inv || {}))) return res.status(404).json({ error: "No inventory recorded for " + id });
+    const onShelf = readShelf(ctx.baseDir, store).some(s => s.id === id);
+    if (onShelf) return res.status(409).json({
+      error: "That spool is still on the shelf — edit its numbers instead of forgetting them"
+    });
+    const dropped = store.state.inv[id];
+    delete store.state.inv[id];
+    store.save();
+    ctx.hublog("info", "resources: forgot orphaned inventory for spool " + id +
+      " (" + (dropped.remaining_g == null ? "no grams" : dropped.remaining_g + " g") + ")");
+    res.json({ ok: true, spool_id: id, dropped });
+  });
+
+  // POST /api/resources/affiliate { enabled, amazon } — the associate tag and
+  // its off switch (v2.19). Lives in config.json rather than resources.json
+  // because it is an operator setting, not farm state.
+  //
+  // Danny's own decision, recorded because it is the kind of thing that gets
+  // quietly reversed later: this ships DISCLOSED and switchable. Anyone running
+  // the Hub — including him — can turn it off in one click, and with it off no
+  // tag is applied to anything.
+  app.post("/api/resources/affiliate", express.json ? express.json() : (q, s, n) => n(), (req, res) => {
+    const b = req.body || {};
+    // Resolve through affiliateConf, NOT off the raw config block. Reading the
+    // raw block meant that the very first "turn it off" wrote amazon:"" — and
+    // by this module's own rule an explicit empty string means "deliberately
+    // cleared", which sticks. One click of the off switch destroyed the tag,
+    // turning it back on restored nothing, and the UI then had no button to
+    // offer because there was no tag to enable. Caught by a live gate, not by
+    // the harness, because every harness case had already set a tag explicitly.
+    const cur = affiliateConf(ctx.cfg);
+    const next = { enabled: cur.enabled, amazon: cur.amazon };
+    if ("enabled" in b) next.enabled = b.enabled !== false;
+    if ("amazon" in b) {
+      const t = String(b.amazon || "").trim();
+      if (t && !AMZ_TAG_RE.test(t)) return res.status(400).json({ error: "That does not look like an Amazon associate tag" });
+      next.amazon = t;
+    }
+    ctx.cfg.affiliate = next;
+    ctx.saveConfig();
+    const aff = affiliateConf(ctx.cfg);
+    res.json({ ok: true, affiliate: { enabled: aff.enabled, tag_set: !!aff.amazon, active: !!(aff.enabled && aff.amazon) } });
+  });
+
   // POST /api/resources/map { color_hex, spool_id } — pin a slicer hex to a
   // spool. spool_id null clears the pin.
   app.post("/api/resources/map", express.json ? express.json() : (q, s, n) => n(), (req, res) => {
@@ -556,5 +736,6 @@ function register(ctx) {
   ctx.provide("resources.rollup", q => compute(q || {}));
 }
 
-module.exports = { register, deltaE2000, rgbToLab, hexToRgb, normHex,
+module.exports = { register, buyLink, asinOf, isAmazonUrl, affiliateConf, DEFAULT_AMAZON_TAG,
+  deltaE2000, rgbToLab, hexToRgb, normHex,
                    matchSpool, rollup, buildRows, COUNTED_STATES };

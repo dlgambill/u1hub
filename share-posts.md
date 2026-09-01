@@ -60,3 +60,56 @@ Fair warning: it's beta and it controls real printers, so keep it on your home n
 Download + a short beta guide: https://github.com/dlgambill/u1hub
 
 Would love to hear what works and what breaks. 🍺
+
+---
+
+## v2.19 — maintenance mode, update notices, resource fixes
+
+Written 2026-09-01, for when 2.17–2.19 are pushed. Short by design: the last
+round of posts was too long and nobody read past the first line.
+
+### Reddit (r/Snapmaker) — short version
+
+**Title:**
+U1 Print Hub v2.19 — take a printer down for maintenance and the queue redistributes itself
+
+**Body:**
+Pull a machine out of the schedule with one click. Everything queued for it
+spreads across the rest immediately; put it back and it spreads again. A print
+already on the bed keeps running and stays visible — it just stops being handed
+new work.
+
+Also in this one:
+
+- The Hub tells you when there's a newer version. One request for one small
+  file, once a day, no version or ID sent, one checkbox to turn off.
+- Fixed: the Resource Monitor was inventing spools out of the colour library —
+  seven fake rolls with 1000 g of filament that doesn't exist. If your shortfall
+  numbers looked optimistic, that's why.
+- Fixed: the filament-memory bar stayed U1 amber on non-U1 fleets.
+- The whole UI is keyboard-reachable now, including the Dispatch timeline.
+
+Still free, still local, still no account: https://github.com/dlgambill/u1hub
+
+### Facebook group — plain text, paste as-is
+
+U1 Print Hub v2.19 is up.
+
+The big one: you can take a printer down for maintenance now. One click and it
+leaves the schedule — whatever was queued for it redistributes across your other
+machines straight away. Click again when it's fixed and the work spreads back to
+include it. Anything already printing on it finishes normally.
+
+The Hub also tells you when there's a new version available, and I fixed a bug
+where the Resource Monitor was counting spools that don't exist, which made
+"what do I need to buy" more optimistic than it should have been.
+
+Free, runs on your own network, no account needed.
+https://github.com/dlgambill/u1hub
+
+### Note before posting
+
+Both posts describe the maintenance feature as the headline because it is the
+one someone reads and immediately understands. The update notifier is second
+because "software tells you about updates" is not news to anyone; it is listed
+mainly so people know the request is going out and how to stop it.

@@ -74,6 +74,70 @@ printers, and nothing leaves your network unless you turn remote access on.
 
 ---
 
+## New in 2.19 — the maintenance release
+
+- **Take a printer out of service without unplugging it.** A machine you're
+  rebuilding is not the same thing as a machine that stopped answering, and
+  until now the Hub had no way to tell them apart — your only option was to pull
+  the power, which reads as a fault. Now there's a **take down** button on every
+  lane in the Dispatch guide. The moment you press it, everything queued for
+  that machine redistributes across the rest; press it again and the queue
+  spreads back to include it. A print already on the bed keeps running and stays
+  on the timeline, marked *finishing, then down* — nothing new is handed to it,
+  and neither the background executor nor **claim running prints** will attach
+  work to it while it's out.
+
+- **The Hub tells you when there's a new version.** One request for one small
+  JSON file, at most once a day, sending no version and no identifier — it's a
+  plain fetch of a public file, and the panel says so. One checkbox turns it
+  off, and off means no request is made at all. On a LAN with no route out the
+  check simply fails and nothing is shown; offline is the expected case here,
+  not an error.
+
+- **Fixed: the Resource Monitor was inventing spools.** It read the local
+  *colour library* — the palette you search when binding an RFID tag — as if it
+  were a shelf of physical rolls, and handed each entry a default 1 kg of
+  filament that does not exist. Seven phantom spools on a nine-printer farm,
+  polluting colour matching and the map-to-spool dropdown, and quietly making
+  "what do I need to buy" more optimistic than the truth. If your shortfall
+  numbers change after this update, this is why, and the new ones are right.
+
+- **Fixed: the filament-memory bar ignored your printer type.** It referenced
+  two CSS variables that were never defined anywhere, so it stayed U1 amber
+  while the rest of the UI re-accented around whichever fleet you'd switched to.
+
+- **Buy links, and an honest word about them.** Rows with a purchase URL get a
+  **Buy** button; rows without one get **Search**, which searches Amazon for
+  that spool's brand, material and colour. Links this project generates carry an
+  Amazon associate tag, disclosed in a line on the Resources tab with the off
+  switch in the same sentence. It is never applied to a non-Amazon supplier link
+  you typed in yourself. The button says *Search* and not *Buy* for a reason:
+  the Hub has not checked that the filament is in stock, and will not pretend it
+  has.
+
+- **The whole UI is keyboard-reachable.** The Dispatch timeline, the Match file
+  expanders and the source-filter chips were all click-only — the filters were
+  literally `display:none` checkboxes, out of the tab order entirely. All three
+  now take focus, show a ring, and respond to Enter and Space.
+
+- **Orphaned inventory can be cleared.** The warning has named the stranded
+  grams and price since 2.16 without offering anything to do about it; there's
+  now a button. It refuses to touch inventory for a spool still on the shelf.
+
+- **`U1HUB_DIR`** puts config and state in a directory of your choosing instead
+  of next to the install — useful for containers and NAS boxes that want the
+  install read-only, and for running a second Hub against the same code without
+  the two fighting over one `dispatch.json`.
+
+### 2.17 and 2.18, folded in
+
+2.17 was a design pass: a radius scale, tabular figures on the live readouts so
+temperatures stop nudging their rows sideways as they tick, and focus rings for
+everything added since the last one. 2.18 added the update notifier above. Both
+are in this release; neither was published on its own.
+
+---
+
 ## New in 2.16 — the resources release
 
 - **Know what to buy before you run out.** The new **Resources** tab reads the
