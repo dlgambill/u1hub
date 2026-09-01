@@ -715,3 +715,53 @@ not the proxy.
   checkbox through browser automation; the harness asserts it from markup.
 - White and pink still match no spool; black warnings are expected (8 rolls
   bought, 1 entered) and Danny has said they are fine as-is.
+
+---
+
+## 13. Addendum — v2.21.0 (2026-09-01, evening): the phone's cache, two outages, and the edge
+
+**Harness: 517 passed, 0 failed** after all of it.
+
+### The stale-tab bug (v2.21 cache stamps)
+
+Danny's phone showed v2.21.0 in the header while the Resources tab still ran
+the v2.20 `resources-ui.js` — a pull-to-refresh revalidates the HTML but not
+the scripts it names, and express.static sends no Cache-Control. `serveIndex()`
+now stamps every injected module script and the gold.css link with
+`?v=<VERSION>` and serves the page itself `Cache-Control: no-cache`. Three
+harness checks pin it. His phone picks up new releases on a plain refresh now.
+
+### Production died twice — the killer was me, not the code
+
+Full story in MISTAKES.md ("neither death was the code"). Short version: a Hub
+restarted through the automation bridge is a child of the bridge's process tree
+and dies when the bridge recycles — 13:57 to the minute. `restart-4545.cmd` now
+starts the Hub via WMI, outside every caller's tree, with console output in
+`hub-console.log`. The scare also produced things worth keeping: the WebSocket
+proxy paths are hardened against dead-socket writes (which ARE process-fatal),
+`server.js` writes `crash.log` on uncaughtException, and the harness asserts
+the Hub survives a refused upgrade and an abandoned handshake.
+
+### The remaining open item: WebSockets die at Cloudflare's edge
+
+Through the tunnel, Fluidd loads at `https://hub.sf3d.net/p/<id>/` (pages,
+assets, camera snapshots all relay) but the Moonraker WebSocket fails with
+close code 1006 and the Hub's upgrade handler NEVER FIRES — nothing in the log.
+On the LAN the same socket answers a JSON-RPC round trip. So the handshake is
+being refused between the browser and cloudflared.
+
+Measured facts: `hub.sf3d.net` is behind **Cloudflare Access** (team
+`fragrant-leaf-6334`); a cookieless probe of `/p/0/websocket` gets Access's 302
+login redirect, so Access fronts the path; with a valid session the wss still
+dies at the edge. Cloudflare's own troubleshooting list for exactly this
+symptom: zone **WebSockets toggle** off (Network settings), Access application
+**Binding Cookie** enabled (documented WebSocket breaker), **Super Bot Fight
+Mode** blocking upgrades, SSL mode Off, or a **Worker route** overlapping the
+hostname (account has `sf3d-social` / `sf3d-intake` workers — routes not
+visible with the connected Cloudflare tools). These are all dashboard toggles
+only Danny can see; the Hub side is verified done.
+
+### Also in this addendum
+
+Settings gained the affiliate section + slicing warning earlier today (§12);
+`update.json` now says 2.21.0. Commits still unpushed.

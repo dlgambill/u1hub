@@ -29,6 +29,42 @@ Bridge quirks are operating facts, not judgment failures; a rule that says
 
 ---
 
+## 2026-09-01 — Production died twice in one afternoon, and neither death was the code
+
+**What happened:** The production Hub on 4545 went down twice within hours of
+the v2.21 deploy. Danny's phone got Cloudflare 502s; the farm's scheduler was
+dead both times. First suspicion fell on the brand-new WebSocket proxy — an
+async write to a dead socket IS process-fatal in Node, and that path had just
+shipped — so it was hardened and a crash logger added. crash.log then stayed
+EMPTY across the second death: the process was being killed, not crashing.
+
+**Root cause:** I had restarted production through the remote-automation
+bridge, which makes the Hub a child in the bridge's process tree (job object).
+When the bridge recycles its sessions — which it did at 13:57, the exact minute
+of the first death — every descendant is killed with it, `start`/detach
+notwithstanding. The Hub that had run for hours before was one Danny started
+himself; every one of mine died young. Meanwhile cloudflared (running since
+Aug 27, its own orphan) kept the tunnel up and served 502s over the corpse,
+which made the outage look like a Cloudflare problem.
+
+**Consequence:** two silent production outages, an hour of suspecting the wrong
+component, and — the useful part — a genuine crash-hardening pass and crash.log
+that were worth shipping anyway.
+
+**Fix:** `scripts/restart-4545.cmd` now starts the Hub via WMI
+(`Win32_Process.Create`), which creates it OUTSIDE the caller's process tree;
+console output goes to `hub-console.log` so a real crash finally leaves a stack
+somewhere readable. The websocket/proxy hardening and the
+uncaughtException→crash.log handler stay: they close a real (if unproven-here)
+kill path, and the harness now asserts the Hub survives both a refused upgrade
+and a client abandoning the handshake.
+
+**Rule:** a long-running service must never be a child of the tool that
+deployed it. And when a process dies with no crash evidence, ask who KILLED it
+before asking what broke — absence from crash.log is itself a finding.
+
+---
+
 ## 2026-09-01 — Three UX corrections from Danny in one afternoon, one lesson
 
 **What happened:** In quick succession: *"get rid of the add buy link button and

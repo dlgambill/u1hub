@@ -436,10 +436,22 @@ function serveIndex(req, res) {
       html = html.replace(/<button class="vtab" data-view="spools">[^<]*<\/button>/g, "");
     if (FEATURES.mixer === false)
       html = html.replace(/<a class="gear" href="\/fs-colors\.html"[^>]*>[^<]*<\/a>/g, "");
+    // v2.21: every asset URL the page loads carries ?v=<VERSION>. Found live on
+    // Danny's phone the hour v2.21 shipped: index.html refreshed (the badge
+    // said 2.21.0) while the Resources tab still ran the 2.20 resources-ui.js
+    // from the browser's HTTP cache — express.static sends no Cache-Control,
+    // so mobile browsers cache heuristically, and a pull-to-refresh revalidates
+    // the page but not the scripts it names. A versioned URL is a different URL
+    // after every release: the old cache entry simply never matches again, and
+    // between releases the cache is free to do its job.
     const tags = Object.entries(CLIENT_TABLE)
       .filter(([name]) => FEATURES[name] !== false)
-      .map(([, src2]) => '<script src="' + src2 + '"></script>').join("\n");
+      .map(([, src2]) => '<script src="' + src2 + '?v=' + VERSION + '"></script>').join("\n");
     html = html.replace("<!-- @client-modules -->", tags);
+    html = html.replace('href="gold.css"', 'href="gold.css?v=' + VERSION + '"');
+    // And the page itself must always revalidate — the version stamp on the
+    // assets is useless if the HTML that carries it can go stale.
+    res.set("Cache-Control", "no-cache");
     res.type("html").send(html);
   } catch (e) { res.status(500).send("index.html not found"); }
 }
@@ -2403,6 +2415,24 @@ const SERVER = app.listen(PORT, () => {
 // A handler returns true if it took the socket. Nothing claimed is CLOSED, not
 // ignored: an unanswered upgrade leaves the browser waiting on a socket that
 // will never speak, which looks exactly like a hung printer.
+// v2.21: last-resort crash evidence. Production died on 2026-09-01 with its
+// stack in a console window nobody was watching, and the only symptom was
+// Cloudflare 502s on a phone. An uncaught exception still ends the process —
+// continuing on unknown state would be worse — but it now ends it with the
+// stack ON DISK, timestamped, where the next session can read it.
+process.on("uncaughtException", (e) => {
+  const line = new Date().toISOString() + "  UNCAUGHT  " + (e && e.stack || e) + "\n\n";
+  try { fs.appendFileSync(path.join(BASE_DIR, "crash.log"), line); } catch {}
+  try { console.error(line); } catch {}
+  process.exit(1);
+});
+process.on("unhandledRejection", (e) => {
+  const line = new Date().toISOString() + "  UNHANDLED REJECTION  " + (e && e.stack || e) + "\n\n";
+  try { fs.appendFileSync(path.join(BASE_DIR, "crash.log"), line); } catch {}
+  try { console.error(line); } catch {}
+  // Rejections don't kill the process on current Node defaults; log and live.
+});
+
 SERVER.on("upgrade", (req, socket, head) => {
   socket.on("error", () => {});   // a client that walks away mid-handshake is not an event
   for (const h of UPGRADE_HANDLERS) {

@@ -115,6 +115,14 @@ function register(ctx) {
 
     const pathOnly = r.rest.split("?")[0];
 
+    // A WebSocket handshake landing HERE means the upgrade was downgraded to a
+    // plain request somewhere upstream (a proxy that strips Upgrade headers) —
+    // the printer would answer 400 and the browser would show a dead socket
+    // with no clue anywhere. Name the real problem in the log.
+    if (/upgrade/i.test(String(req.headers.connection || "")) || req.headers.upgrade)
+      hublog("warn", "klipper: " + r.rest + " arrived as a plain request carrying Upgrade headers — " +
+        "something between the browser and the Hub is not passing WebSocket upgrades through");
+
     // The ONE rewritten response. Everything else is relayed untouched.
     if (pathOnly === "/config.json") return serveConfig(req, res, r.id, tgt);
 
@@ -138,14 +146,25 @@ function register(ctx) {
       host: tgt.host, port: tgt.port, method: req.method, path: r.rest,
       headers, agent: false, timeout: 30000
     }, pres => {
-      res.writeHead(pres.statusCode || 502, stripHop(pres.headers));
-      pres.pipe(res);
+      try {
+        pres.on("error", () => { try { res.destroy(); } catch {} });
+        res.writeHead(pres.statusCode || 502, stripHop(pres.headers));
+        pres.pipe(res);
+      } catch { try { res.destroy(); } catch {} try { pres.destroy(); } catch {} }
     });
     preq.on("timeout", () => { preq.destroy(new Error("printer did not answer in 30 s")); });
     preq.on("error", e => {
-      if (res.headersSent) return res.destroy();
-      res.status(502).json({ error: (printer.name || "Printer " + r.id) + " is not answering: " + e.message });
+      try {
+        if (res.headersSent) return res.destroy();
+        res.status(502).json({ error: (printer.name || "Printer " + r.id) + " is not answering: " + e.message });
+      } catch {}
     });
+    // A client that walks away mid-transfer (phones do, constantly) must tear
+    // down the printer leg quietly — an unhandled 'error' on either stream is
+    // process-fatal, and this path carries every camera snapshot and upload.
+    req.on("error", () => { try { preq.destroy(); } catch {} });
+    res.on("error", () => { try { preq.destroy(); } catch {} });
+    res.on("close", () => { if (!res.writableEnded) { try { preq.destroy(); } catch {} } });
     // The body is still an unread stream: core skips express.json() for this
     // prefix precisely so uploads and JSON alike arrive here intact.
     req.pipe(preq);
@@ -188,7 +207,15 @@ function register(ctx) {
     // The Express gate never runs on an upgrade. Ask the same question here, or
     // the socket is a hole straight through the password to printer control.
     if (!ctx.isAuthed(req)) {
-      socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+      // Logged, unlike most 401s: a session that works for the page but not
+      // the socket is a config bug (cookie flags, proxy stripping), and from
+      // the browser both failures look like the same dead "connecting…".
+      // Diagnostic detail: cookie NAMES only, never values. "cookie absent" vs
+      // "cookie present but not accepted" are two different bugs.
+      const names = String(req.headers.cookie || "").split(";").map(s => s.trim().split("=")[0]).filter(Boolean);
+      hublog("warn", "klipper: websocket upgrade refused — no valid session (path " + req.url +
+        ", cookies " + (names.length ? names.join(",") : "ABSENT") + ")");
+      try { socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n"); } catch {}
       socket.destroy();
       return true;
     }
@@ -203,32 +230,49 @@ function register(ctx) {
     headers.connection = "Upgrade";
     headers.upgrade = "websocket";
 
+    // EVERY write in the callbacks below is guarded. These fire asynchronously
+    // — after the client may have walked away — and an unguarded write to a
+    // dead socket is an uncaughtException, which in Node is not a failed
+    // request: it is the END OF THE PROCESS. Production learned this on
+    // 2026-09-01: the first phone through the tunnel took the entire Hub down,
+    // nine printers' scheduler with it, and cloudflared kept serving 502s over
+    // the corpse. A dropped socket is Tuesday; it must never be lethal.
+    const dead = s => !s || s.destroyed || s.writableEnded;
+    const safeWrite = (s, data) => { try { if (!dead(s)) s.write(data); } catch {} };
+    const safeEnd = s => { try { if (s) s.destroy(); } catch {} };
+
     const preq = http.request({
       host: tgt.host, port: tgt.port, method: req.method || "GET",
       path: r.rest + qs, headers, agent: false
     });
     preq.on("upgrade", (pres, psocket, phead) => {
-      // Rebuild the 101 verbatim. The Sec-WebSocket-Accept value is a hash of
-      // the client's key — regenerating it would be wrong, and the browser
-      // checks it.
-      const lines = ["HTTP/1.1 101 Switching Protocols"];
-      for (const [k, v] of Object.entries(pres.headers))
-        for (const one of [].concat(v)) lines.push(k + ": " + one);
-      socket.write(lines.join("\r\n") + "\r\n\r\n");
-      if (phead && phead.length) socket.write(phead);
-      if (head && head.length) psocket.write(head);
-      psocket.on("error", () => socket.destroy());
-      socket.on("error", () => psocket.destroy());
-      psocket.pipe(socket).pipe(psocket);
+      try {
+        psocket.on("error", () => safeEnd(socket));
+        socket.on("error", () => safeEnd(psocket));
+        if (dead(socket)) { safeEnd(psocket); return; }   // client left during the dial
+        // Rebuild the 101 verbatim. The Sec-WebSocket-Accept value is a hash of
+        // the client's key — regenerating it would be wrong, and the browser
+        // checks it.
+        const lines = ["HTTP/1.1 101 Switching Protocols"];
+        for (const [k, v] of Object.entries(pres.headers))
+          for (const one of [].concat(v)) lines.push(k + ": " + one);
+        safeWrite(socket, lines.join("\r\n") + "\r\n\r\n");
+        if (phead && phead.length) safeWrite(socket, phead);
+        if (head && head.length) safeWrite(psocket, head);
+        psocket.pipe(socket).pipe(psocket);
+      } catch (e) {
+        hublog("warn", "klipper: websocket splice to " + (printer.name || r.id) + " failed: " + e.message);
+        safeEnd(psocket); safeEnd(socket);
+      }
     });
     preq.on("response", pres => {   // printer answered without upgrading
-      socket.write("HTTP/1.1 " + (pres.statusCode || 502) + "\r\nConnection: close\r\n\r\n");
-      socket.destroy();
+      safeWrite(socket, "HTTP/1.1 " + (pres.statusCode || 502) + "\r\nConnection: close\r\n\r\n");
+      safeEnd(socket);
     });
     preq.on("error", e => {
       hublog("warn", "klipper: websocket to " + (printer.name || r.id) + " failed: " + e.message);
-      try { socket.write("HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n"); } catch {}
-      socket.destroy();
+      safeWrite(socket, "HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n");
+      safeEnd(socket);
     });
     preq.end();
     return true;

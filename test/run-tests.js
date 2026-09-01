@@ -1609,6 +1609,21 @@ async function stopHub() {
     // The client module rides the injection mechanism.
     r = await fetch(HUB + "/"); const dpage = await r.text();
     ok(/\/modules\/dispatch-ui\.js/.test(dpage), "dispatch client script injected into the served page");
+    // v2.21: every injected script and the stylesheet carry ?v=<version>, and
+    // the page itself says no-cache. Found on a real phone the hour 2.21
+    // shipped: the page refreshed to 2.21 while the Resources tab kept running
+    // the cached 2.20 resources-ui.js — the labels Danny had just asked to
+    // change were still there, because a pull-to-refresh revalidates the HTML
+    // but not the scripts it names. A versioned URL cannot go stale: after a
+    // release it is simply a different URL.
+    {
+      const vre = new RegExp("/modules/dispatch-ui\\.js\\?v=" + EXPECTED_VERSION.replace(/\./g, "\\."));
+      ok(vre.test(dpage), "…and the script URL is stamped with the running version, so a phone's cache cannot serve last release's tab", (dpage.match(/modules\/dispatch-ui\.js[^"]*/) || [])[0]);
+      ok(new RegExp("gold\\.css\\?v=" + EXPECTED_VERSION.replace(/\./g, "\\.")).test(dpage),
+        "…the stylesheet too", (dpage.match(/gold\.css[^"]*/) || [])[0]);
+      ok(/no-cache/.test(r.headers.get("cache-control") || ""),
+        "…and the page that carries the stamps always revalidates", r.headers.get("cache-control"));
+    }
     ok(/application\/x-u1hub-file/.test(dpage), "library rows carry the draggable module payload");
     ok(/id="dispadd"/.test(dpage) && /HubModules\.fileAction/.test(dpage),
       "core exposes a module file-action button (the mobile path \u2014 touch never fires drag events)");
@@ -2726,7 +2741,7 @@ async function stopHub() {
 
     const page = await (await fetch(HUB + "/")).text();
     const closeStyle = page.indexOf("</style>");
-    const linkGold  = page.indexOf('href="gold.css"');
+    const linkGold  = page.indexOf('href="gold.css');   // v2.21: the served link carries ?v=<version>, so match the prefix
     ok(closeStyle > -1 && linkGold > closeStyle,
       "gold.css is linked AFTER the inline <style> — the override layer must win on cascade order",
       { closeStyle, linkGold });
@@ -2911,6 +2926,42 @@ async function stopHub() {
     ok(/^http:\/\/127\.0\.0\.1:/.test(String(cfg.body.endpoints[0])),
       "…built from the host the request actually arrived on, so it is right through a tunnel too",
       cfg.body.endpoints);
+
+    // THE CRASH THAT TOOK PRODUCTION DOWN (2026-09-01). The first phone through
+    // the tunnel killed the whole Hub: an async write to a socket whose client
+    // had gone is an uncaughtException, and an uncaughtException is the end of
+    // the process. Both halves of that failure are exercised here, and the
+    // assertion each time is the only one that matters: the Hub is still alive.
+    const wsAttempt = (opts) => new Promise(resolve => {
+      const rq = require("http").request({
+        host: "127.0.0.1", port: HUB_PORT, path: "/p/0/websocket", method: "GET",
+        headers: { Connection: "Upgrade", Upgrade: "websocket",
+                   "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==", "Sec-WebSocket-Version": "13" }
+      });
+      rq.on("response", r => { r.resume(); resolve("response " + r.statusCode); });
+      rq.on("upgrade", () => resolve("upgrade"));
+      rq.on("error", e => resolve("error " + e.code));
+      rq.end();
+      if (opts && opts.abandon) setTimeout(() => { try { rq.destroy(); } catch {} }, opts.abandon);
+    });
+    // (a) the printer leg cannot upgrade — the mock is a plain HTTP server that
+    // slams the socket on an Upgrade request, driving the proxy's error path.
+    let ws = await wsAttempt();
+    // The mock answers the upgrade attempt like any request (its 404 route), so
+    // the proxy's 'response' path relays a plain status; a printer that slams
+    // the socket instead drives the 'error' path. Either is a clean refusal.
+    ok(/^response \d+|^error/.test(ws) && ws !== "upgrade",
+      "a websocket to a printer that cannot upgrade fails as a REQUEST", ws);
+    ok((await jfetch("/api/klipper")).status === 200, "…and the Hub is still alive afterwards");
+    // (b) the phone walks away mid-handshake.
+    ws = await wsAttempt({ abandon: 10 });
+    await new Promise(s => setTimeout(s, 300));
+    ok((await jfetch("/api/klipper")).status === 200, "…a client abandoning the handshake is not lethal either");
+    {
+      const srv2 = fs.readFileSync(path.join(REPO, "server.js"), "utf8");
+      ok(/process\.on\("uncaughtException"/.test(srv2) && /crash\.log/.test(srv2),
+        "…and if something DOES kill the process, the stack lands in crash.log, not a vanished console window");
+    }
 
     // The gate. /p/ is not on auth.js's ALLOW list, and the upgrade handler
     // asks isAuthed() itself — a WebSocket never passes through Express
