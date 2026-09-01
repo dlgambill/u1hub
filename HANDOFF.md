@@ -501,3 +501,60 @@ behaviour, but the feature is inert.
   built; the simple flag is the foundation if you ever want them.
 - The Product Advertising API half of the affiliate feature remains blocked on
   three qualifying sales, which cannot be self-generated.
+
+---
+
+## 10. Addendum — v2.20.0: push a job back
+
+**Harness: 465 passed, 0 failed.** Version 2.20.0 across the four files.
+
+### The problem, in Danny's words
+
+> "I've got three prints scheduled to start at the same time, all using green. I
+> know I can move them to another printer, but it'd be great if I could just
+> push them back and do the next job instead."
+
+The Hub already detected this — `findContention()` has flagged spool clashes
+since 2.13, and the module comment is explicit that it will not silently
+serialise, because invisible constraints leave you staring at a plan wondering
+why nothing starts. What was missing was a way to *answer* the flag.
+
+### What was built
+
+`job.after` — the id of the job this one was pushed behind. `POST
+/api/dispatch/jobs/push-back { id }` resolves "the next job" against the CURRENT
+plan and stores that relationship; `{ id, clear: true }` undoes it. A button on
+the job sheet, which stays open on success so a second press is immediate.
+
+Three design points worth keeping:
+
+- **It stores a job, not a time.** Danny's own framing — "I might get the
+  filament while the others are still printing. If not, I can push back again"
+  — is a relative nudge, repeated as needed. A timestamp would go stale the
+  moment anything upstream moved.
+- **It waits for the target to FINISH, not to start.** Flooring at the start
+  would let the two overlap on different machines, which is the exact situation
+  being escaped.
+- **Two passes in `plan()`.** A job can only be floored against a target that
+  has already been placed, so `ordered` is rearranged first. Cycles and dead
+  targets are dropped rather than trusted — `after` lives in `dispatch.json`,
+  which a human can edit. A hand-written cycle plans in 39 ms instead of hanging.
+
+### Verified on the real queue
+
+His farm had **31 of 38 slots contended**, not the three he described. Pushing
+`Alien x4.gcode` back once moved it Wed 06:00 → Thu 06:00 and cleared its black
+clash; a second press moved it behind the next job again. Note that the farm
+total went 31 → 32 → 31 across those presses: resolving one clash can expose
+another when one roll is wanted by many jobs. That is honest and is reported,
+not hidden.
+
+### Also fixed: `filament-swatches.json`
+
+Dirty in the C: clone since 2026-08-18 and unexplained. The entire diff was the
+`fetchedAt` timestamp — all 2,266 swatches byte-identical. `npm run
+refresh-filament-db` stamped the time on every run, so a refresh that found
+nothing new still rewrote a 900 KB single-line file. The script now writes only
+when the DATA differs and reports the check date on stdout instead; `fetchedAt`
+therefore means "when this data last actually changed". The working copy was
+reverted, since it carried no information the repo did not already have.

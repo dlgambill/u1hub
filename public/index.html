@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- U1 Print Hub — index v2.19.0 -->
+<!-- U1 Print Hub — index v2.20.0 -->
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
@@ -707,7 +707,7 @@
 
 <script>
 const $ = id => document.getElementById(id);
-const VERSION = "2.19.0";
+const VERSION = "2.20.0";
 let FILES = [], SELECTED = null, MAP = null, FLEET = [], MAPSEL = {};
 let ONBOARD = [], ACT = null; // onboard = /api/printer-files cache; ACT = open per-printer action strip {name,pid}
 let SRCSEL = { hub:true, p:{} }; // source-filter checkboxes; p[pid]=false hides that printer (default: everything on)
@@ -2275,7 +2275,20 @@ async function loadSpools(){
       + invCell(sp.spool_id,"remaining_g", v.remaining_g, "", " g left", "set grams")
       + invCell(sp.spool_id,"cost_per_roll", v.cost_per_roll, "$", "/roll", "set price")
       + invCell(sp.spool_id,"purchase_url", v.purchase_url, "", "", "add buy link")
-      + (v.purchase_url ? `<a class="invbuy" href="${esc(v.purchase_url)}" target="_blank" rel="noopener">Buy ↗</a>` : "")
+      // v2.20: always offer a way to buy. Before this the link appeared only if
+      // you had already pasted a purchase URL, so a shelf where nobody had done
+      // that (i.e. every real shelf) showed "add buy link" and nothing else. The
+      // server now hands back v.buy — the spool's own URL when it has one, an
+      // Amazon search for that brand/material/colour when it does not. It says
+      // "Search" rather than "Buy" in the second case because the Hub has not
+      // checked that the filament exists there.
+      + (v.buy
+          ? `<a class="invbuy" href="${esc(v.buy.url)}" target="_blank" rel="noopener"
+               title="${v.buy.kind === "search"
+                 ? "No link saved on this spool — search Amazon for it" + (v.buy.tagged ? " (affiliate link)" : "")
+                 : esc(v.buy.url) + (v.buy.tagged ? " (affiliate link)" : "")}"
+             >${v.buy.kind === "search" ? "Search ↗" : "Buy ↗"}</a>`
+          : "")
       + `</div>`;
   };
   $("spoolcount").textContent=SPOOLS.length+" bound";

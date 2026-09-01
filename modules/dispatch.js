@@ -297,9 +297,23 @@ function register(ctx) {
   function finish(job, why) {
     forget(job.id);
     D.jobs = D.jobs.filter(x => x.id !== job.id);
+    // Anything pushed back behind this job is now waiting on something that no
+    // longer exists. The planner already ignores a dead target, but leaving the
+    // pointer in the file means the UI keeps saying "waiting on <a job you
+    // cannot see>" — so clear it and let those jobs fall back to their natural
+    // place. Their turn has, after all, arrived.
+    releaseWaitersOf(job.id);
     pruneBundles();
     ctx.hublog("info", "dispatch: '" + job.file + "' " + (why || "finished") +
       " — removed from the queue (" + job.qty + " cop" + (job.qty === 1 ? "y" : "ies") + " done)");
+  }
+  // v2.20: drop `after` pointers aimed at a job that has left the queue.
+  function releaseWaitersOf(goneId) {
+    let n = 0;
+    for (const j of D.jobs) if (j.after === goneId) { delete j.after; n++; }
+    if (n) ctx.hublog("info", "dispatch: " + n + " job" + (n === 1 ? "" : "s") +
+      " released — the job they were pushed behind is gone");
+    return n;
   }
   // Jobs that finished under the old rule are still in dispatch.json. Sweep
   // them once at load rather than making Danny clear 19 rows by hand.
@@ -447,9 +461,21 @@ function register(ctx) {
 
   // ---- spool exclusivity ----------------------------------------------------
   // A roll of filament is a physical object: it cannot be in two printers at
-  // once. The Hub has no inventory count (Danny, 2026-08-28), so the honest
-  // assumption is ONE roll per distinct colour unless a tray somewhere is
-  // already showing it. Two jobs needing black therefore cannot overlap.
+  // once. The Hub assumes ONE roll per distinct colour unless a tray somewhere
+  // is already showing it. Two jobs needing black therefore cannot overlap.
+  //
+  // 2026-09-01: it was proposed to soften this using the Resource Monitor's
+  // on-hand figures — count the rolls, only warn when concurrent demand exceeds
+  // them. Danny said no, and was right: the shelf is only partly entered. A
+  // colour with two rolls recorded and eight on the wall would stop warning
+  // correctly; a colour with two recorded and two on the wall would stop
+  // warning by luck. Inferring capacity from an inventory nobody has finished
+  // filling in turns a conservative warning into a confident wrong one, and it
+  // fails silently — you find out when two machines want the same roll.
+  //
+  // So it stays at one. Revisit only if the shelf ever becomes authoritative,
+  // and even then only for colours whose count is explicitly confirmed rather
+  // than merely present.
   //
   // We do NOT silently serialise them: the second job is planned where it
   // naturally falls and the slot carries a `contention` note naming the colour
@@ -529,6 +555,52 @@ function register(ctx) {
       (b.priority || 0) - (a.priority || 0) ||
       ((effDeadline(a) || Infinity) - (effDeadline(b) || Infinity)) ||
       (a.created - b.created));
+    // ---- "push it back" (v2.20) ---------------------------------------------
+    // Three jobs all wanting the one green roll get planned to start together,
+    // with a contention note on two of them — the Hub sees the clash and says
+    // so, but has never let you do anything about it except move a job to
+    // another machine. Sometimes the answer is neither: you want THIS one to
+    // wait and the next one to run, because more green may arrive before it
+    // matters.
+    //
+    // job.after holds the id of the job it was pushed behind. It is a nudge,
+    // not a schedule: one press moves a job one place, and pressing again moves
+    // it one more. Deliberately NOT a timestamp — a time you picked goes stale
+    // the moment anything upstream shifts, whereas "after that one" stays true.
+    //
+    // Two passes are needed because a job can only be floored against a target
+    // that has already been placed, so the target has to come first in the
+    // list. Cycles and dead targets are dropped rather than trusted: `after`
+    // survives in the file across restarts, and the job it names may have been
+    // finished or deleted since.
+    {
+      const byId = new Map(ordered.map(j => [j.id, j]));
+      const resolve = (j, seen) => {              // walk the chain, refuse loops
+        const t = j.after && byId.get(j.after);
+        if (!t || t === j) return null;
+        if (seen.has(t.id)) return null;
+        seen.add(t.id);
+        return t;
+      };
+      for (let pass = 0; pass < ordered.length; pass++) {
+        let moved = false;
+        for (let i = 0; i < ordered.length; i++) {
+          const j = ordered[i];
+          const t = resolve(j, new Set([j.id]));
+          if (!t) continue;
+          const ti = ordered.indexOf(t);
+          if (ti < i) continue;                   // already behind it
+          ordered.splice(i, 1);
+          ordered.splice(ordered.indexOf(t) + 1, 0, j);
+          moved = true;
+          break;
+        }
+        if (!moved) break;
+      }
+    }
+    // When each job's last copy is expected to finish, filled in as we place.
+    // A pushed-back job cannot start before its target has finished.
+    const jobEnds = new Map();
     // Placement excludes machines in maintenance. Because plan() rebuilds from
     // scratch on every call, this is the whole of the redistribution: mark a
     // printer down and its share of the queue lands on the others on the very
@@ -577,7 +649,11 @@ function register(ctx) {
           // out), but overrunning should be a CONSEQUENCE of a job being longer
           // than any block, never a preference: don't start at 08:00 in a
           // one-hour window when a 62-minute job fits cleanly at 17:00.
-          let start = nextStart(Math.max(l.cursor, now));
+          // A pushed-back job waits for the job it was put behind to FINISH.
+          // Flooring at that job's start instead would let the two overlap on
+          // different machines, which is exactly the situation being escaped.
+          const floor = jobEnds.get(job.after) || 0;
+          let start = nextStart(Math.max(l.cursor, now, floor));
           let realEnd = null, firstStart = start, firstEnd = null;
           for (let hop = 0; hop < 30 && start !== null; hop++) {
             const fits = fitEnd(start, est, true);          // does it fit this block?
@@ -638,6 +714,9 @@ function register(ctx) {
         const wWindow = Math.max(0, best.start - Math.max(now, cur));
         const mins = ms => Math.round(ms / 60000);
         const held = colorsHeld(job);
+        // Latest end across this job's copies — what a job pushed behind it
+        // has to wait for.
+        jobEnds.set(job.id, Math.max(jobEnds.get(job.id) || 0, best.end));
         const clash = findContention(held, best.start, best.end, placed);
         placed.push({ start: best.start, end: best.end, colors: held,
                       printerName: best.lane.name, file: job.file });
@@ -648,6 +727,11 @@ function register(ctx) {
           est_assumed: !job.est_minutes || undefined,
           swaps: best.swaps, deadline: dl, deadline_source: dlInfo.src || undefined,
           pinned: pinned !== undefined || undefined,
+          // Pushed back behind another job, and behind which one — so the
+          // timeline can say "waiting on X" rather than leaving a gap the user
+          // has to explain to themselves.
+          after: job.after || undefined,
+          after_file: job.after ? ((D.jobs.find(x => x.id === job.after) || {}).file || undefined) : undefined,
           // minutes of each wait, plus what was ahead of it and until when
           delay: { inflight: mins(wFlight), queue: mins(wQueue), bed: mins(wBed), window: mins(wWindow) },
           queued_ahead: best.lane.queued || undefined,
@@ -861,6 +945,65 @@ function register(ctx) {
                awaiting: [...AWAITING], auto_start_available: false });
   });
 
+  // ---- push a job back one place (v2.20) -------------------------------------
+  // POST /api/dispatch/jobs/push-back { id }        move it behind the next job
+  // POST /api/dispatch/jobs/push-back { id, clear } put it back where it was
+  //
+  // The case this exists for: three jobs all needing the one green roll get
+  // planned to start together. The Hub already flags the contention; this is
+  // how you answer it without moving anything to another machine. Press it and
+  // this job goes behind the next one in the plan; press it again and it goes
+  // behind the one after that. More green may turn up before it matters, and if
+  // it does not, press it again.
+  //
+  // "Behind the next job" is resolved against the CURRENT plan, not a stored
+  // position, so it means what it looks like on screen at the moment you press
+  // it — and the relationship stored is "after job X", which stays true when
+  // everything upstream shifts. A timestamp would not.
+  app.post("/api/dispatch/jobs/push-back", async (req, res) => {
+    const b = req.body || {};
+    const id = String(b.id || "");
+    const job = D.jobs.find(j => j.id === id);
+    if (!job) return res.status(404).json({ error: "Unknown job" });
+
+    if (b.clear) {
+      delete job.after;
+      save();
+      let p = null; try { p = await plan(); } catch {}
+      return res.json({ ok: true, job, plan: p });
+    }
+
+    let p;
+    try { p = await plan(); }
+    catch (e) { return res.status(500).json({ error: "Could not read the plan: " + e.message }); }
+
+    // Job order as the plan actually plays out: first planned copy of each job,
+    // earliest first. That is the order a person is looking at when they decide
+    // something should go later.
+    const firstOf = new Map();
+    for (const s of (p.slots || [])) {
+      if (s.unplannable) continue;
+      if (!firstOf.has(s.job_id) || s.est_start < firstOf.get(s.job_id)) firstOf.set(s.job_id, s.est_start);
+    }
+    const seq = [...firstOf.entries()].sort((a, b2) => a[1] - b2[1]).map(([jid]) => jid);
+    const i = seq.indexOf(id);
+    if (i === -1) return res.status(409).json({
+      error: "That job has no place in the current plan, so there is nothing to push it behind"
+    });
+    const nextId = seq[i + 1];
+    if (!nextId) return res.status(409).json({
+      error: "That job is already last in the plan — there is nothing after it to go behind"
+    });
+
+    job.after = nextId;
+    save();
+    const target = D.jobs.find(j => j.id === nextId);
+    ctx.hublog("info", "dispatch: '" + job.file + "' pushed back behind '" + ((target && target.file) || nextId) + "'");
+    let after = null;
+    try { after = await plan(); } catch (e) { after = { error: "Pushed back, but replanning failed: " + e.message }; }
+    res.json({ ok: true, job, behind: { id: nextId, file: target && target.file }, plan: after });
+  });
+
   // ---- maintenance (v2.19) ---------------------------------------------------
   // "U5 is down while I rebuild the extruder." Until now the only way to say
   // that was to unplug the machine, which the Hub reads as `online: false` —
@@ -952,6 +1095,7 @@ function register(ctx) {
     const n = D.jobs.length;
     D.jobs = D.jobs.filter(x => x.id !== (req.body || {}).id);
     if (D.jobs.length === n) return res.status(404).json({ error: "Unknown job" });
+    releaseWaitersOf((req.body || {}).id);   // v2.20: nothing waits on a deleted job
     pruneBundles();               // deleting the last member empties the bundle too
     save(); res.json({ ok: true });
   });

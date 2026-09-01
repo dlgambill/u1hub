@@ -65,7 +65,7 @@ failure appears 4–5 times, promote it to a hard rule below.
 
 ## Harness
 
-`npm test` → **450 checks**, expect **450 passed, 0 failed**. A red harness
+`npm test` → **472 checks**, expect **472 passed, 0 failed**. A red harness
 blocks everything.
 
 Takes ~2.5 min over SMB. Run it with `scripts/run-harness.cmd` and poll

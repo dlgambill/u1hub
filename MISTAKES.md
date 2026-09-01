@@ -17,7 +17,7 @@ Running log of things that broke, why, and the rule that stops a repeat.
 |---|---|---|
 | Test depends on when it runs / what else runs | 4 incidents, 5 checks | rule 7 |
 | Asserted or acted without checking first | 6 incidents | rule 8 |
-| Harness green while the feature was broken | 1 incident | rule 2 — "green" is not "verified" |
+| Harness green while the feature was broken | 2 incidents | rule 2 — "green" is not "verified" |
 | Unverified shape trusted as complete | 2 incidents | rule 6 |
 | Version drift across the three files | 1 | rule 4 |
 | Staging vs git clone drift | 1 | rule 3 |
@@ -25,6 +25,40 @@ Running log of things that broke, why, and the rule that stops a repeat.
 
 Bridge quirks are operating facts, not judgment failures; a rule that says
 "remember these four things" is a lookup table wearing a rule's clothes.
+
+---
+
+## 2026-09-01 — Shipped a feature onto one of the two surfaces that needed it
+
+**What happened:** The Amazon affiliate search shipped in 2.19 on the Resources
+tab. Danny went to the **Spools** tab — where you actually manage rolls — and
+found "add buy link" and nothing else against all eight spools. "The buy links
+aren't live." He was right, on the tab he was looking at.
+
+**Root cause:** two things, and only the second was a coding error.
+
+The first: I built for the surface I had open. `/api/resources` grew a `buy`
+field; `/api/resources/spools`, which feeds the Spools tab, did not. The Spools
+markup in `index.html` still gated its link on `v.purchase_url` — and no real
+shelf has purchase URLs typed in, which is the exact reason the search fallback
+was built. So the feature was invisible precisely where it was most useful.
+
+The second: the Resources control opened via `window.open()`. A popup blocker
+eats that silently — no error, no tab, nothing to diagnose — which is
+indistinguishable from "the feature is broken". Now a real `<a target="_blank">`,
+which is never blocked, and is middle-clickable and copyable besides.
+
+**Why the harness missed it:** every check asked `/api/resources` whether rows
+carried a tagged link. None asked the *other* endpoint, and none asked whether
+the markup rendered what the API returned. An API contract test is not a test
+that the feature is reachable.
+
+**Rule:** when a feature adds a control, list every surface that shows that kind
+of thing and check each one — a grep for the neighbouring control (`invbuy` here)
+would have found the second surface in seconds. And for anything user-visible,
+one check must assert the MARKUP renders it, not merely that the API offers it.
+Related: prefer a real anchor to `window.open` for anything navigational; a
+silent failure mode is worse than an ugly one.
 
 ---
 

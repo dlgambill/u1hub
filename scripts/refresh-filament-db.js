@@ -75,9 +75,33 @@ if (require.main === module) {
   const out = process.argv[2] || path.join(__dirname, "..", "filament-swatches.json");
   pullAll(console.log)
     .then(snap => {
+      // v2.19: only write when the DATA changed.
+      //
+      // `fetchedAt` used to be stamped on every run, so a refresh that found
+      // upstream unchanged still rewrote a 900 KB single-line file and left a
+      // diff in the repo — one that looks enormous in `git diff` and contains
+      // nothing but a new timestamp. That is exactly how a meaningless change
+      // sits dirty in a working copy for three weeks with nobody able to say
+      // what it was (this happened; see MISTAKES.md).
+      //
+      // fetchedAt therefore means "when this data was last actually different",
+      // which is the useful reading of it. A run that changes nothing says so
+      // on stdout and leaves the file alone.
+      let prev = null;
+      try { prev = JSON.parse(fs.readFileSync(out, "utf8")); } catch {}
+      const same = prev
+        && prev.count === snap.count
+        && JSON.stringify(prev.swatches) === JSON.stringify(snap.swatches);
+      if (same) {
+        console.log(`\nUpstream is unchanged — ${snap.count} swatches, identical to what is on disk.`);
+        console.log(`Left ${out} untouched (still stamped ${prev.fetchedAt}).`);
+        console.log(`Checked at ${snap.fetchedAt}.`);
+        return;
+      }
       fs.writeFileSync(out, JSON.stringify(snap));
       const kb = (fs.statSync(out).size / 1024).toFixed(0);
-      console.log(`\nWrote ${snap.count} swatches → ${out} (${kb} KB)`);
+      const delta = prev ? ` (was ${prev.count})` : "";
+      console.log(`\nWrote ${snap.count} swatches${delta} → ${out} (${kb} KB)`);
     })
     .catch(e => { console.error("Refresh failed:", e.message); process.exit(1); });
 }

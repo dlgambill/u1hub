@@ -100,8 +100,16 @@
   #modview-resources .redit.editing{border-style:solid;cursor:text}
   #modview-resources .redit:hover{color:var(--ink);
     border-color:color-mix(in srgb,var(--signal) 45%,var(--line))}
-  #modview-resources .rbuy{padding:4px 10px;font-size:11.5px;border-radius:7px;border:1px solid var(--line);
+  /* v2.20: .rbuy is an <a> now (see the render comment). It has to keep looking
+     and sizing exactly like the button it replaced, so: inline-flex to centre
+     the label the way a button did, and text-decoration:none to lose the
+     underline an anchor brings with it. font:inherit matters — an anchor does
+     not inherit the button font stack for free. */
+  #modview-resources .rbuy{display:inline-flex;align-items:center;justify-content:center;
+    font:inherit;text-decoration:none;
+    padding:4px 10px;font-size:11.5px;border-radius:7px;border:1px solid var(--line);
     background:transparent;color:var(--ink);cursor:pointer;white-space:nowrap}
+  #modview-resources a.rbuy:hover{border-color:color-mix(in srgb,var(--signal) 45%,var(--line));color:var(--ink)}
   #modview-resources .rbuy.go{border-color:color-mix(in srgb,var(--signal) 50%,var(--line));color:var(--signal)}
   #modview-resources .rbuy:disabled{opacity:.35;cursor:default}
   #modview-resources select.rmap{background:var(--chassis);color:var(--ink);border:1px solid var(--line);
@@ -385,14 +393,20 @@
       // filament exists there — it cannot, without the Product Advertising API
       // — so a button that said "Buy" would be claiming something it does not
       // know. The title spells out where the click goes either way.
+      // v2.20: a real anchor, not a button driven by window.open(). A popup
+      // blocker eats window.open silently — no error, no tab, nothing to
+      // diagnose — and "the buy links aren't live" is exactly what that looks
+      // like from the outside. An <a target="_blank"> is a plain navigation and
+      // is never blocked. It is also middle-clickable and copyable, which a
+      // button never was.
       const b = r.buy;
       const buy = !b
         ? `<button class="rbuy" disabled title="No purchase link, and not enough detail on this spool to search for one">Buy</button>`
         : b.kind === "search"
-          ? `<button class="rbuy" data-buy="${esc(b.url)}"
-               title="No link saved on this spool — this searches Amazon for ${esc(r.material)} ${esc(r.spool_name || r.color_hex)}${b.tagged ? " (affiliate link)" : ""}">Search</button>`
-          : `<button class="rbuy go" data-buy="${esc(b.url)}"
-               title="${esc(b.url)}${b.tagged ? "\n(affiliate link)" : ""}">Buy</button>`;
+          ? `<a class="rbuy" href="${esc(b.url)}" target="_blank" rel="noopener"
+               title="No link saved on this spool — this searches Amazon for ${esc(r.material)} ${esc(r.spool_name || r.color_hex)}${b.tagged ? " (affiliate link)" : ""}">Search</a>`
+          : `<a class="rbuy go" href="${esc(b.url)}" target="_blank" rel="noopener"
+               title="${esc(b.url)}${b.tagged ? " (affiliate link)" : ""}">Buy</a>`;
       // On a phone the material cell is hidden and its value rides in the
       // colour cell instead — one line per row of chrome saved, and material
       // only ever matters next to the colour anyway.
@@ -424,8 +438,8 @@
   }
 
   function wire() {
-    EL.querySelectorAll("[data-buy]").forEach(b =>
-      b.addEventListener("click", () => window.open(b.dataset.buy, "_blank", "noopener")));
+    // (The Buy/Search control is a real <a target="_blank"> since v2.20 — no
+    //  handler needed, and no popup blocker to swallow it.)
 
     // Inline edit for both inventory fields. Swaps the button for a number
     // input in place; Enter or blur commits, Escape reverts. No modal — these

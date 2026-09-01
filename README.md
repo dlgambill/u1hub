@@ -74,7 +74,17 @@ printers, and nothing leaves your network unless you turn remote access on.
 
 ---
 
-## New in 2.19 — the maintenance release
+## New in 2.20 — the maintenance release
+
+- **Push a job back one place when two want the same spool.** Three jobs all
+  needing the one green roll get planned to start together — the Hub has always
+  spotted that and flagged it, but the only answer it offered was to move a job
+  to another machine. Now the job sheet has **push back one**: the job goes
+  behind the next one in the plan, that one runs instead, and the spool clash
+  resolves itself. Press it again to move back another place. It stores *which
+  job to wait for*, not a time, so it stays true when everything upstream
+  shifts — and if the job it was waiting on is finished or deleted, the wait is
+  released automatically.
 
 - **Take a printer out of service without unplugging it.** A machine you're
   rebuilding is not the same thing as a machine that stopped answering, and
@@ -106,9 +116,10 @@ printers, and nothing leaves your network unless you turn remote access on.
   two CSS variables that were never defined anywhere, so it stayed U1 amber
   while the rest of the UI re-accented around whichever fleet you'd switched to.
 
-- **Buy links, and an honest word about them.** Rows with a purchase URL get a
-  **Buy** button; rows without one get **Search**, which searches Amazon for
-  that spool's brand, material and colour. Links this project generates carry an
+- **Buy links, and an honest word about them.** On both the Resources tab and
+  the Spools tab, a roll with a purchase URL gets a **Buy** link and one without
+  gets **Search**, which searches Amazon for that spool's brand, material and
+  colour. Links this project generates carry an
   Amazon associate tag, disclosed in a line on the Resources tab with the off
   switch in the same sentence. It is never applied to a non-Amazon supplier link
   you typed in yourself. The button says *Search* and not *Buy* for a reason:
@@ -129,7 +140,7 @@ printers, and nothing leaves your network unless you turn remote access on.
   install read-only, and for running a second Hub against the same code without
   the two fighting over one `dispatch.json`.
 
-### 2.17 and 2.18, folded in
+### 2.17, 2.18 and 2.19, folded in
 
 2.17 was a design pass: a radius scale, tabular figures on the live readouts so
 temperatures stop nudging their rows sideways as they tick, and focus rings for

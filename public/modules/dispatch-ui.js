@@ -571,6 +571,7 @@
       s.contention ? ["\u26a0 Spool clash", s.contention.color + " is also needed by " + s.contention.file +
         " on " + s.contention.printer + " until " + fmtT(s.contention.until) + " \u2014 one roll can only be in one machine"] : null,
       s.pinned ? ["Assigned", "pinned to this printer"] : null,
+      s.after ? ["Pushed back", "waiting for " + (s.after_file || "another job") + " to finish"] : null,
       ["Colors", (job.colors || []).map(x => "#" + String(x).replace(/^#/, "")).join(" ") || "\u2014"]
     ].filter(Boolean);
     $$("#dsp-sheet").innerHTML = `
@@ -586,6 +587,13 @@
           </select>
           <button class="dsp-movego" data-job="${esc(s.job_id)}">Move</button>
         </div>
+        <div class="dsp-sheetsub">Run it later${s.contention ? ` <span class="dsp-anyslot">— the ${esc(s.contention.color)} it needs is busy</span>` : ""}</div>
+        <div class="dsp-moverow">
+          <button class="dsp-pushback" data-job="${esc(s.job_id)}">Push back one</button>
+          ${s.after ? `<button class="dsp-pushclear" data-job="${esc(s.job_id)}">Undo — run at its normal turn</button>` : ""}
+        </div>
+        <div class="dsp-hinttext" style="margin-top:4px">Sends it behind the next job in the plan, so the one after it
+          runs instead. Press again to move it back another place.</div>
         <button class="dsp-sheetclose">Close</button>
       </div>`;
     $$("#dsp-sheet").style.display = "flex";
@@ -596,6 +604,40 @@
       await jpost("/api/dispatch/jobs/assign", { id: go.dataset.job, printer: val === "auto" ? "auto" : +val });
       $$("#dsp-sheet").style.display = "none";
       load();
+    };
+    // v2.20 push back. The sheet stays open on success and re-renders against
+    // the new plan, so pressing it three times to clear a spool clash is three
+    // presses and not three round trips through the timeline. A refusal — the
+    // job is already last — is shown in place rather than silently doing
+    // nothing, because a button that sometimes does nothing is worse than one
+    // that says why.
+    const pb = $$(".dsp-pushback");
+    if (pb) pb.onclick = async () => {
+      pb.disabled = true; pb.textContent = "pushing…";
+      const r = await jpost("/api/dispatch/jobs/push-back", { id: pb.dataset.job });
+      if (!r.ok) {
+        pb.disabled = false; pb.textContent = "Push back one";
+        const msg = document.createElement("div");
+        msg.className = "dsp-hinttext";
+        msg.style.color = "var(--bad,#F26B5E)";
+        msg.textContent = (r.body && r.body.error) || "Could not push that back.";
+        pb.parentElement.after(msg);
+        return;
+      }
+      if (r.body.plan && !r.body.plan.error) PLAN = r.body.plan;
+      await load();
+      // Re-open on the same job so the next press is immediate.
+      const again = ((PLAN && PLAN.slots) || []).find(x => x.job_id === pb.dataset.job && !x.unplannable);
+      if (again) showSlot(again); else $$("#dsp-sheet").style.display = "none";
+    };
+    const pc = $$(".dsp-pushclear");
+    if (pc) pc.onclick = async () => {
+      pc.disabled = true;
+      const r = await jpost("/api/dispatch/jobs/push-back", { id: pc.dataset.job, clear: true });
+      if (r.ok && r.body.plan) PLAN = r.body.plan;
+      await load();
+      const again = ((PLAN && PLAN.slots) || []).find(x => x.job_id === pc.dataset.job && !x.unplannable);
+      if (again) showSlot(again); else $$("#dsp-sheet").style.display = "none";
     };
   }
 

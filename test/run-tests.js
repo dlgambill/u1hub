@@ -2044,6 +2044,46 @@ async function stopHub() {
     ok(r.body.affiliate.tagged_rows > 0,
       "…and the count that drives the disclosure line matches", r.body.affiliate);
 
+    // v2.20: the SPOOLS tab surface. 2.19 wired the affiliate search into the
+    // Resources tab only, so the tab where rolls are actually managed showed
+    // "add buy link" and nothing else for every spool without a URL — the
+    // feature existed and was invisible exactly where someone would look for
+    // it. Danny found it in about a minute.
+    let sp = await jget("/api/resources/spools");
+    ok(sp.status === 200 && (sp.body.spools || []).every(x => "buy" in x),
+      "/api/resources/spools carries a buy link for every spool",
+      (sp.body.spools || []).filter(x => !("buy" in x)).map(x => x.id));
+    ok(sp.body.affiliate && sp.body.affiliate.active === true,
+      "…and tells the client whether a tag is riding on them", sp.body.affiliate);
+    const noUrl = (sp.body.spools || []).find(x => !x.purchase_url && x.buy);
+    ok(noUrl && noUrl.buy.kind === "search" && noUrl.buy.tagged === true,
+      "a spool with no purchase URL still gets a tagged Amazon search",
+      noUrl && { kind: noUrl.buy.kind, tagged: noUrl.buy.tagged });
+    // And the page must actually render it. The old markup gated the link on
+    // purchase_url, which is why an entire shelf showed no links at all.
+    {
+      const idx = fs.readFileSync(path.join(REPO, "public", "index.html"), "utf8");
+      ok(/v\.buy\s*\?/.test(idx),
+        "index.html renders the spool buy link from v.buy, not from purchase_url alone");
+      ok(!/v\.purchase_url\s*\?\s*`<a class="invbuy"/.test(idx),
+        "…and the old purchase_url-only gate is gone");
+    }
+    // The Resources control is an anchor, not a window.open button: a popup
+    // blocker eats window.open silently, which is indistinguishable from the
+    // feature being broken.
+    {
+      const rui = fs.readFileSync(path.join(REPO, "public", "modules", "resources-ui.js"), "utf8");
+      // Strip line comments first. The comment explaining WHY window.open is
+      // gone naturally contains the words "window.open", and a check that a
+      // file does not mention a thing is not the same as a check that it does
+      // not DO it. (This check failed on its own documentation once.)
+      const code = rui.split(/\r?\n/).map(l => l.replace(/^\s*\/\/.*$/, "")).join("\n");
+      ok(!/window\.open\(/.test(code),
+        "the Buy/Search control does not rely on window.open",
+        (code.match(/.{0,50}window\.open\(.{0,30}/g) || []).slice(0, 2));
+      ok(/<a class="rbuy"/.test(rui), "…it is a real anchor");
+    }
+
     let af = await jpost("/api/resources/affiliate", { amazon: "not a tag!!" });
     ok(af.status === 400, "a malformed associate tag is refused", af.status);
 
@@ -2346,6 +2386,110 @@ async function stopHub() {
       ok(afterInstall === beforeInstall,
         "U1HUB_DIR: and the install dir's own state was not touched at all");
     }
+  }
+
+  console.log("\n== PUSH: push a job back one place (v2.20) ==");
+  {
+    await startHub(hubDir);
+    let r0 = await jget("/api/dispatch");
+    for (const j of (r0.body.jobs || [])) await jpost("/api/dispatch/jobs/remove", { id: j.id });
+    mockU1.state.printState = "standby"; mockU1.state.filename = "";
+    mockSv.state.printState = "standby"; mockSv.state.filename = "";
+
+    // One printer, so the plan is a straight line and "which runs first" is
+    // unambiguous. With two machines the jobs would simply run in parallel and
+    // there would be nothing to push back.
+    await jpost("/api/dispatch/maintenance", { printer: 1 });
+
+    let r = await jpost("/api/dispatch/jobs", { file: "single.gcode", type: "u1", qty: 1 });
+    const A = r.body.job.id;
+    r = await jpost("/api/dispatch/jobs", { file: "multi.gcode", type: "u1", qty: 1 });
+    const B = r.body.job.id;
+
+    const order = async () => {
+      const p = (await jget("/api/dispatch/plan")).body;
+      const first = new Map();
+      for (const s of (p.slots || [])) {
+        if (s.unplannable) continue;
+        if (!first.has(s.job_id) || s.est_start < first.get(s.job_id)) first.set(s.job_id, s.est_start);
+      }
+      return { seq: [...first.entries()].sort((x, y) => x[1] - y[1]).map(([id]) => id), plan: p, first };
+    };
+
+    let o = await order();
+    ok(o.seq.length === 2 && o.seq[0] === A,
+      "with one machine the two jobs are planned in order, A first", o.seq.map(x => x === A ? "A" : x === B ? "B" : x));
+    const aStartBefore = o.first.get(A);
+
+    // --- the press ------------------------------------------------------------
+    r = await jpost("/api/dispatch/jobs/push-back", { id: A });
+    ok(r.status === 200 && r.body.behind && r.body.behind.id === B,
+      "pushing A back reports exactly which job it went behind", r.body.behind);
+    o = await order();
+    ok(o.seq[0] === B && o.seq[1] === A,
+      "…and B now runs first, which is the whole point", o.seq.map(x => x === A ? "A" : "B"));
+    ok(o.first.get(A) >= o.first.get(B),
+      "…A starts no earlier than B", { A: o.first.get(A), B: o.first.get(B) });
+    ok(o.first.get(A) > aStartBefore,
+      "…and A genuinely moved later rather than merely being re-sorted",
+      { was: aStartBefore, now: o.first.get(A) });
+    // It waits for B to FINISH, not merely to start — otherwise on two machines
+    // they would overlap again and the spool clash this exists for would remain.
+    const bEnd = Math.max(...(o.plan.slots || []).filter(s => s.job_id === B && !s.unplannable).map(s => s.est_end));
+    ok(o.first.get(A) >= bEnd, "…it waits for B to finish, not just to start", { aStart: o.first.get(A), bEnd });
+    const slotA = (o.plan.slots || []).find(s => s.job_id === A && !s.unplannable);
+    ok(slotA && slotA.after === B && slotA.after_file === "multi.gcode",
+      "the slot says what it is waiting for, so the gap explains itself", slotA && { after: slotA.after, f: slotA.after_file });
+
+    // --- it survives a restart -------------------------------------------------
+    await stopHub(); await startHub(hubDir);
+    o = await order();
+    ok(o.seq[0] === B && o.seq[1] === A, "the push survives a restart", o.seq.map(x => x === A ? "A" : "B"));
+
+    // --- already last ----------------------------------------------------------
+    r = await jpost("/api/dispatch/jobs/push-back", { id: A });
+    ok(r.status === 409 && /already last/.test(r.body.error || ""),
+      "pushing the last job back is refused, with a reason, rather than doing nothing", r.body);
+
+    // --- undo -------------------------------------------------------------------
+    r = await jpost("/api/dispatch/jobs/push-back", { id: A, clear: true });
+    ok(r.status === 200, "the push can be undone", r.status);
+    o = await order();
+    ok(o.seq[0] === A, "…and A goes back to its normal turn", o.seq.map(x => x === A ? "A" : "B"));
+
+    // --- a target that leaves the queue ------------------------------------------
+    await jpost("/api/dispatch/jobs/push-back", { id: A });
+    await jpost("/api/dispatch/jobs/remove", { id: B });
+    r = await jget("/api/dispatch");
+    const ja = (r.body.jobs || []).find(j => j.id === A);
+    ok(ja && !ja.after,
+      "deleting the job something was pushed behind releases it, rather than leaving it waiting on a ghost", ja);
+
+    // --- a cycle must not hang the planner ---------------------------------------
+    // `after` is stored in dispatch.json, which a human can edit. Two jobs
+    // pointing at each other must degrade to "no reorder", never to a hang.
+    r = await jpost("/api/dispatch/jobs", { file: "multi.gcode", type: "u1", qty: 1 });
+    const C = r.body.job.id;
+    await stopHub();
+    const dpath = path.join(hubDir, "dispatch.json");
+    const dj = JSON.parse(fs.readFileSync(dpath, "utf8"));
+    for (const j of dj.jobs) { if (j.id === A) j.after = C; if (j.id === C) j.after = A; }
+    fs.writeFileSync(dpath, JSON.stringify(dj, null, 2));
+    await startHub(hubDir);
+    const t0 = Date.now();
+    const cyc = await jget("/api/dispatch/plan");
+    ok(cyc.status === 200 && Date.now() - t0 < 5000,
+      "a hand-edited cycle in dispatch.json plans anyway instead of hanging (" + (Date.now() - t0) + " ms)",
+      Date.now() - t0);
+    ok((cyc.body.slots || []).filter(s => !s.unplannable).length > 0,
+      "…and still produces a usable plan", (cyc.body.slots || []).length);
+
+    r = await jpost("/api/dispatch/jobs/push-back", { id: "nope" });
+    ok(r.status === 404, "pushing an unknown job back is refused");
+
+    for (const id of [A, C]) await jpost("/api/dispatch/jobs/remove", { id });
+    await jpost("/api/dispatch/maintenance", { printer: 1, down: false });
+    await stopHub();
   }
 
   console.log("\n== UPD: update notifier (v2.18) ==");

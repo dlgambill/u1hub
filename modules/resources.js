@@ -607,8 +607,29 @@ function register(ctx) {
 
   // GET /api/resources/spools — shelf + inventory, for the Spools tab columns.
   app.get("/api/resources/spools", (req, res) => {
-    try { res.json({ spools: readShelf(ctx.baseDir, store) }); }
-    catch (e) { res.status(500).json({ error: e.message }); }
+    try {
+      // v2.20: the Spools tab gets the same Buy control the Resources tab has.
+      // It shipped in 2.19 on Resources only, which meant the tab where you
+      // actually manage rolls showed "add buy link" and nothing else for every
+      // spool without a URL — the affiliate search existed but was invisible
+      // exactly where someone would look for it.
+      const aff = affiliateConf(ctx.cfg);
+      const spools = readShelf(ctx.baseDir, store).map(s => ({
+        ...s,
+        buy: buyLink({
+          purchase_url: s.purchase_url,
+          brand: s.brand,
+          material: s.material_variant || s.material,
+          color_name: s.color_name
+        }, aff)
+      }));
+      res.json({
+        spools,
+        affiliate: { enabled: aff.enabled, tag_set: !!aff.amazon,
+                     active: !!(aff.enabled && aff.amazon),
+                     tagged_rows: spools.filter(s => s.buy && s.buy.tagged).length }
+      });
+    } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
   // POST /api/resources/inventory { spool_id, ...fields } — inline edits from
