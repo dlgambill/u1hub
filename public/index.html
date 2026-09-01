@@ -795,6 +795,19 @@ function setActiveType(slug){
 }
 
 init();
+// v2.21: hash deep links — #dispatch, #resources, #match, #spools, #settings.
+// A tab you can link to is a tab you can bookmark, send to someone, or (the
+// reason this exists) screenshot repeatably with headless Chrome for the
+// README (scripts/shoot-docs.cmd). Applied on window load, AFTER the injected
+// client modules have registered their views and init() has restored the
+// remembered tab — a link someone followed should beat a remembered default.
+// setView() already falls back to the dashboard for names that don't exist.
+window.addEventListener("load", () => {
+  const h = decodeURIComponent(location.hash.replace(/^#/, "")).toLowerCase();
+  if (!h) return;
+  if (h === "settings") { setView("dash"); $("setup").classList.add("show"); return; }
+  setView(h);
+});
 // PWA: register the (deliberately cache-free) service worker so the Hub can
 // be installed to the phone home screen. No fetch handler = no stale-version
 // risk; the version banner stays the source of truth.

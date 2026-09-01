@@ -31,7 +31,13 @@ const FILES = [
   "scripts/falsify-reconcile.js", "scripts/falsify-matchmaint.js",
   "scripts/falsify-replenish.js", "scripts/gate-klipper.js",
   "scripts/boot-4546.cmd", "scripts/stop-4546.cmd",
-  "scripts/restart-4545.cmd", "scripts/seed-4546.js", "scripts/sync-to-clone.js"
+  "scripts/restart-4545.cmd", "scripts/seed-4546.js", "scripts/sync-to-clone.js",
+  "scripts/shoot-docs.js",
+  // v2.21 README refresh: the reshot screenshots and the long-form archive.
+  "docs/CHANGELOG.md",
+  "docs/dashboard.png", "docs/dispatch.png", "docs/resources.png",
+  "docs/spools-inventory.png", "docs/spool-match.png", "docs/features-panel.png",
+  "docs/klipper-proxy.png", "docs/remote-phone.png"
 ];
 
 // Anything matching these must never be copied, whatever the list above says.
