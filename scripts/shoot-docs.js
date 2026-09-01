@@ -35,7 +35,10 @@ const OUT = "X:\\u1-print-hub\\docs";
 // page, never a lucky timer. Text conditions are checked against innerText.
 const SHOTS = [
   { name: "dash",      file: "dashboard.png",        w: 1440, h: 1000, url: "/#dash",      ready: ".pcard .pill" },
-  { name: "dispatch",  file: "dispatch.png",         w: 1440, h: 1300, url: "/#dispatch",  ready: "#modview-dispatch canvas, #modview-dispatch .dsp-lane, #modview-dispatch [class*=dsp]" },
+  // Dispatch needs the fleet AND a rendered plan; land on the dashboard so the
+  // fleet is up, switch, then wait for actual plan rows (.dsp-grow), not just
+  // the empty form.
+  { name: "dispatch",  file: "dispatch.png",         w: 1440, h: 1300, url: "/#dash", ready: ".pcard .pill", thenView: "dispatch", thenReady: ".dsp-grow", extraMs: 2500 },
   { name: "resources", file: "resources.png",        w: 1440, h: 1300, url: "/#resources", ready: "#modview-resources .rtab td" },
   { name: "spools",    file: "spools-inventory.png", w: 1440, h: 1300, url: "/#spools",    ready: ".spoolrow" },
   // Match renders from the fleet snapshot, and the deep link lands before the
