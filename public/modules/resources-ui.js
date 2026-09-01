@@ -68,6 +68,10 @@
     padding:10px 13px;margin-bottom:12px;font-size:13px}
   #modview-resources .rwarn b{color:var(--bad)}
   #modview-resources .rnote{font-size:12px;color:var(--ink-faint);margin:10px 2px 0}
+  /* v2.21: the affiliate disclosure lives at the bottom and dresses like the
+     footnote it is, not like a warning. */
+  #modview-resources .rdisc{margin-top:14px}
+  #modview-resources .rdisc .rdisctxt{font-size:11.5px;color:var(--ink-faint);line-height:1.5}
 `;
 
   const CSS2 = `
@@ -190,7 +194,8 @@
       </div>
       <div id="res-warn"></div>
       <div id="res-body"><p class="subnote">Loading…</p></div>
-      <p class="rnote" id="res-foot"></p>`;
+      <p class="rnote" id="res-foot"></p>
+      <div id="res-disc"></div>`;
 
     $$("#res-range").addEventListener("click", e => {
       const b = e.target.closest("button[data-r]"); if (!b) return;
@@ -302,30 +307,33 @@
         ${DATA.settings.assume_empty_when_unset ? "Stop assuming empty" : "Assume empty (worst case)"}</button>
       </div>`);
     }
-    // v2.19 affiliate disclosure. Shown only when a tag is actually riding on
-    // links that are actually on screen — a disclosure that appears when
-    // nothing is being earned teaches people to skip past it, and then it is
-    // not there when it matters. One line, plain words, and the off switch is
-    // in the same sentence rather than buried in Settings.
+    // v2.19 affiliate disclosure, v2.21 at the BOTTOM of the page (#res-disc,
+    // after the table and the footnote). Danny's call: at the top it was the
+    // first thing on every visit — a warning-shaped box for something that is
+    // not a warning — and the switch now lives in Settings besides. It stays on
+    // the page (the honest place for a disclosure is near the links it covers,
+    // and removing it entirely was the other option offered) but it reads as a
+    // footnote now, which is what it is. Still shown only when a tag is
+    // actually riding on rendered links; the off-notice still appears whenever
+    // the switch is off, so the way back on is visible where the way off was.
     const A = DATA.affiliate || {};
+    const disc = [];
     if (A.active && A.tagged_rows > 0) {
-      w.push(`<div class="rwarn rdisc" style="border-color:var(--line);background:transparent">
+      disc.push(`<div class="rwarn rdisc" style="border-color:var(--line);background:transparent">
         <span class="rdisctxt">The "Replenish on Amazon" links on this page are Amazon affiliate links —
         if you buy through one, this project earns a small commission at no extra cost to you.
         Prices and availability are Amazon's; the Hub does not check them.</span>
         <button class="btn" id="res-aff" style="margin-left:10px;padding:3px 9px;font-size:11.5px">Turn off</button>
       </div>`);
     } else if (A.enabled === false) {
-      // Shown whenever the switch is off, not only when a tag happens to be
-      // stored: the way back on must always be visible from the same place the
-      // way off was, or turning it off is a one-way door.
-      w.push(`<div class="rwarn rdisc" style="border-color:var(--line);background:transparent">
+      disc.push(`<div class="rwarn rdisc" style="border-color:var(--line);background:transparent">
         <span class="rdisctxt">Affiliate links are off — the "Replenish on Amazon" links go out untagged.${
           A.tag_set ? "" : " No associate tag is stored, so turning this on will do nothing until one is set."}</span>
         <button class="btn" id="res-aff" style="margin-left:10px;padding:3px 9px;font-size:11.5px">Turn on</button>
       </div>`);
     }
     $$("#res-warn").innerHTML = w.join("");
+    $$("#res-disc").innerHTML = disc.join("");
     const affb = $$("#res-aff");
     if (affb) affb.addEventListener("click", async () => {
       affb.disabled = true;

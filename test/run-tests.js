@@ -2140,6 +2140,15 @@ async function stopHub() {
       ok(/<a class="rbuy"/.test(rui), "…it is a real anchor");
       ok(/>Replenish on Amazon<\/a>/.test(code) && /Replenish on Amazon<\/button>/.test(code),
         "the Resources control reads 'Replenish on Amazon' in every state, disabled included");
+      // v2.21: the disclosure is a footnote, not a headline. Danny: "either
+      // move this to the bottom of the page, or remove it, since it is already
+      // on the settings." Moved, not removed — a disclosure belongs on the page
+      // that carries the links — but it renders into #res-disc, which the
+      // layout places after the table and the footnote.
+      ok(rui.indexOf('id="res-disc"') > rui.indexOf('id="res-foot"') && rui.indexOf('id="res-foot"') > -1,
+        "the affiliate disclosure container sits at the bottom of the Resources page");
+      ok(/disc\.push\(`<div class="rwarn rdisc"/.test(rui) && !/w\.push\(`<div class="rwarn rdisc"/.test(rui),
+        "…and the disclosure renders there, not into the warning stack at the top");
       ok(!/>\s*(Buy|Search)\s*<\/(a|button)>/.test(code),
         "…and the old Buy/Search labels are gone from the rendered markup",
         (code.match(/>\s*(Buy|Search)\s*<\/(a|button)>/g) || []).slice(0, 3));
