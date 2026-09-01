@@ -558,3 +558,93 @@ nothing new still rewrote a 900 KB single-line file. The script now writes only
 when the DATA differs and reports the check date on stdout instead; `fetchedAt`
 therefore means "when this data last actually changed". The working copy was
 reverted, since it carried no information the repo did not already have.
+
+---
+
+## 11. Addendum — v2.20.0 (2026-09-01, later): every surface, and a notice that outlived its subject
+
+**Harness: 481 passed, 0 failed.** Standalone suites: 8, now runnable in one go
+with `npm run test:standalone`. Committed locally as `868bab9`. **Three commits
+are unpushed** — `update.json` stays inert until Danny pushes.
+
+### Maintenance was only ever visible on one tab
+
+Found while answering "what's left?", by checking the *surface* rather than the
+API — the lesson from the buy-links failure, applied an hour later to the very
+next feature, and it caught the same class of bug again. U3 was genuinely parked
+(`/api/dispatch` carried `maintenance: {"2": {…}}`, the scheduler was routing
+around it) and the **Dash card said IDLE**, Upload and Print right beside it.
+The Match tab likewise offered it as an ordinary target.
+
+`dispatch.js` now does `ctx.provide("dispatch.maintenance", …)`; `fleetSnapshot()`
+in `server.js` resolves that capability *at call time* and merges
+`maintenance: { since, note } | null` onto every printer. Dash gets a
+`Maintenance` pill, a `.pcard.maint` border and a `.maintline` that says it in
+words; Match gets a `⚒ maintenance` tag and a `.matchcard.maint` border.
+
+Deliberate: a down machine is **not** removed from Match and manual printing to
+it is **still allowed** — you want to test-print after a repair. It simply
+cannot happen any more without reading the word "maintenance". Also deliberate:
+the accent colour, never `--bad`. Nothing is broken; it is parked on purpose.
+
+Live-gated on the throwaway 4546 Hub seeded from production: U3's Dash card
+reads `pill: "Maintenance"`, `class: "pcard offline maint"`; parking an *online*
+machine (U1) put `⚒ maintenance` on its Match card while the other seven stayed
+plain.
+
+### Deleting a roll left a permanent notice behind
+
+Danny, with a screenshot: *"this needs to go away. I should be able to delete
+filament from my library without having a perpetual message about it."* The
+Resources tab had been reporting `1 inventory entry belongs to a spool that no
+longer exists (600 g @ $25)` on every render since he deleted the roll, with the
+2.19 `forget` button as the only exit.
+
+He is right, and the root cause is a design question I never asked: deleting
+filament from the library **is** the instruction to forget its numbers. The
+banner was the software re-litigating a decision he had already made.
+
+`reconcileInventory()` (modules/resources.js) drops the row automatically,
+guarded twice:
+
+1. **Authoritative shelf only.** `readShelf()` now reports whether an empty or
+   short shelf is a *fact* (a parsed `spools.json`, or no file at all) or a
+   *failed read*. `spools.json` lives on an SMB share; one EIO would otherwise
+   look exactly like "he threw away every roll he owns".
+2. **Nothing may still reference it.** If a colour in `color_map` still names
+   that spool, the numbers stay and are reported — with new wording saying they
+   are being *held for the replacement*, which is true and actionable. Re-adding
+   the spool restores everything intact, which the harness has asserted since
+   2.19 and still does.
+
+Dropped grams and price go to the hub log, so the number is recoverable.
+
+Verified on the real install: `resources.json` went from four inventory keys to
+three the first time the restarted Hub served `/api/resources`;
+`sp_msmng7iw71fzez` is gone and the banner with it.
+
+### Testing
+
+- `test/inventory-reconcile-standalone.js` — 17 cases, including the share-
+  failure guard and a numeric-vs-string spool id.
+- `scripts/falsify-reconcile.js` — five mutations of `resources.js`
+  (drop each guard, don't delete, treat a parse error as authoritative, compare
+  ids without `String()`), **all five caught**.
+- `scripts/falsify-matchmaint.js` — proves the two Match-tab markup checks fail
+  when the class expression, the tag, or the card style is removed.
+- Five new checks in `test/run-tests.js` (472 → 481): `/api/fleet` reporting
+  maintenance and `null`, the Dash markup, the Match markup, and the live
+  auto-prune asserted **on disk**, not just in the API response.
+- `npm run test:standalone` runs all eight standalone suites. They had drifted
+  into "run directly" meaning "never run".
+
+### Still open (unchanged, and all Danny's call)
+
+- **Three commits unpushed.** `update.json` cannot notify anyone until then.
+- **Affiliate tag is live on his own install** (46 rows). Amazon does not pay on
+  the account holder's own purchases — worth turning off locally, one click.
+- **The spool shelf is only partly entered.** White and pink still match no
+  spool at all, and the black contention warnings are expected fallout: he buys
+  black eight rolls at a time but has entered one. He has looked at this and
+  said the warnings are fine — do not "fix" it with inventory-derived
+  contention. That was proposed and declined on 2026-09-01.
