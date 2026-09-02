@@ -22,12 +22,12 @@ status, progress, loaded colors, camera, and bed temperature. A printer that is
 down for maintenance says so right on the card, and the scheduler routes work
 around it until you bring it back.
 
-**Open any printer's own control page, from anywhere.** Click a printer's name
-and its full Klipper interface (Fluidd) opens through the Hub. Because it goes
-through the Hub, it works from outside your house too, protected by the same
-password as everything else.
+**Open any printer's own control page in one click.** Click a printer's name
+and its full Klipper interface (Fluidd) opens, no typing IP addresses. On your
+network it opens the printer directly, so its live data and controls work
+exactly as they do when you visit the printer on its own.
 
-![A printer's own Fluidd page, served through the Hub](docs/klipper-proxy.png)
+![A printer's own Fluidd page, one click from the dashboard](docs/klipper-proxy.png)
 
 **Send prints without walking over.** Pick a file, see the colors it needs,
 choose which head prints which color, and push it to any idle machine. Files
@@ -118,8 +118,10 @@ Two switches in the Hub, no router changes:
 2. Turn on the tunnel (Settings). The Hub sets up a free Cloudflare tunnel
    and gives you an HTTPS address that works from anywhere.
 
-Your printers' own Klipper pages ride along through the same address and the
-same password.
+Everything the Hub itself shows works remotely this way: the fleet, sending
+prints, cameras, spools, and scheduling. The printers' own Klipper pages are
+best used on your own network; opening them from outside can depend on your
+network setup.
 
 ---
 
