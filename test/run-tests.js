@@ -2986,7 +2986,14 @@ async function stopHub() {
         "core skips the JSON body parser for the proxy prefix");
       const idx = fs.readFileSync(path.join(REPO, "public", "index.html"), "utf8");
       ok(/function klipperHref/.test(idx) && /"\/p\/"\s*\+\s*p\.id/.test(idx),
-        "the Dash card link goes through the Hub, not to the printer's LAN IP");
+        "the Dash card link can go through the Hub proxy (the remote path)");
+      // v2.21.1: on the LAN the link goes STRAIGHT to the printer IP; the proxy
+      // is the fallback for when the page came in over the tunnel. Danny's call
+      // after the tunnel WebSocket turned out to die at Cloudflare's edge.
+      ok(/function onLan\(/.test(idx) && /onLan\(\)\s*\?\s*p\.url\s*:\s*"\/p\/"/.test(idx),
+        "…but on the LAN it links direct to the printer, bypassing the proxy entirely");
+      ok(/192\\.168\\./.test(idx) && /10\\./.test(idx),
+        "…and onLan recognises private address ranges");
     }
   }
 

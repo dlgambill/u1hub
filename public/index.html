@@ -2450,14 +2450,31 @@ $("diagDl").addEventListener("click",async ()=>{
 // the Hub costs a few milliseconds on a machine that is already talking to all
 // nine printers twice a minute. The direct address is still in the tooltip for
 // when the Hub itself is the thing that is down.
+// v2.21.1: auto-switch by how THIS page was loaded, which is the one signal
+// that reliably tells "I'm on the LAN" from "I'm coming in over the tunnel".
+// On the LAN the link goes STRAIGHT to the printer's own IP — no Hub proxy in
+// the path, so the printer's own page and its live WebSocket just work, with
+// nothing of ours that can break. Only when the Hub page itself arrived over a
+// public hostname (the tunnel) do we route the link through /p/<id>/, so a
+// phone away from home still reaches the pages. Danny's call, 2026-09-01, after
+// the tunnel's WebSocket turned out to die at Cloudflare's edge (an Access /
+// zone toggle we couldn't chase down): the LAN case is the one that has to be
+// bulletproof, and it now is.
+function onLan(){
+  const h = location.hostname;
+  return h === "localhost" || /^127\./.test(h)
+    || /^10\./.test(h) || /^192\.168\./.test(h)
+    || /^172\.(1[6-9]|2\d|3[01])\./.test(h)          // 172.16–172.31
+    || /\.local$/i.test(h) || h.indexOf(".") === -1;  // bare hostname = LAN box
+}
 function klipperHref(p){
   if(!p.url) return "#";
   if(window.HUB_FEATURES && window.HUB_FEATURES.klipper === false) return p.url;
-  return "/p/" + p.id + "/";
+  return onLan() ? p.url : "/p/" + p.id + "/";
 }
 function klipperTitle(p){
-  if(window.HUB_FEATURES && window.HUB_FEATURES.klipper === false)
-    return "Open " + p.url + " — the printer's own Klipper UI (same network only)";
+  if((window.HUB_FEATURES && window.HUB_FEATURES.klipper === false) || onLan())
+    return "Open " + p.name + "'s Klipper UI directly (" + p.url + ")";
   return "Open " + p.name + "'s Klipper UI through the Hub — works from anywhere the Hub does. Direct: " + p.url;
 }
 
