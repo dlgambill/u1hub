@@ -102,13 +102,19 @@ function createMock(profile) {
         // v2.22.1: the material write, same rules. dropTypeWrites models a
         // firmware that silently ignores FILAMENT_TYPE — the Hub must report
         // that honestly from the read-back, never from the 200 on the write.
-        const tm = /FILAMENT_TYPE='?([A-Za-z+]+)'?/.exec(script);
-        const sm = /FILAMENT_SUB_TYPE='?([^']*)'?/.exec(script);
+        const tm = /FILAMENT_TYPE=('?)([A-Za-z+]+)\1/.exec(script);
+        const sm = /FILAMENT_SUBTYPE=('?)([^' ]*)\1/.exec(script);
+        // Hardware truth (U6, 2026-09-02): a type write WITHOUT VENDOR= is
+        // refused — "[print_task_config] filament_config, incomplete
+        // parameters" — and it raises a System Anomaly on the touchscreen.
+        // Model the refusal so the harness catches any drift back to it.
+        if (im && tm && !/(^|\s)VENDOR=/.test(script))
+          return send(400, { error: { code: 400, message: "!! [print_task_config] filament_config, incomplete parameters" } });
         if (im && tm && !state.dropTypeWrites) {
           const i = Number(im[1]);
           if (ptc.filament_exist[i] && ptc.filament_edit[i] !== false) {
-            ptc.filament_type[i] = tm[1].toUpperCase();
-            if (sm) ptc.filament_sub_type[i] = sm[1] || "NONE";
+            ptc.filament_type[i] = tm[2].toUpperCase();
+            if (sm) ptc.filament_sub_type[i] = sm[2] || "NONE";
           }
         }
       }

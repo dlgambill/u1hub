@@ -689,14 +689,21 @@ async function stopHub() {
          && mockU1.state.ptc.filament_type[0] === "PETG",
         "material written AND the printer itself reports it (PETG, not mistaken for PET)", r.body.material);
       const sent = mockU1.state.gcodeScripts.slice(before);
-      ok(sent.length === 2 && /FILAMENT_COLOR_RGBA/.test(sent[0]) && !/FILAMENT_TYPE/.test(sent[0])
-         && /FILAMENT_TYPE='PETG'/.test(sent[1]) && !/FILAMENT_COLOR_RGBA/.test(sent[1]),
-        "…as its OWN command after the color — the verified color gcode is untouched byte-for-byte", sent);
+      // v2.22.2: the material command is the touchscreen's own, captured from
+      // U6's gcode store, verbatim in shape — VENDOR= is required, the
+      // parameter is FILAMENT_SUBTYPE, no SAVE. It goes FIRST so the verified
+      // color command (untouched byte-for-byte) is always the last word.
+      ok(sent.length === 2
+         && sent[0] === "SET_PRINT_FILAMENT_CONFIG CONFIG_EXTRUDER=0 VENDOR=Snapmaker FILAMENT_TYPE=PETG FILAMENT_SUBTYPE='Basic'"
+         && sent[1] === "SET_PRINT_FILAMENT_CONFIG CONFIG_EXTRUDER='0' FILAMENT_COLOR_RGBA='A1B2C3FF' SAVE='1'",
+        "…sent as the touchscreen's exact material command, then the untouched verified color command", sent);
+      ok(!sent.some(s => /FILAMENT_SUB_TYPE|FILAMENT_TYPE='/.test(s)),
+        "…and never the 2.22.1 shape the firmware refused as 'incomplete parameters'", sent);
       // Danny's exact case: a roll recorded as "PLA+" with no separate variant.
       r = await jpost("/api/setcolor", { printer: 0, slot: 0, hex: "#A1B2C3", material: "PLA+" });
       ok(r.body.material && r.body.material.sent === "PLA" && r.body.material.sub === "PLA+" && r.body.material.confirmed === true
-         && mockU1.state.ptc.filament_type[0] === "PLA" && mockU1.state.ptc.filament_sub_type[0] === "PLA+",
-        "'PLA+' splits into base PLA + sub-type PLA+, the way the touchscreen stores it", r.body.material);
+         && mockU1.state.ptc.filament_type[0] === "PLA",
+        "'PLA+' resolves to base type PLA (the spool's own variant stays in the Hub's record)", r.body.material);
       r = await jpost("/api/setcolor", { printer: 0, slot: 0, hex: "#A1B2C3", material: "PLA", material_variant: "Silk" });
       ok(r.body.material && r.body.material.sent === "PLA" && r.body.material.sub === "Silk" && r.body.material.confirmed === true,
         "a base + variant pair is passed through as-is", r.body.material);

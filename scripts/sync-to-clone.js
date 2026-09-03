@@ -30,6 +30,7 @@ const FILES = [
   "scripts/run-harness.cmd", "scripts/refresh-filament-db.js",
   "scripts/falsify-reconcile.js", "scripts/falsify-matchmaint.js",
   "scripts/falsify-replenish.js", "scripts/gate-klipper.js", "scripts/gate-dispatch.js",
+  "scripts/peek-gcode-store.js",
   "scripts/boot-4546.cmd", "scripts/stop-4546.cmd",
   "scripts/restart-4545.cmd", "scripts/seed-4546.js", "scripts/sync-to-clone.js",
   "scripts/shoot-docs.js",

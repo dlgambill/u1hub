@@ -1,6 +1,6 @@
 {
   "_comment": "Release manifest. Every Hub with update checks on fetches this file and compares its own version against `version`. Bump it as part of cutting a release, not before — the harness pins it equal to package.json so a manifest that lies about the current release cannot ship.",
-  "version": "2.22.1",
+  "version": "2.22.2",
   "url": "https://github.com/dlgambill/u1hub/releases",
   "notes": "Loading a spool now tells the printer the material as well as the color, so the head shows up as loaded on the touchscreen instead of reading NONE. Plus the Dispatch changes from 2.22: the schedule slides the next job forward instead of leaving dead space at the front, you can lock the plan so the times stop shifting or leave it fluid, jobs take a 1 to 5 priority that breaks ties between things due at the same time, and the printer that's running right now is highlighted.",
   "published": "2026-09-03"

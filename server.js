@@ -3,7 +3,7 @@
 // and pushes the chosen file to the chosen printer via Moonraker (server-side,
 // so no browser CORS headaches).
 
-const VERSION = "2.22.1";
+const VERSION = "2.22.2";
 
 const crypto = require("crypto");
 const express = require("express");
@@ -1862,7 +1862,20 @@ app.get("/api/pthumb", async (req, res) => {
 // command after the color so the color path stays byte-for-byte what was
 // verified, and confirmed by the same read-back: if the firmware ignores the
 // parameter, the Hub says the material did not take rather than pretending.
-const BASE_TYPES = ["PETG", "HIPS", "PLA", "PET", "ABS", "ASA", "TPU", "PVA", "PA", "PC", "PP"]; // longest first: PETG before PET
+//
+// v2.22.2 — HARDWARE-VERIFIED on U6, 2026-09-02 23:26, read from the printer's
+// own /server/gcode_store after Danny picked PLA on the touchscreen:
+//   SET_PRINT_FILAMENT_CONFIG CONFIG_EXTRUDER=1 VENDOR=Snapmaker FILAMENT_TYPE=PLA FILAMENT_SUBTYPE='Basic'
+// The first cut (2.22.1) sent FILAMENT_TYPE + FILAMENT_SUB_TYPE + SAVE and the
+// firmware raised "[print_task_config] filament_config, incomplete parameters"
+// as a System Anomaly on the touchscreen: VENDOR is REQUIRED, the sub-type
+// parameter is FILAMENT_SUBTYPE (no underscore), and there is no SAVE. The
+// command below is that capture, verbatim in shape. VENDOR=Snapmaker and
+// FILAMENT_SUBTYPE='Basic' are the values the firmware is proven to accept;
+// the spool's real brand/variant stay the truth in the Hub's own records.
+// Only base types Snapmaker's firmware is known to list are ever sent —
+// anything else is left for the touchscreen rather than risk another anomaly.
+const BASE_TYPES = ["PETG", "PLA", "ABS", "ASA", "TPU", "PVA", "PA", "PC"]; // longest first: PETG before PLA/PA
 function splitMaterial(material, variant) {
   const m = String(material || "").trim(), v = String(variant || "").trim();
   const hay = (m + " " + v).toUpperCase();
@@ -1900,13 +1913,11 @@ app.post("/api/setcolor", async (req, res) => {
     if (editArr[s] === false)
       return res.status(409).json({ error: "T" + (s + 1) + " is an official Snapmaker RFID spool — its color comes from the tag and can't be changed" });
 
-    const script = `SET_PRINT_FILAMENT_CONFIG CONFIG_EXTRUDER='${s}' FILAMENT_COLOR_RGBA='${rgba}' SAVE='1'`;
-    r = await fetch(base + "/printer/gcode/script?script=" + encodeURIComponent(script), { method: "POST" });
-    if (!r.ok) return res.status(502).json({ error: "Moonraker " + r.status + ": " + (await r.text()).slice(0, 160) });
-
-    // v2.22.1: the material, as its own command so a refusal here can never
-    // undo the color write that just succeeded. Skipped entirely when the
-    // caller sent no material or one the printer has no base type for.
+    // v2.22.2: the material FIRST, as its own command in the touchscreen's
+    // exact verified shape (see BASE_TYPES above), then the color — so the
+    // color is always the last word on the head, and a material refusal can
+    // never undo it. Skipped entirely when the caller sent no material or one
+    // the firmware has no base type for.
     let matInfo = null;
     const matGiven = String(material || "").trim() || String(material_variant || "").trim();
     if (matGiven) {
@@ -1915,13 +1926,16 @@ app.post("/api/setcolor", async (req, res) => {
         matInfo = { sent: null, sub: sub || null, confirmed: false,
                     reason: "no printer base type in '" + String(material || material_variant || "") + "'" };
       } else {
-        const tScript = `SET_PRINT_FILAMENT_CONFIG CONFIG_EXTRUDER='${s}' FILAMENT_TYPE='${mat}'` +
-          (sub ? ` FILAMENT_SUB_TYPE='${sub.replace(/'/g, "")}'` : "") + ` SAVE='1'`;
+        const tScript = `SET_PRINT_FILAMENT_CONFIG CONFIG_EXTRUDER=${s} VENDOR=Snapmaker FILAMENT_TYPE=${mat} FILAMENT_SUBTYPE='Basic'`;
         const tr = await fetch(base + "/printer/gcode/script?script=" + encodeURIComponent(tScript), { method: "POST" });
         matInfo = { sent: mat, sub: sub || null, confirmed: false,
                     reason: tr.ok ? undefined : "Moonraker " + tr.status + ": " + (await tr.text()).slice(0, 120) };
       }
     }
+
+    const script = `SET_PRINT_FILAMENT_CONFIG CONFIG_EXTRUDER='${s}' FILAMENT_COLOR_RGBA='${rgba}' SAVE='1'`;
+    r = await fetch(base + "/printer/gcode/script?script=" + encodeURIComponent(script), { method: "POST" });
+    if (!r.ok) return res.status(502).json({ error: "Moonraker " + r.status + ": " + (await r.text()).slice(0, 160) });
 
     // Read back — success means the printer itself reports the new color.
     r = await fetch(base + "/printer/objects/query?print_task_config");
