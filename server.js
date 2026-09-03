@@ -3,7 +3,7 @@
 // and pushes the chosen file to the chosen printer via Moonraker (server-side,
 // so no browser CORS headaches).
 
-const VERSION = "2.22.0";
+const VERSION = "2.22.1";
 
 const crypto = require("crypto");
 const express = require("express");
@@ -1852,8 +1852,29 @@ app.get("/api/pthumb", async (req, res) => {
 // The Hub replays it via /printer/gcode/script, then reads print_task_config
 // back and only reports success once the printer confirms the new color.
 // Guards match touchscreen behavior: idle printers only, loaded slots only.
+//
+// v2.22.1 (Danny, field-found 2026-09-02): the head's MATERIAL too. Loading a
+// spool pushed its color, so the Dash showed the right swatch on U6 T2 — and
+// "NONE" for the type, because nothing ever wrote print_task_config's
+// filament_type. A head with no type is what the touchscreen treats as not
+// loaded, so the spool "didn't register" on the machine. The type now rides
+// along as an optional `material` (+ `material_variant`), sent as its OWN
+// command after the color so the color path stays byte-for-byte what was
+// verified, and confirmed by the same read-back: if the firmware ignores the
+// parameter, the Hub says the material did not take rather than pretending.
+const BASE_TYPES = ["PETG", "HIPS", "PLA", "PET", "ABS", "ASA", "TPU", "PVA", "PA", "PC", "PP"]; // longest first: PETG before PET
+function splitMaterial(material, variant) {
+  const m = String(material || "").trim(), v = String(variant || "").trim();
+  const hay = (m + " " + v).toUpperCase();
+  const base = BASE_TYPES.find(t => new RegExp("(^|[^A-Z])" + t + "([^A-Z]|$)").test(hay)) || null;
+  // "PLA+" typed as the material with no variant: the base is PLA and the
+  // "+" is the sub-type, the way the touchscreen splits it.
+  let sub = v;
+  if (!sub && base && m && m.toUpperCase() !== base) sub = m;
+  return { base, sub: sub.slice(0, 40) };
+}
 app.post("/api/setcolor", async (req, res) => {
-  const { printer, slot, hex } = req.body || {};
+  const { printer, slot, hex, material, material_variant } = req.body || {};
   const p = PRINTERS[printer];
   if (!p) return res.status(400).json({ error: "Unknown printer" });
   const s = parseInt(slot, 10);
@@ -1883,6 +1904,25 @@ app.post("/api/setcolor", async (req, res) => {
     r = await fetch(base + "/printer/gcode/script?script=" + encodeURIComponent(script), { method: "POST" });
     if (!r.ok) return res.status(502).json({ error: "Moonraker " + r.status + ": " + (await r.text()).slice(0, 160) });
 
+    // v2.22.1: the material, as its own command so a refusal here can never
+    // undo the color write that just succeeded. Skipped entirely when the
+    // caller sent no material or one the printer has no base type for.
+    let matInfo = null;
+    const matGiven = String(material || "").trim() || String(material_variant || "").trim();
+    if (matGiven) {
+      const { base: mat, sub } = splitMaterial(material, material_variant);
+      if (!mat) {
+        matInfo = { sent: null, sub: sub || null, confirmed: false,
+                    reason: "no printer base type in '" + String(material || material_variant || "") + "'" };
+      } else {
+        const tScript = `SET_PRINT_FILAMENT_CONFIG CONFIG_EXTRUDER='${s}' FILAMENT_TYPE='${mat}'` +
+          (sub ? ` FILAMENT_SUB_TYPE='${sub.replace(/'/g, "")}'` : "") + ` SAVE='1'`;
+        const tr = await fetch(base + "/printer/gcode/script?script=" + encodeURIComponent(tScript), { method: "POST" });
+        matInfo = { sent: mat, sub: sub || null, confirmed: false,
+                    reason: tr.ok ? undefined : "Moonraker " + tr.status + ": " + (await tr.text()).slice(0, 120) };
+      }
+    }
+
     // Read back — success means the printer itself reports the new color.
     r = await fetch(base + "/printer/objects/query?print_task_config");
     if (!r.ok) return res.status(502).json({ error: "Write sent but read-back failed: Moonraker " + r.status });
@@ -1890,7 +1930,20 @@ app.post("/api/setcolor", async (req, res) => {
     const got = (ptc.filament_color_rgba || [])[s];
     if (String(got || "").toUpperCase() !== rgba)
       return res.status(502).json({ error: "Write not confirmed — printer reports " + (got || "nothing") });
-    res.json({ ok: true, slot: s, hex: "#" + m[1].toUpperCase(), heads: decodeHeads(ptc) });
+    // The material is confirmed by the same rule: the printer has to say it.
+    let warning;
+    if (matInfo) {
+      const gotT = String((ptc.filament_type || [])[s] || "").toUpperCase();
+      matInfo.printer_reports = gotT || "nothing";
+      matInfo.confirmed = !!matInfo.sent && gotT === matInfo.sent;
+      if (!matInfo.confirmed)
+        warning = matInfo.sent
+          ? "Color set, but the printer did not take the material (" + matInfo.sent + ") — it still reports " +
+            matInfo.printer_reports + ". Set the material on the touchscreen."
+          : "Color set, but '" + String(material || material_variant || "") + "' isn't a material this printer knows — set it on the touchscreen.";
+    }
+    res.json({ ok: true, slot: s, hex: "#" + m[1].toUpperCase(), material: matInfo || undefined,
+               warning, heads: decodeHeads(ptc) });
   } catch (e) {
     res.status(502).json({ error: "Could not reach " + p.name + ": " + e.message });
   }

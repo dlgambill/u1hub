@@ -24,9 +24,10 @@ function createMock(profile) {
     uploads: [],                   // { filename, bytes }
     gcodeScripts: [],              // raw scripts received
     files: [],                     // onboard listing
-    dropColorWrites: false         // v2.10: simulate firmware silently refusing a
+    dropColorWrites: false,        // v2.10: simulate firmware silently refusing a
                                    // color write, so the Hub's read-back-verify
                                    // honesty can be proven (it must 502, not lie)
+    dropTypeWrites: false          // v2.22.1: same knob for the material write
   };
 
   const objectsList = profile === "u1"
@@ -97,6 +98,18 @@ function createMock(profile) {
           const i = Number(im[1]);
           if (ptc.filament_exist[i] && ptc.filament_edit[i] !== false)
             ptc.filament_color_rgba[i] = cm[1].toUpperCase();
+        }
+        // v2.22.1: the material write, same rules. dropTypeWrites models a
+        // firmware that silently ignores FILAMENT_TYPE — the Hub must report
+        // that honestly from the read-back, never from the 200 on the write.
+        const tm = /FILAMENT_TYPE='?([A-Za-z+]+)'?/.exec(script);
+        const sm = /FILAMENT_SUB_TYPE='?([^']*)'?/.exec(script);
+        if (im && tm && !state.dropTypeWrites) {
+          const i = Number(im[1]);
+          if (ptc.filament_exist[i] && ptc.filament_edit[i] !== false) {
+            ptc.filament_type[i] = tm[1].toUpperCase();
+            if (sm) ptc.filament_sub_type[i] = sm[1] || "NONE";
+          }
         }
       }
       if (/^SDCARD_PRINT_FILE/.test(script)) {

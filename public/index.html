@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- U1 Print Hub — index v2.22.0 -->
+<!-- U1 Print Hub — index v2.22.1 -->
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
@@ -740,7 +740,7 @@
 
 <script>
 const $ = id => document.getElementById(id);
-const VERSION = "2.22.0";
+const VERSION = "2.22.1";
 let FILES = [], SELECTED = null, MAP = null, FLEET = [], MAPSEL = {};
 let ONBOARD = [], ACT = null; // onboard = /api/printer-files cache; ACT = open per-printer action strip {name,pid}
 let SRCSEL = { hub:true, p:{} }; // source-filter checkboxes; p[pid]=false hides that printer (default: everything on)
@@ -1247,7 +1247,7 @@ async function loadFmemSet(printer){
     try{
       // Color first (setcolor re-checks filament presence live and readback-
       // verifies the write) — only a confirmed-real tray earns the slot-map binding.
-      if(!fmHexEq(head.hex, j.s.hex)) await post("/api/setcolor",{printer, slot:j.slot, hex:"#"+j.s.hex});
+      if(!fmHexEq(head.hex, j.s.hex)) await post("/api/setcolor",{printer, slot:j.slot, hex:"#"+j.s.hex, material:j.s.material||"", material_variant:j.s.material_variant||""});
       await post("/api/slots/assign",{printer, slot:j.slot, spool_id:j.s.spool_id});
     }catch(e){ fails.push(tn+": "+(e.message||"failed")); j.failed=true; }
   }
@@ -1841,12 +1841,17 @@ function pendingLoadLabel(){
 // printing/official head just keeps its color; the loadout still records).
 async function loadSpoolIntoSlot(printer, slot, sid, sp){
   await post("/api/slots/assign",{printer, slot, spool_id:sid});
-  let colored=false;
-  try{ await post("/api/setcolor",{printer, slot, hex:"#"+sp.hex}); colored=true; }catch(e){}
+  let colored=false, matNote="";
+  // v2.22.1: material rides with the color so the head registers as loaded.
+  try{
+    const rr=await post("/api/setcolor",{printer, slot, hex:"#"+sp.hex, material:sp.material||"", material_variant:sp.material_variant||""});
+    colored=true;
+    if(rr&&rr.material) matNote=rr.material.confirmed?" + material":" — "+(rr.warning||"material not taken");
+  }catch(e){}
   PICKOPEN=null;
   await loadFleet();
   const st=$("pst-"+printer);
-  if(st){ st.className="pstatus ok"; st.textContent="T"+(slot+1)+" ← "+(sp.color_name||("#"+sp.hex))+" ✓"+(colored?" (color set)":" (loadout recorded — color unchanged)"); }
+  if(st){ st.className="pstatus ok"; st.textContent="T"+(slot+1)+" ← "+(sp.color_name||("#"+sp.hex))+" ✓"+(colored?" (color"+matNote+" set)":" (loadout recorded — color unchanged)"); }
 }
 // Loadout (v2.9): which spool is physically in which printer slot. Hub-side
 // state only — closing the scan→bind→LOAD loop so a scanned tag can be
@@ -2080,7 +2085,13 @@ function showSpoolResult(sp, sid, uid){
       await post("/api/slots/assign",{printer:pid,slot,spool_id:sid});
       let msg="Loaded ✓";
       if($("pushwrap").style.display!=="none" && $("pushcolor").checked){
-        try{ await post("/api/setcolor",{printer:pid,slot,hex:"#"+sp.hex}); msg="Loaded + head color set ✓"; loadFleet(); }
+        // v2.22.1: the material goes with the color, so the head registers
+        // as loaded on the touchscreen and not just painted the right shade.
+        try{
+          const rr=await post("/api/setcolor",{printer:pid,slot,hex:"#"+sp.hex,material:sp.material||"",material_variant:sp.material_variant||""});
+          msg=(rr&&rr.material&&rr.material.confirmed)?"Loaded + head color & material set ✓":(rr&&rr.warning)?"Loaded + color set ✓ — "+rr.warning:"Loaded + head color set ✓";
+          loadFleet();
+        }
         catch(e){ msg="Loaded ✓ — but color push failed: "+e.message; }
       }
       st.className="pstatus ok"; st.textContent=msg;

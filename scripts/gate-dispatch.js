@@ -32,9 +32,10 @@ function req(method, path, body) {
 }
 (async () => {
   console.log("\n== the real build is running");
+  const WANT = require("../package.json").version;   // the build under test, never a hardcoded number
   const ver = await req("GET", "/api/version");
-  ok(ver.status === 200 && ver.json && ver.json.version === "2.22.0",
-    "the throwaway Hub reports v2.22.0", ver.json);
+  ok(ver.status === 200 && ver.json && ver.json.version === WANT,
+    "the throwaway Hub reports v" + WANT, ver.json);
 
   console.log("\n== a live plan carries the fluid/locked contract");
   let plan = await req("GET", "/api/dispatch/plan");

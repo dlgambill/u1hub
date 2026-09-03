@@ -676,6 +676,49 @@ async function stopHub() {
     ok(r.status === 502 && /not confirmed/.test(r.body.error) && mockU1.state.ptc.filament_color_rgba[0] === "123ABCFF",
       "silently-dropped write → 502 'not confirmed' off the read-back — no false ✓", r.body);
     mockU1.state.dropColorWrites = false;
+    // v2.22.1 (Danny, field-found 2026-09-02): loading a spool set the head's
+    // COLOR and left its TYPE at NONE, so the touchscreen never saw it as
+    // loaded. The material now rides along and is held to the same rule as
+    // the color: the printer has to report it back. Each check here fails on
+    // the pre-2.22.1 Hub, which never wrote filament_type at all.
+    {
+      const nScripts = () => mockU1.state.gcodeScripts.length;
+      const before = nScripts();
+      r = await jpost("/api/setcolor", { printer: 0, slot: 0, hex: "#A1B2C3", material: "PETG" });
+      ok(r.status === 200 && r.body.ok === true && r.body.material && r.body.material.confirmed === true
+         && mockU1.state.ptc.filament_type[0] === "PETG",
+        "material written AND the printer itself reports it (PETG, not mistaken for PET)", r.body.material);
+      const sent = mockU1.state.gcodeScripts.slice(before);
+      ok(sent.length === 2 && /FILAMENT_COLOR_RGBA/.test(sent[0]) && !/FILAMENT_TYPE/.test(sent[0])
+         && /FILAMENT_TYPE='PETG'/.test(sent[1]) && !/FILAMENT_COLOR_RGBA/.test(sent[1]),
+        "…as its OWN command after the color — the verified color gcode is untouched byte-for-byte", sent);
+      // Danny's exact case: a roll recorded as "PLA+" with no separate variant.
+      r = await jpost("/api/setcolor", { printer: 0, slot: 0, hex: "#A1B2C3", material: "PLA+" });
+      ok(r.body.material && r.body.material.sent === "PLA" && r.body.material.sub === "PLA+" && r.body.material.confirmed === true
+         && mockU1.state.ptc.filament_type[0] === "PLA" && mockU1.state.ptc.filament_sub_type[0] === "PLA+",
+        "'PLA+' splits into base PLA + sub-type PLA+, the way the touchscreen stores it", r.body.material);
+      r = await jpost("/api/setcolor", { printer: 0, slot: 0, hex: "#A1B2C3", material: "PLA", material_variant: "Silk" });
+      ok(r.body.material && r.body.material.sent === "PLA" && r.body.material.sub === "Silk" && r.body.material.confirmed === true,
+        "a base + variant pair is passed through as-is", r.body.material);
+      // Firmware silently ignores the type parameter → the Hub must say so.
+      mockU1.state.dropTypeWrites = true;
+      r = await jpost("/api/setcolor", { printer: 0, slot: 0, hex: "#A1B2C3", material: "ABS" });
+      ok(r.status === 200 && r.body.ok === true && r.body.material.confirmed === false
+         && r.body.material.printer_reports === "PLA" && /did not take the material/.test(r.body.warning || ""),
+        "type silently dropped → color still ✓, material reported UNCONFIRMED with what the printer really says — no false ✓",
+        { material: r.body.material, warning: r.body.warning });
+      mockU1.state.dropTypeWrites = false;
+      // A material the printer has no base type for is not sent at all.
+      const b2 = nScripts();
+      r = await jpost("/api/setcolor", { printer: 0, slot: 0, hex: "#A1B2C3", material: "Wood" });
+      ok(r.status === 200 && r.body.material && r.body.material.sent === null && r.body.material.confirmed === false
+         && /touchscreen/.test(r.body.warning || "") && !mockU1.state.gcodeScripts.slice(b2).some(s => /FILAMENT_TYPE/.test(s)),
+        "unknown material → nothing bogus written; the warning points at the touchscreen", r.body);
+      // No material in the request → exactly the pre-2.22.1 response shape.
+      r = await jpost("/api/setcolor", { printer: 0, slot: 0, hex: "#123ABC" });
+      ok(r.status === 200 && r.body.ok === true && r.body.material === undefined && r.body.warning === undefined,
+        "callers that send only a color get the old contract back, untouched", r.body);
+    }
     // Mid-print, colors are untouchable — replay must refuse, not queue.
     mockU1.state.printState = "printing";
     r = await jpost("/api/setcolor", { printer: 0, slot: 0, hex: "#0F0F0F" });
