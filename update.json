@@ -1,7 +1,7 @@
 {
   "_comment": "Release manifest. Every Hub with update checks on fetches this file and compares its own version against `version`. Bump it as part of cutting a release, not before — the harness pins it equal to package.json so a manifest that lies about the current release cannot ship.",
-  "version": "2.21.0",
+  "version": "2.22.0",
   "url": "https://github.com/dlgambill/u1hub/releases",
-  "notes": "Your printers' Klipper pages now work from anywhere the Hub does — the link on each Dash card rides the Hub's tunnel and password. Maintenance shows on every tab, deleted spools stop leaving warnings behind, and one clear 'Replenish on Amazon' link replaces Buy/Search.",
-  "published": "2026-09-01"
+  "notes": "The Dispatch schedule got the changes you asked for. It now slides the next job forward instead of leaving dead space at the front, and you can lock the plan so the times stop shifting or leave it fluid so it keeps re-optimizing. Jobs take a 1 to 5 priority that breaks ties between things due at the same time, and the printer that's running right now is highlighted so you can't miss it.",
+  "published": "2026-09-03"
 }

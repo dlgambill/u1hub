@@ -277,9 +277,18 @@
     const jobRow = j => {
       const dl = j.deadline ? fmtT(j.deadline) : (j.bundle_id ? "↑ bundle" : "—");
       const st = { queued: "queued", scheduled: "planned", printing: "▶ printing", done: "✓ done", paused: "⏸ paused" }[j.state] || j.state;
+      // v2.22 PRIORITY (Danny): 1-5, 5 runs first. It only breaks ties between
+      // jobs that share a deadline — a due date always wins — so this is the
+      // "bump this ahead of the other un-urgent stuff" dial, not an override.
+      const prio = (j.priority >= 1 && j.priority <= 5) ? j.priority : 3;
+      const prioSel = `<select class="dsp-jprio dsp-prio${prio}" data-dsp-prio="${esc(j.id)}" ` +
+        `title="Priority — 5 runs first. Breaks ties between jobs sharing a deadline; it never jumps one ahead of an earlier deadline.">` +
+        [5, 4, 3, 2, 1].map(n => `<option value="${n}"${n === prio ? " selected" : ""}>P${n}${n === 5 ? " top" : n === 3 ? " normal" : n === 1 ? " low" : ""}</option>`).join("") +
+        `</select>`;
       return `<div class="dsp-job dsp-${esc(j.state)}${j.bundle_id ? " dsp-inbundle" : ""}">
         <span class="dsp-jfile">${esc(j.file)}</span><span>${j.remaining}/${j.qty}</span>
         <span title="deadline">${esc(dl)}</span>
+        ${prioSel}
         <span>${j.est_minutes ? fmtMin(j.est_minutes) + "/ea" : "est ?"}</span>
         <span class="dsp-swatches">${(j.colors || []).map(c => `<i style="background:#${esc(String(c).replace(/^#/, ""))}"></i>`).join("")}</span>
         <span class="dsp-jstate">${esc(st)}</span>
@@ -315,6 +324,12 @@
       const j = (STATE.jobs || []).find(x => x.id === b.dataset.dspPause);
       await jpost("/api/dispatch/jobs/update", { id: j.id, state: j.state === "paused" ? "queued" : "paused" }); load();
     });
+    // v2.22: change a job's priority. Re-reads so the reordered plan shows at
+    // once — a bump only moves jobs that share a deadline, so most changes are
+    // visible as a re-sort of the un-urgent tail.
+    box.querySelectorAll("[data-dsp-prio]").forEach(sel => sel.onchange = async () => {
+      await jpost("/api/dispatch/jobs/update", { id: sel.dataset.dspPrio, priority: +sel.value }); load();
+    });
   }
 
   // ---- the guide ------------------------------------------------------------
@@ -341,9 +356,16 @@
     const prev = $$("#dsp-guide");
     if (prev) GSCROLL = prev.scrollLeft;
     const HOUR = 3600000, now = Date.now();
-    // Round out to whole hours so the ruler's labels are round numbers, and
-    // always include now — a guide that starts after the present is a calendar.
-    const earliest = good.length ? Math.min(now, ...good.map(s => s.est_start)) : now;
+    // Round out to whole hours so the ruler's labels are round numbers. v2.22:
+    // the axis begins where the WORK begins, not always at the present. A print
+    // running now legitimately pins the guide to now — it starts now. But when
+    // nothing is on the beds and the next job can't start until a later window,
+    // anchoring to now just draws hours of dead grey before the first bar (the
+    // "empty space at the front" Danny called out). With nothing running the
+    // schedule slides forward and opens on the first job's real start time.
+    const RUN0 = (PLAN && PLAN.running) || [];
+    const firstStart = good.length ? Math.min(...good.map(s => s.est_start)) : now;
+    const earliest = RUN0.length ? Math.min(now, firstStart) : firstStart;
     const latest = good.length ? Math.max(now + 2 * HOUR, ...good.map(s => s.est_end)) : now + 8 * HOUR;
     const t0 = Math.floor(earliest / HOUR) * HOUR;
     const t1 = Math.ceil((latest + HOUR / 2) / HOUR) * HOUR;
@@ -465,7 +487,7 @@
         : lane.slots.length
           ? `<span class="dsp-gsub">from ${esc(fmtClock(Math.min(...lane.slots.map(s => s.est_start))))}</span>`
           : `<span class="dsp-gsub dsp-lidle">idle — nothing planned</span>`;
-      return `<div class="dsp-grow${maint ? " dsp-rowmaint" : ""}">
+      return `<div class="dsp-grow${maint ? " dsp-rowmaint" : (busyNow ? " dsp-rowrun" : "")}">
         <div class="dsp-gcell"><span class="dsp-gpname">${esc(lane.name)}</span>${first}${clearBtn}${wrench}</div>
         <div class="dsp-gtime" style="width:${W}px">${closed}${nowLine}${runBlocks(+idx)}${blocks}</div>
       </div>`;
@@ -473,10 +495,27 @@
 
     const zoom = PPH_STEPS.map(p =>
       `<button class="dsp-gz${p === PPH ? " dsp-gzon" : ""}" data-pph="${p}">${p >= 180 ? "15m" : p >= 90 ? "30m" : p >= 48 ? "1h" : "3h"}</button>`).join("");
+    // v2.22 FLUID / LOCKED (Danny). Fluid keeps re-optimizing as the farm
+    // changes; locked freezes the plan you approved so the times stop shifting.
+    // The button both SHOWS the mode and toggles it, and when locked it reports
+    // anything queued after the freeze that the frozen board isn't showing.
+    const locked = !!(PLAN && PLAN.locked);
+    const newLock = (PLAN && PLAN.new_since_lock) || [];
+    const newCount = newLock.reduce((n, x2) => n + (x2.count || 0), 0);
+    const lockBtn = `<button class="dsp-glock${locked ? " dsp-glock-on" : ""}" id="dsp-glockbtn" ` +
+      `title="${locked
+        ? "LOCKED — the plan is frozen at the times you approved; new work waits off to the side. Click to go back to a live, self-adjusting schedule."
+        : "FLUID — the plan re-optimizes as prints finish and jobs change. Click to freeze exactly what you see now so the times stop moving."}">` +
+      `${locked ? "🔒 locked" : "🌊 fluid"}</button>`;
+    const lockNote = locked && newCount
+      ? `<span class="dsp-gnewlock" title="${esc(newLock.map(x2 => x2.count + "× " + x2.file).join("\n"))}">` +
+        `+${newCount} new since lock — unlock to schedule ${newCount === 1 ? "it" : "them"}</span>`
+      : "";
     box.innerHTML = `
       <div class="dsp-gtools">
         <span class="dsp-gsub">detail</span>${zoom}
         <button class="dsp-gjump" id="dsp-gnowbtn">⊙ now</button>
+        ${lockBtn}${lockNote}
         <span class="dsp-gkey"><i class="dsp-krun"></i>printing now <i class="dsp-kblk"></i>planned <i class="dsp-kmiss"></i>misses deadline <i class="dsp-kclosed"></i>you're away</span>
       </div>
       <div class="dsp-guide" id="dsp-guide">
@@ -522,6 +561,15 @@
     const toNow = () => { if (g) g.scrollLeft = Math.max(0, x(now) - 48); };
     const jump = $$("#dsp-gnowbtn");
     if (jump) jump.onclick = toNow;
+    // v2.22: freeze / unfreeze. The server snapshots (or clears) the plan and
+    // we re-read the board so the frozen times — or the live ones — are on
+    // screen in one tap. No confirm(): locking is one click to undo.
+    const lockToggle = $$("#dsp-glockbtn");
+    if (lockToggle) lockToggle.onclick = async () => {
+      lockToggle.disabled = true;
+      await jpost("/api/dispatch/lock", { lock: !locked });
+      await load();
+    };
     // Restore where they were reading; land on "now" only the first time.
     if (g) { if (GSCROLL != null) g.scrollLeft = GSCROLL; else toNow(); }
   }
@@ -929,6 +977,18 @@
       .dsp-jfile{font-weight:700;min-width:180px}
       .dsp-jstate{color:var(--ink-dim, #9aa)}
       .dsp-done{opacity:.55}
+      /* v2.22 priority picker in the job list. Compact; colour-cued so a P5
+         (top) and a P1 (low) read at a glance without opening anything. */
+      .dsp-jprio{font:inherit;font-size:12px;padding:2px 4px;border:1px solid var(--line,#3C4250);
+        border-radius:5px;background:var(--chassis,#12151a);color:var(--ink-dim,#AEB6C4);cursor:pointer}
+      .dsp-jprio.dsp-prio5{border-color:var(--signal,#FFB200);color:var(--signal,#FFB200);font-weight:700}
+      .dsp-jprio.dsp-prio4{border-color:color-mix(in srgb, var(--signal,#FFB200) 55%, var(--line,#3C4250))}
+      .dsp-jprio.dsp-prio1,.dsp-jprio.dsp-prio2{color:var(--ink-faint,#828B9A)}
+      /* v2.22: a job that is printing right now gets the same green cue as its
+         printer's lane, so the two views agree at a glance. */
+      .dsp-job.dsp-printing{box-shadow:inset 3px 0 0 var(--ok,#3DD68C);
+        background:color-mix(in srgb, var(--ok,#3DD68C) 7%, transparent)}
+      .dsp-job.dsp-printing .dsp-jstate{color:var(--ok,#3DD68C);font-weight:700}
       .dsp-swatches i{display:inline-block;width:13px;height:13px;border-radius:3px;border:1px solid #0006;margin-right:2px;vertical-align:middle}
       .dsp-job button,.dsp-bhead button{font-size:12px;padding:3px 9px;border:1px solid var(--line, #555);border-radius:5px;background:var(--panel-2, #23262d);color:inherit;cursor:pointer}
       /* .dsp-lane/.dsp-track/.dsp-blk went with the percentage-width timeline
@@ -998,6 +1058,14 @@
       .dsp-gsub{color:var(--ink-faint,#828B9A);font-size:11.5px}
       .dsp-gz,.dsp-gjump{font:inherit;font-size:11.5px;padding:3px 9px;border:1px solid var(--line,#3C4250);border-radius:6px;background:var(--panel,#1b1e24);color:var(--ink-dim,#AEB6C4);cursor:pointer}
       .dsp-gzon{border-color:var(--signal, #FFB200);color:var(--signal, #FFB200);font-weight:700}
+      /* v2.22 fluid/locked toggle. Fluid reads calm; locked reads deliberate
+         (solid amber, the "you decided this" colour used for maintenance). */
+      .dsp-glock{font:inherit;font-size:11.5px;padding:3px 10px;border:1px solid var(--line,#3C4250);
+        border-radius:6px;background:var(--panel,#1b1e24);color:var(--ink-dim,#AEB6C4);cursor:pointer;white-space:nowrap}
+      .dsp-glock:hover{border-color:var(--ink-faint,#828B9A);color:var(--ink,#F4F6FA)}
+      .dsp-glock-on{border-color:var(--signal,#FFB200);color:var(--signal,#FFB200);font-weight:700;
+        background:color-mix(in srgb, var(--signal,#FFB200) 12%, var(--panel,#1b1e24))}
+      .dsp-gnewlock{font-size:11px;color:var(--signal,#FFB200);white-space:nowrap;cursor:default}
       .dsp-gkey{display:flex;gap:8px;align-items:center;margin-left:auto;color:var(--ink-faint,#828B9A);font-size:11px;flex-wrap:wrap}
       .dsp-gkey i{display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:3px;vertical-align:-1px}
       .dsp-krun{background:#1d5c3a;border:1px solid var(--ok,#3DD68C)}
@@ -1044,6 +1112,18 @@
       /* ETA unknown: striped, so an 8-hour pessimistic bar never reads as a measurement */
       .dsp-grunq{background:repeating-linear-gradient(45deg,#1d5c3a,#1d5c3a 6px,#164a2e 6px,#164a2e 12px)}
       .dsp-grunning{color:var(--ok,#3DD68C);font-weight:700}
+      /* v2.22 (Danny): highlight the whole row of a printer that is PRINTING
+         NOW, so "which machines are going" reads at a glance even when the
+         "printing now" label is clipped in the narrow name cell. A green left
+         rail + a faint tint + a pill that can't be truncated. */
+      .dsp-rowrun{background:color-mix(in srgb, var(--ok,#3DD68C) 8%, transparent);
+        box-shadow:inset 3px 0 0 var(--ok,#3DD68C)}
+      .dsp-rowrun .dsp-gcell{background:color-mix(in srgb, var(--ok,#3DD68C) 12%, var(--panel,#1b1e24));
+        border-right-color:color-mix(in srgb, var(--ok,#3DD68C) 40%, var(--line,#3C4250))}
+      .dsp-rowrun .dsp-gpname{color:var(--ok,#3DD68C)}
+      .dsp-grunning{display:inline-block;align-self:flex-start;color:var(--chassis,#12151a);font-weight:800;
+        background:var(--ok,#3DD68C);border-radius:10px;padding:1px 8px;font-size:11px;max-width:100%;
+        overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       .dsp-gtext{display:flex;flex-direction:column;justify-content:center;min-width:0;line-height:1.2;overflow:hidden}
       .dsp-gtext b{font-size:11.5px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       .dsp-gtext span{font-size:10px;color:#cfe0f5;opacity:.85;white-space:nowrap}

@@ -176,16 +176,26 @@ function register(ctx) {
     // pickup actually arrives: not as 30 per-job deadlines typed by hand.
     // It is a FALLBACK, never an override — see deadlineOf() in plan().
     target: null,                                // ms, or null for "no target"
+    // v2.22: fluid vs locked. "fluid" replans from scratch every call (the
+    // original, and the default) so times slide as machines free up. "locked"
+    // freezes the plan you were looking at — see D.frozen and plan() — so the
+    // board stops reshuffling on refresh. Danny's call: the answer to "why did
+    // everything move" is sometimes "hold still".
+    schedule_mode: "fluid",                      // "fluid" | "locked"
     auto_start: false
   };
   // maintenance: { "<printerIdx>": { since, note } } — machines deliberately
   // taken out of service. v2.19. Keyed by printer INDEX, like printing_on and
   // the assign/clear-bed endpoints, so it lines up with the rest of the module.
-  let D = { jobs: [], bundles: [], maintenance: {}, settings: JSON.parse(JSON.stringify(DEFAULT_SETTINGS)) };
+  // v2.22: frozen holds the snapshot a "locked" schedule serves — the placed
+  // slots from the plan at the moment you locked, kept still while running/
+  // attended/printers stay live. null whenever the mode is fluid.
+  let D = { jobs: [], bundles: [], maintenance: {}, frozen: null, settings: JSON.parse(JSON.stringify(DEFAULT_SETTINGS)) };
   try {
     const raw = JSON.parse(fs.readFileSync(FILE, "utf8"));
     D.jobs = Array.isArray(raw.jobs) ? raw.jobs : [];
     D.bundles = Array.isArray(raw.bundles) ? raw.bundles : [];
+    D.frozen = (raw.frozen && Array.isArray(raw.frozen.slots)) ? raw.frozen : null;
     D.maintenance = (raw.maintenance && typeof raw.maintenance === "object" && !Array.isArray(raw.maintenance))
       ? raw.maintenance : {};
     D.settings = { ...JSON.parse(JSON.stringify(DEFAULT_SETTINGS)), ...(raw.settings || {}), auto_start: false };
@@ -198,6 +208,15 @@ function register(ctx) {
     }
     if (typeof D.settings.weekOverrides !== "object" || !D.settings.weekOverrides) D.settings.weekOverrides = {};
   } catch {}
+  // A locked mode with no snapshot to serve is just fluid wearing the wrong
+  // label — normalise so plan() never has to second-guess it.
+  if (D.settings.schedule_mode !== "locked") D.settings.schedule_mode = "fluid";
+  if (D.settings.schedule_mode === "locked" && !D.frozen) D.settings.schedule_mode = "fluid";
+  // Priority is a 1-5 scale, 5 = runs first (higher number = hotter). 3 is
+  // "normal" and is what an unset or legacy priority (0) reads as, so old jobs
+  // and new default jobs sit together in the middle rather than at the bottom.
+  const PRIO = j => { const n = parseInt(j && j.priority, 10); return (n >= 1 && n <= 5) ? n : 3; };
+  const clampPrio = v => { const n = parseInt(v, 10); return (n >= 1 && n <= 5) ? n : 3; };
   // Is this machine deliberately out of service? Distinct from `online: false`,
   // which means the probe could not reach it — a fault, or a cable, or nothing
   // at all. Maintenance is a decision a human made, and the two must never be
@@ -500,6 +519,41 @@ function register(ctx) {
     return null;
   }
 
+  // v2.22: LOCKED-SCHEDULE RECONCILER. A frozen plan is a photograph, and the
+  // farm keeps moving under it: copies finish, jobs get cancelled, new work is
+  // queued. Serving the raw snapshot forever would show prints that already
+  // came off the bed and hide everything added since. So reconcile it against
+  // the live job list WITHOUT re-placing anything - the whole point of locked
+  // is that the times you approved stop moving.
+  //   - keep a frozen slot only if its job still exists and still has that copy
+  //     to print (drop copies that finished or were cancelled, oldest first -
+  //     the earliest-starting copies are the ones already run)
+  //   - never invent a slot: a job that gained copies or is brand new since the
+  //     lock has no place on the frozen board, so it is reported in
+  //     new_since_lock instead of being silently scheduled behind the plan's back
+  function reconcileFrozen(frozen, ordered) {
+    const byJob = new Map();               // job_id -> frozen placed slots
+    for (const s of (frozen.slots || [])) {
+      if (s.unplannable) continue;         // unplannable was never a placement
+      if (!byJob.has(s.job_id)) byJob.set(s.job_id, []);
+      byJob.get(s.job_id).push(s);
+    }
+    for (const arr of byJob.values()) arr.sort((a, b) => (a.est_start || 0) - (b.est_start || 0));
+    const slots = [];
+    const newSinceLock = [];
+    for (const job of ordered) {
+      const inFlight = job.printing_on != null ? 1 : 0;
+      const need = Math.max(0, (job.remaining ?? job.qty ?? 1) - inFlight);
+      const frz = byJob.get(job.id) || [];
+      const keep = need <= 0 ? [] : frz.slice(Math.max(0, frz.length - need)); // last `need`; earliest are finished
+      for (const s of keep) slots.push({ ...s, locked: true });
+      const short = need - keep.length;    // live copies the frozen board has no home for
+      if (short > 0) newSinceLock.push({ job_id: job.id, file: job.file, count: short });
+    }
+    slots.sort((a, b) => (a.est_start || 0) - (b.est_start || 0)); // keep the frozen row order stable
+    return { slots, newSinceLock };
+  }
+
   // ---- the plan -------------------------------------------------------------
   async function plan() {
     const now = Date.now();
@@ -549,11 +603,18 @@ function register(ctx) {
       return TARGET ? { at: TARGET, src: "target" } : { at: null, src: null };
     };
     const effDeadline = j => deadlineOf(j).at;
-    // EDF within priority.
+    // v2.22: DEADLINES WIN, priority breaks ties (Danny's call). Earliest
+    // deadline first, always — a job with a real due date is never bumped by a
+    // higher priority number, because a missed deadline is a promise broken and
+    // a priority is only a preference. Among jobs sharing an effective deadline
+    // (all the no-deadline ones share Infinity; all the under-the-farm-target
+    // ones share the target), the 1-5 priority orders them, 5 first. So a 5
+    // jumps the line past 3s and 1s that are equally un-urgent, but never past
+    // something about to be late. Created-time is the final, stable tiebreak.
     const runnable = D.jobs.filter(j => j.state === "queued" || j.state === "scheduled" || j.state === "printing");
     const ordered = [...runnable].sort((a, b) =>
-      (b.priority || 0) - (a.priority || 0) ||
       ((effDeadline(a) || Infinity) - (effDeadline(b) || Infinity)) ||
+      (PRIO(b) - PRIO(a)) ||
       (a.created - b.created));
     // ---- "push it back" (v2.20) ---------------------------------------------
     // Three jobs all wanting the one green roll get planned to start together,
@@ -612,6 +673,19 @@ function register(ctx) {
     const usable = lanes.filter(l => !l.maint);
     const down = lanes.length - usable.length;
     const slots = [];
+    // v2.22: LOCKED. Serve the frozen snapshot instead of re-placing anything.
+    // Everything above (fleet, lanes, running, attended, the ordering) is still
+    // computed live, because those are facts about the world; only the PLACED
+    // slots are held still. reconcileFrozen drops copies that have since run or
+    // been removed and reports anything added since the lock, so the board
+    // stays honest without moving. Fall through to the optimizer when fluid.
+    const locked = D.settings.schedule_mode === "locked" && D.frozen && Array.isArray(D.frozen.slots);
+    let newSinceLock = [];
+    if (locked) {
+      const r = reconcileFrozen(D.frozen, ordered);
+      for (const s of r.slots) slots.push(s);
+      newSinceLock = r.newSinceLock;
+    } else {
     const placed = [];      // [{start,end,colors,printerName,file}] for exclusivity checks
     const seen = new Set(); // placement keys this run still uses (everything else is stale)
     for (const job of ordered) {
@@ -758,6 +832,7 @@ function register(ctx) {
     // not keep a lane reserved in the map - it would grow without bound and
     // resurrect a stale placement if the qty went back up.
     for (const k of PLACEMENT.keys()) if (!seen.has(k)) PLACEMENT.delete(k);
+    } // end fluid placement (locked branch served the frozen snapshot above)
     // Report the whole fleet, not just the machines that got work: an idle
     // printer vanishing from the timeline hides exactly the capacity problem
     // the scheduler exists to surface.
@@ -799,6 +874,12 @@ function register(ctx) {
     return { generated_at: now, slots, running, target: TARGET,
              report: feasibility(slots, TARGET, now),
              attended: attendedSpans(now, spanTo),
+             // v2.22: is the board frozen, and if so what arrived after the
+             // freeze (queued but not on the locked plan, so the user knows
+             // there is work the frozen picture is not showing).
+             schedule_mode: D.settings.schedule_mode,
+             locked, locked_at: locked && D.frozen ? D.frozen.locked_at : undefined,
+             new_since_lock: newSinceLock,
              printers: lanes.map(l => ({ idx: l.idx, name: l.name, busy: !!l.note || l.cursor > now,
                maintenance: l.maint ? { since: l.maint.since, note: l.maint.note || "" } : null })) };
   }
@@ -1066,7 +1147,7 @@ function register(ctx) {
       id: newId("job"), file, type: String(b.type || "u1"),
       qty, remaining: qty,
       deadline: Number.isFinite(+b.deadline) ? +b.deadline : null,
-      priority: parseInt(b.priority, 10) || 0,
+      priority: clampPrio(b.priority),   // v2.22: 1-5, defaults to 3 (normal)
       bundle_id: b.bundle_id || null,
       needs_finish: !!b.needs_finish,   // "I want to be here when it lands"
       est_minutes: info.estMinutes, colors: info.colors, multi: info.multi,
@@ -1085,7 +1166,7 @@ function register(ctx) {
       if (j.state === "done" && j.remaining > 0) j.state = "queued";
     }
     if (b.deadline !== undefined) j.deadline = Number.isFinite(+b.deadline) ? +b.deadline : null;
-    if (b.priority !== undefined) j.priority = parseInt(b.priority, 10) || 0;
+    if (b.priority !== undefined) j.priority = clampPrio(b.priority);   // v2.22: 1-5
     if (b.needs_finish !== undefined) j.needs_finish = !!b.needs_finish;
     if (b.state === "paused" || b.state === "queued") { if (j.state !== "printing") j.state = b.state; }
     save(); res.json({ ok: true, job: j });
@@ -1202,7 +1283,7 @@ function register(ctx) {
     D.bundles.push(bundle);
     const jobs = infos.map(({ f, info }) => {
       const job = { id: newId("job"), file: f, type: String(b.type || "u1"), qty, remaining: qty,
-        deadline: null, priority: parseInt(b.priority, 10) || 0, bundle_id: bundle.id,
+        deadline: null, priority: clampPrio(b.priority), bundle_id: bundle.id,
         needs_finish: !!b.needs_finish, est_minutes: info.estMinutes, colors: info.colors,
         multi: info.multi, state: "queued", created: Date.now(), history: [], printing_on: null };
       D.jobs.push(job); return job;
@@ -1298,6 +1379,34 @@ function register(ctx) {
   app.get("/api/dispatch/plan", async (req, res) => {
     try { res.json(await plan()); }
     catch (e) { res.status(500).json({ error: "Plan failed: " + e.message }); }
+  });
+  // v2.22: FREEZE / UNFREEZE the board (Danny). Locked means the times you
+  // approved stop moving: lock snapshots the CURRENT fluid plan's placed slots
+  // and the board then serves that snapshot (reconciled for copies that ran or
+  // were removed) until you unlock. Locking always re-snapshots from a freshly
+  // computed FLUID plan, so "lock" means "lock in exactly what I'm looking at".
+  app.post("/api/dispatch/lock", async (req, res) => {
+    const b = req.body || {};
+    const want = b.lock === undefined ? true : !!b.lock;
+    if (!want) {                                   // UNFREEZE - back to the live optimizer
+      D.frozen = null;
+      D.settings.schedule_mode = "fluid";
+      save();
+      return res.json({ ok: true, locked: false });
+    }
+    // Snapshot from a FLUID computation regardless of current mode, so the
+    // freeze captures the live optimizer's plan and not a stale frozen one.
+    const prevMode = D.settings.schedule_mode;
+    D.settings.schedule_mode = "fluid";
+    let p;
+    try { p = await plan(); }
+    catch (e) { D.settings.schedule_mode = prevMode;
+                return res.status(500).json({ error: "Could not compute a plan to lock: " + e.message }); }
+    const placed = (p.slots || []).filter(s => !s.unplannable);
+    D.frozen = { locked_at: Date.now(), slots: placed };
+    D.settings.schedule_mode = "locked";
+    save();
+    res.json({ ok: true, locked: true, locked_at: D.frozen.locked_at, frozen_slots: placed.length });
   });
   // The bed-clear gate. Tapping it (a) clears the awaiting flag, (b) hands the
   // CLIENT the next planned slot for this printer. The client fires /api/print

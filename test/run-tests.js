@@ -1627,6 +1627,82 @@ async function stopHub() {
     ok(/application\/x-u1hub-file/.test(dpage), "library rows carry the draggable module payload");
     ok(/id="dispadd"/.test(dpage) && /HubModules\.fileAction/.test(dpage),
       "core exposes a module file-action button (the mobile path \u2014 touch never fires drag events)");
+    // v2.22: FLUID/LOCKED schedule, a 1-5 priority (deadlines win, priority
+    // breaks ties), and the clamp on both. Danny, 2026-09-03. Each check here
+    // fails on the pre-v2.22 Hub: priority defaulted to 0, there was no lock
+    // endpoint, and the plan carried neither `locked` nor `new_since_lock`.
+    {
+      // A clean, deterministic stage: quiet the fleet, make sure we're fluid,
+      // drop any farm target that would skew deadlines, and park whatever
+      // earlier sections left queued so only our jobs are planned.
+      mockU1.state.printState = "standby"; mockU1.state.filename = "";
+      await jpost("/api/dispatch/lock", { lock: false });
+      await jpost("/api/dispatch/settings", { target: null });
+      const parked22 = ((await jget("/api/dispatch")).body.jobs || [])
+        .filter(j => j.state !== "done" && j.state !== "paused").map(j => j.id);
+      for (const id of parked22) await jpost("/api/dispatch/jobs/update", { id, state: "paused" });
+      await sleep(4600);                                    // age the probe cache to idle
+
+      // -- priority: a 1-5 dial, default 3, clamped --
+      r = await jpost("/api/dispatch/jobs", { file: "single.gcode", type: "u1", qty: 1 });
+      ok(r.body.job.priority === 3, "a job added with no priority defaults to 3 (normal), not 0", r.body.job.priority);
+      const DEF22 = r.body.job.id;
+      r = await jpost("/api/dispatch/jobs/update", { id: DEF22, priority: 99 });
+      ok(r.body.job.priority === 3, "an out-of-range priority clamps back to 3", r.body.job.priority);
+      await jpost("/api/dispatch/jobs/remove", { id: DEF22 });
+
+      // -- deadlines win, priority breaks ties --
+      r = await jpost("/api/dispatch/jobs", { file: "single.gcode", type: "u1", qty: 1, priority: 1 });
+      const LOP22 = r.body.job.id;
+      r = await jpost("/api/dispatch/jobs", { file: "single.gcode", type: "u1", qty: 1, priority: 5 });
+      const HIP22 = r.body.job.id;
+      r = await jget("/api/dispatch/plan");
+      let good22 = (r.body.slots || []).filter(s => !s.unplannable);
+      ok(good22.length && good22[0].job_id === HIP22,
+        "with no deadlines, priority 5 is scheduled ahead of priority 1", good22.map(s => ({ id: s.job_id, p: s.printer })));
+      r = await jpost("/api/dispatch/jobs", { file: "single.gcode", type: "u1", qty: 1, priority: 1, deadline: Date.now() + 60 * 60000 });
+      const DUE22 = r.body.job.id;
+      r = await jget("/api/dispatch/plan");
+      good22 = (r.body.slots || []).filter(s => !s.unplannable);
+      ok(good22.length && good22[0].job_id === DUE22,
+        "an earlier deadline is scheduled first even at the lowest priority — deadlines win", good22[0] && good22[0].job_id);
+
+      // -- FLUID vs LOCKED --
+      r = await jget("/api/dispatch");
+      ok(r.body.settings.schedule_mode === "fluid", "the schedule is fluid by default", r.body.settings.schedule_mode);
+      r = await jget("/api/dispatch/plan");
+      ok(r.body.locked === false, "a fluid plan reports itself unlocked", r.body.locked);
+      const frozenIds22 = (r.body.slots || []).filter(s => !s.unplannable).map(s => s.job_id).sort();
+      r = await jpost("/api/dispatch/lock", { lock: true });
+      ok(r.status === 200 && r.body.locked === true && r.body.frozen_slots === frozenIds22.length,
+        "lock snapshots exactly the plan on screen", r.body);
+      r = await jget("/api/dispatch/plan");
+      ok(r.body.locked === true && r.body.schedule_mode === "locked",
+        "the plan now reports itself locked", { l: r.body.locked, m: r.body.schedule_mode });
+      const lockedIds22 = (r.body.slots || []).filter(s => !s.unplannable).map(s => s.job_id).sort();
+      ok(JSON.stringify(lockedIds22) === JSON.stringify(frozenIds22),
+        "the locked board serves the same copies it froze", { frozenIds22, lockedIds22 });
+      // Add work while locked: the frozen board must NOT reschedule; the new
+      // job is reported off to the side instead of silently slipped in.
+      r = await jpost("/api/dispatch/jobs", { file: "single.gcode", type: "u1", qty: 1, priority: 5 });
+      const LATE22 = r.body.job.id;
+      r = await jget("/api/dispatch/plan");
+      const lockedSlots22 = (r.body.slots || []).filter(s => !s.unplannable);
+      ok(!lockedSlots22.some(s => s.job_id === LATE22),
+        "a job added after the lock does NOT appear on the frozen board", lockedSlots22.map(s => s.job_id));
+      ok((r.body.new_since_lock || []).some(x => x.job_id === LATE22),
+        "…it is reported in new_since_lock so the board stays honest about hidden work", r.body.new_since_lock);
+      // Unlock: the optimizer takes over again and the waiting job is planned.
+      r = await jpost("/api/dispatch/lock", { lock: false });
+      ok(r.status === 200 && r.body.locked === false, "unlock clears the freeze", r.body);
+      r = await jget("/api/dispatch/plan");
+      ok(r.body.locked === false && (r.body.slots || []).some(s => s.job_id === LATE22),
+        "back in fluid, the job that was waiting is scheduled", (r.body.slots || []).map(s => s.job_id));
+
+      // Restore the stage exactly as we found it.
+      for (const id of [LOP22, HIP22, DUE22, LATE22]) await jpost("/api/dispatch/jobs/remove", { id });
+      for (const id of parked22) await jpost("/api/dispatch/jobs/update", { id, state: "queued" });
+    }
     // Module off → API and client script both vanish.
     await stopHub();
     const cfgPath = path.join(hubDir, "config.json");
