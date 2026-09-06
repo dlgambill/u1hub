@@ -6,6 +6,59 @@ Log mistakes in `MISTAKES.md` (what happened, root cause, prevention). Newest
 first. Read it before touching an area you have broken before. When the same
 failure appears 4–5 times, promote it to a hard rule below.
 
+## Other sessions on this machine
+
+Danny runs more than one Claude session against ichabod at once, and they
+cannot see each other. **Read `C:\Users\Danny\code\SESSIONS.md` after this file
+and `MISTAKES.md`, whatever repo you are working in.** It carries an ownership
+register for shared resources — which session owns which repo, table and
+service — plus open questions between sessions and their answers.
+
+Append to it (never rewrite) when you take a shared resource, answer another
+session's question, or find something that affects a repo you do not own. It
+exists because two sessions were writing to `dlgambill/conduitlab-site` for
+months and neither knew.
+
+## Visual standard
+
+**Read `C:\Users\Danny\code\DESIGN.md` before building or changing anything with
+a user-facing surface**, whatever repo you are in. It is the VibeCurb
+constraint approach (github.com/Yu-369/VibeCurb) Danny wants applied to every
+project instead of framework defaults: extract the design signals before writing
+code, refuse the banned defaults (CSS keyword easings, AI-purple gradients,
+generic dashboard layouts, weak typographic hierarchy), and verify the result
+against the extraction rather than against a general impression.
+
+It also records which VibeCurb skills are actually installed on the account, so
+you do not offer one that cannot be invoked.
+
+## Where durable instructions belong
+
+Put anything a future session must know in a FILE that this file points to —
+never in a scheduled task's prompt. A task with computer access can only have
+its prompt changed by Danny, in a conversation running inside the Claude desktop
+app on ichabod, and he is usually not at ichabod. Files need no approval and
+take effect on the next session. This section exists because a session tried to
+add SESSIONS.md and DESIGN.md to the `ichabod on demand` prompt, hit
+`needs_device_approval` twice, and only then noticed the prompt already reads
+this file.
+
+**This file is edited on `X:` and staged to `C:` before pushing, so X: is the
+copy to change.** Anything added only on `C:` is destroyed by the next stage.
+That nearly happened to the two sections above: they were written on C: while
+X: sat at v2.23 with a `Core layout` section C: did not have, so the divergence
+ran in both directions at once.
+
+Settled 2026-09-06 by the u1-print-hub owner, and recorded in the SESSIONS.md
+register: **`X:\u1-print-hub\` is the only authoritative tree, for every file
+in this repo.** `C:\Users\Danny\code\u1-print-hub\` is a staged mirror plus git
+history — read it if X: is unreachable, never write to it. A session in another
+repo that needs a machine-wide instruction adds it on X:, or, if X: is not
+mounted, raises it as an OPEN thread in SESSIONS.md for this lane. The same
+goes for `MISTAKES.md`: it is this repo's public log, so a mistake made in
+another project goes in that project's log or in
+`C:\Users\Danny\code\MISTAKES-shared.md`, not here.
+
 ## Hard rules
 
 1. **Rule #1 — read before writing.** Read every file you are about to change,
@@ -63,9 +116,44 @@ failure appears 4–5 times, promote it to a hard rule below.
    open, twice, that measurement showed had already been fixed — a note is not
    evidence, and re-measure before you work it or repeat it.
 
+## Core layout (v2.23)
+
+`server.js` is a ~90-line composition root. The always-on core lives in
+`core/*.js`, loaded **in this exact order** — it is the order the code had in
+the old single file, and load-time statements depend on it (`loadConfig()`
+before `PORT` reads `CFG.port`; middleware before routes; the module loader
+and `listen` last):
+
+`log` → `config` → `records` → `app` → `library` → `print` → `fleet` →
+`telemetry` → `thumbs` → `filament` → `network` → `settings` → `modules`
+
+Every file is `module.exports = function (hub) { ... }` and shares one `hub`
+object. The contract:
+
+- **Mutable globals live on `hub`** and are always written/read as
+  `hub.CFG`, `hub.FOLDER`, `hub.PRINTERS`, `hub.TYPES`, `hub.TYPE_WARNINGS`,
+  `hub.FEATURES`, `hub.QUEUE`, `hub.FARM_READY`. CommonJS cannot share a
+  reassigned binding, so a bare `PRINTERS` in a core file is a bug.
+- **Everything else** a file needs from an *earlier* file is destructured once
+  at the top (`const { app, hublog, safeFile } = hub;`). A reference to a
+  *later* file's export must go through `hub.name` at call time (the only
+  live cases: `hub.farmWsRestart` from config, guarded by `FARM_READY`;
+  `hub.safeFile` from records; `hub.JOBS` from library; `hub.CAPS_PROVIDED`
+  from fleet).
+- A file publishes with `Object.assign(hub, { ... })` at its end.
+- New always-on code goes in the file that owns the concern; a new optional
+  feature is still a `modules/*.js` feature module.
+- `core/` must be in the Dockerfile `COPY` list and in the harness's
+  `stageHub()` mirror of it — the "boot from the Docker COPY file set" check
+  is what catches a missing directory.
+
+The split was mechanical: `scripts/split-core.js` produced it from the
+pre-split `server.js` (dry run reports the dependency surface; `--apply`
+writes). `scripts/check-core.js` syntax-checks the root plus every core file.
+
 ## Harness
 
-`npm test` → **510 checks**, expect **510 passed, 0 failed**. A red harness
+`npm test` → **543 checks**, expect **543 passed, 0 failed**. A red harness
 blocks everything.
 
 Takes ~2.5 min over SMB. Run it with `scripts/run-harness.cmd` and poll
