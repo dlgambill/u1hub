@@ -3,7 +3,7 @@ REM Throwaway read-only smoke test for the Resources module. Boots a SECOND Hub
 REM on 4546 (U1HUB_PORT) so the live instance on 4545 is never touched, hits the
 REM GET endpoints only, then stops the instance it started. Never POSTs — the
 REM two instances share resources.json and a write race would be nobody's friend.
-cd /d X:\u1-print-hub
+cd /d "%~dp0.."
 set U1HUB_PORT=4546
 start "" /b cmd /c "node server.js > scripts\_smoke.log 2>&1"
 REM Booting off SMB with node_modules on the share takes a while; poll for the

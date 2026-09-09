@@ -15,7 +15,12 @@ REM Restarting does NOT stop anything on the printers: Klipper runs the prints,
 REM the Hub watches and dispatches. In-flight jobs are re-adopted on boot.
 powershell -NoProfile -Command "$p=(Get-NetTCPConnection -LocalPort 4545 -State Listen -ErrorAction SilentlyContinue).OwningProcess; if($p){ $p | Select-Object -Unique | ForEach-Object { Stop-Process -Id $_ -Force; 'stopped ' + $_ } } else { 'nothing was listening on 4545' }"
 timeout /t 2 /nobreak >nul
-powershell -NoProfile -Command "$r=Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine='cmd /c node server.js >> X:\u1-print-hub\hub-console.log 2>&1'; CurrentDirectory='X:\u1-print-hub' }; if($r.ReturnValue -eq 0){ 'started detached, pid ' + $r.ProcessId } else { 'WMI create FAILED rv=' + $r.ReturnValue }"
+REM 2026-09-09: the Hub runs from the git clone on C: (staging on X: retired);
+REM the path is taken from this script's own location, so a moved checkout
+REM still works. Gcode lives on X:\gcode via config.json's gcodeFolder.
+set HUBDIR=%~dp0..
+for %%I in ("%HUBDIR%") do set HUBDIR=%%~fI
+powershell -NoProfile -Command "$r=Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine='cmd /c node %HUBDIR%\server.js >> %HUBDIR%\hub-console.log 2>&1'; CurrentDirectory='%HUBDIR%' }; if($r.ReturnValue -eq 0){ 'started detached, pid ' + $r.ProcessId } else { 'WMI create FAILED rv=' + $r.ReturnValue }"
 for /l %%i in (1,1,40) do (
   ping -n 2 127.0.0.1 >nul
   curl -s -o nul http://127.0.0.1:4545/api/version && goto :up

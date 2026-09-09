@@ -43,21 +43,20 @@ add SESSIONS.md and DESIGN.md to the `ichabod on demand` prompt, hit
 `needs_device_approval` twice, and only then noticed the prompt already reads
 this file.
 
-**This file is edited on `X:` and staged to `C:` before pushing, so X: is the
-copy to change.** Anything added only on `C:` is destroyed by the next stage.
-That nearly happened to the two sections above: they were written on C: while
-X: sat at v2.23 with a `Core layout` section C: did not have, so the divergence
-ran in both directions at once.
+**There is one tree: `C:\Users\Danny\code\u1-print-hub`, this git clone.**
+Edit here, run the Hub from here (port 4545), commit here. Danny retired the
+`X:\u1-print-hub` staging copy on 2026-09-09 after the two-tree arrangement
+cost real bugs (rfid.js shipped five releases stale; this file diverged in both
+directions in one week). The gcode library moved to **`X:\gcode`** and
+`config.json` points at it; everything else the Hub remembers (config, spools,
+slots, schedule, password, tunnel, thumbnail cache) sits in this directory,
+gitignored. `scripts/sync-to-clone.js` and `scripts/drift-scan.js` are stubs
+that say so. If `X:\u1-print-hub` (or a `_RETIRED` rename of it) still exists,
+it is dead weight waiting for Danny to delete it - never read from it.
 
-Settled 2026-09-06 by the u1-print-hub owner, and recorded in the SESSIONS.md
-register: **`X:\u1-print-hub\` is the only authoritative tree, for every file
-in this repo.** `C:\Users\Danny\code\u1-print-hub\` is a staged mirror plus git
-history — read it if X: is unreachable, never write to it. A session in another
-repo that needs a machine-wide instruction adds it on X:, or, if X: is not
-mounted, raises it as an OPEN thread in SESSIONS.md for this lane. The same
-goes for `MISTAKES.md`: it is this repo's public log, so a mistake made in
-another project goes in that project's log or in
-`C:\Users\Danny\code\MISTAKES-shared.md`, not here.
+`MISTAKES.md` is this repo's public log, so a mistake made in another project
+goes in that project's log or in `C:\Users\Danny\code\MISTAKES-shared.md`, not
+here.
 
 ## Hard rules
 
@@ -73,14 +72,14 @@ another project goes in that project's log or in
 2. **Nothing ships unverified.** "Built" is not "shippable." A feature is done
    when the harness is green *and* its live hardware gate has passed. Unverified
    shapes and paths are not emitted at all.
-3. **Staging is the source of truth.** `X:\u1-print-hub` is where code is read,
-   edited and tested. Never build or reason from GitHub main or the
-   `C:\Users\Danny\code\u1-print-hub` clone — that clone exists to hold history
-   and is the only place to commit. `X:\u1-print-hub\.git` is stale (last tag
-   `v2.6.0`) and must never receive a commit.
-   `C:\Users\Danny\code\u1-hub-staging` was a one-off mirror from the days when
-   `X:` was unreachable; Desktop Commander reaches `X:` directly now, so that
-   mirror is dead weight, not a second source of truth.
+3. **This clone is the only tree** (since 2026-09-09; see above). Code is read,
+   edited, run and committed in `C:\Users\Danny\code\u1-print-hub`. Never
+   build or reason from GitHub main instead of the working copy, and never
+   from a retired staging folder on `X:`. The gcode library is `X:\gcode`; the
+   Hub's state files live beside the code and are gitignored. The `X:` share
+   refuses rename-over-existing, which is why state writers use the fallback
+   in `modules/dispatch.js` `save()` - that constraint now applies only to
+   files the Hub writes under `X:\gcode`, not to its state, which is local.
 4. **Version bumps are atomic.** `server.js`, `public/index.html`, and
    `package.json` change in the same pass, then `npm test`.
 5. **Never commit state files.** config.json, spools.json, slots.json, auth.json,
@@ -177,8 +176,10 @@ Live gates that need REAL hardware (run by hand, results recorded in HANDOFF):
 Fluidd/Moonraker, byte-fidelity and a JSON-RPC round trip over the proxied
 WebSocket included.
 
-Green on Windows against `X:` (2026-09-01 13:38, v2.21.0) — and verified in the
-23:00 hour specifically, which is when the clock-sensitive checks used to fail.
+Green on Windows from this clone (2026-09-09, v2.23.0, 549/0) — and verified in
+the 23:00 hour specifically (2026-09-01), which is when the clock-sensitive
+checks used to fail. The harness runs from local disk now, so the "~2.5 min
+over SMB" figure above is the old ceiling, not the floor.
 
 **Live gates without touching production.** `scripts/boot-4546.cmd` starts a
 throwaway Hub on 4546 via `U1HUB_PORT` and leaves it running for a browser to
@@ -190,10 +191,12 @@ restarting 4545: that instance is dispatching nine printers, and a restart is
 the user's call, not the agent's. `scripts/restart-4545.cmd` exists for when they
 do ask.
 
-**State files on `X:` cannot be written with tmp+rename** — the share refuses
+**Files on `X:` cannot be written with tmp+rename** — the share refuses
 rename-over-existing, silently. `modules/dispatch.js` `save()` documents the
-fallback; any new state writer must follow it rather than reinventing the
-"atomic" pattern that cost a day of edits (`MISTAKES.md` 2026-09-01).
+fallback; keep it (state is local since 2026-09-09, but a user's `U1HUB_DIR`
+or gcode folder can be a share, and `X:\gcode` still is) rather than
+reinventing the "atomic" pattern that cost a day of edits (`MISTAKES.md`
+2026-09-01).
 
 ### Known determinism debt (rule 7)
 
@@ -218,9 +221,12 @@ record of what the fixes were, because both patterns will recur.
 
 ## Working over the bridge
 
-Everything reaches `X:` and this machine through Desktop Commander over the
-remote-device bridge. Four hard edges, all learned the expensive way
-(`MISTAKES.md`):
+Everything on this machine (this clone, and `X:\gcode` on the share) is reached
+through Desktop Commander over the remote-device bridge. The clone's parent,
+`C:\Users\Danny\code`, is also the session's connected folder, so
+`device_stage_files` can lift a file out of the repo when you need to look at
+an image or a zip in the cloud workspace. Four hard edges, all learned the
+expensive way (`MISTAKES.md`):
 
 - **60 s per-call ceiling.** Any foreground command that outlives it is lost,
   output and all. Write a `.cmd` that redirects to a log, launch it with

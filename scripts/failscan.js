@@ -1,5 +1,5 @@
 const fs = require("fs");
-const L = fs.readFileSync(process.argv[2] || "X:/u1-print-hub/scripts/hout.txt", "utf8").split(/\r?\n/);
+const L = fs.readFileSync(process.argv[2] || require("path").join(__dirname, "hout.txt"), "utf8").split(/\r?\n/);
 L.forEach((l, i) => {
   if (l.indexOf("\u2717") !== -1 || /\bfailed\b|not ok|AssertionError|Expected|expected /.test(l)) {
     // print the failing line plus the 3 lines after (usually the assertion detail)

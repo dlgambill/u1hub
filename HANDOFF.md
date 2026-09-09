@@ -39,10 +39,10 @@ UI verification — start with `tabs_context_mcp`), `TaskCreate` / `TaskUpdate`,
 
 - **`device_bash` does not start on this machine.** Desktop Commander's `start_process`
   IS the shell. Do not retry `device_bash`.
-- **Source of truth is `X:\u1-print-hub`** (mapped to `\\192.168.12.81\share`). Never read
-  or reason from the `C:\Users\Danny\code\u1-print-hub` clone — it holds git history and is
-  the only place to commit. `X:\u1-print-hub\.git` is stale (tag `v2.6.0`) and must never
-  receive a commit.
+- **Source of truth is this clone, `C:\Users\Danny\code\u1-print-hub`** (since
+  2026-09-09). Edit, run and commit here. The old `X:\u1-print-hub` staging copy is
+  retired and, if still present, is dead weight - never read from it. The gcode library
+  is `X:\gcode` (`\\192.168.12.81\share\gcode`), set by `config.json`.
 - **60-second per-call ceiling on the bridge.** Never run `npm test` in the foreground. Use
   `scripts/run-harness.cmd`, launched hidden via `Start-Process`, and poll
   `scripts/harness.log` in <=55 s chunks.
@@ -50,8 +50,10 @@ UI verification — start with `tabs_context_mcp`), `TaskCreate` / `TaskUpdate`,
   listening port.
 - `X:` cannot be granted through a folder-access request; Desktop Commander reaches it
   directly.
-- The live Hub runs on **port 4545** from `X:\u1-print-hub` in a visible cmd window. Nine
-  printers (U1-U9) on 192.168.12.x, usually mid-print.
+- The live Hub runs on **port 4545** from this clone, detached via WMI by
+  `scripts/restart-4545.cmd` (console in `hub-console.log`), and is started at logon by the
+  scheduled task "U1 Print Hub" (`C:\Users\Danny\code\u1hub-boot.ps1`). Nine printers
+  (U1-U9) on 192.168.12.x, usually mid-print.
 - **`X:` rejects tmp+rename.** Any state writer must use the fallback pattern now documented
   in `modules/dispatch.js` `save()`.
 

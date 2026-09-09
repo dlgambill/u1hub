@@ -11,7 +11,7 @@ REM whatever. Nothing it does reaches the install.
 REM
 REM Stop it with scripts\stop-4546.cmd — by listening port, never by image name
 REM (Desktop Commander is node.exe too).
-cd /d X:\u1-print-hub
+cd /d "%~dp0.."
 set U1HUB_DIR=%TEMP%\u1hub-4546
 set U1HUB_PORT=4546
 rmdir /s /q "%U1HUB_DIR%" 2>nul

@@ -29,7 +29,7 @@ catch (e) {
 
 const CHROME = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
 const BASE = "http://127.0.0.1:4546";
-const OUT = "X:\\u1-print-hub\\docs";
+const OUT = path.join(__dirname, "..", "docs");
 
 // ready: a condition the page itself proves, so the shot is of a FINISHED
 // page, never a lucky timer. Text conditions are checked against innerText.
