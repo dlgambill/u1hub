@@ -1,10 +1,18 @@
 # U1 Print Hub via Docker — for always-on hosts (Pi / NAS / homelab).
 #
 # Quick start:
-#   cp config.example.json config.json      # a writable config the hub persists to
-#   mkdir -p gcode                           # where your sliced .gcode lives
+#   mkdir -p data gcode                      # data = everything the Hub remembers,
+#                                            # gcode = where your sliced .gcode lives
 #   docker compose up -d
 #   open http://<this-host-ip>:4545
+#
+# Upgrading: git pull, then `docker compose up -d --build`. Everything the Hub
+# remembers lives in ./data on the host, so a rebuild keeps your printers,
+# password, tunnel, spools, schedule and thumbnails. (Until 2026-09-09 this
+# file only persisted config.json and gcode, so an upgrade lost the rest - if
+# you set up under the old file, move ./config.json into ./data and copy the
+# old container's spools.json, slots.json, dispatch.json, auth.json and
+# tunnel.json in beside it once: docker cp u1-print-hub:/app/spools.json data/)
 #
 # Auto-discovery scans your LAN, which only works with host networking (Linux
 # hosts). On Docker Desktop (macOS/Windows) host networking behaves differently —
@@ -26,13 +34,17 @@ services:
     # ports:
     #   - "4545:4545"
 
+    # U1HUB_DIR (since 2.19) puts every stateful file - config.json, spools,
+    # slots, schedule, password, tunnel, print history, the thumbnail cache -
+    # in one directory instead of next to the code. One bind mount persists
+    # all of it, including files added by future versions, so there is no
+    # per-file list to keep in step with releases.
+    environment:
+      - U1HUB_DIR=/app/data
+
     volumes:
-      - ./config.json:/app/config.json   # persists your printer list & settings
-      - ./gcode:/app/gcode               # your Orca output folder (printer-type
-                                         #   subfolders are created inside it)
-      # Optional but recommended: persist spool bindings + queue + print history
-      # across container rebuilds (create empty files first: touch spools.json
-      # queue.json printlog.json).
-      # - ./spools.json:/app/spools.json
-      # - ./queue.json:/app/queue.json
-      # - ./printlog.json:/app/printlog.json
+      - ./data:/app/data                 # everything the Hub remembers
+      - ./gcode:/app/data/gcode          # your Orca output folder (printer-type
+                                         #   subfolders are created inside it);
+                                         #   config's default "./gcode" resolves
+                                         #   relative to U1HUB_DIR, hence this path

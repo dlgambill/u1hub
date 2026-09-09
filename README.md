@@ -101,10 +101,17 @@ browser's Add to Home Screen.
 ```bash
 git clone https://github.com/dlgambill/u1hub.git
 cd u1hub
-cp config.example.json config.json
-mkdir -p gcode
+mkdir -p data gcode
 docker compose up -d
 ```
+
+Everything the Hub remembers (printers, password, tunnel, spools, schedule)
+lives in `./data` on the host, so upgrading is `git pull` and
+`docker compose up -d --build` with nothing to redo. If you set up with the
+older compose file, which only kept `config.json`, move that `config.json`
+into `./data`, and copy your old container's `spools.json`, `slots.json`,
+`dispatch.json`, `auth.json` and `tunnel.json` in beside it once
+(`docker cp u1-print-hub:/app/spools.json data/` and so on).
 
 **From source:** install Node.js 22 or newer, then run `start-windows.bat` or
 `./start-mac-linux.sh`. First launch installs what it needs and opens the page.
