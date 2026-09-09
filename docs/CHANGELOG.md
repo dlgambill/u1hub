@@ -77,6 +77,18 @@ printers, and nothing leaves your network unless you turn remote access on.
 
 ---
 
+### 2.23.1 - more colors than heads
+
+A five-color file on a four-head printer is a real workflow: you put a pause in
+the gcode (M600, or Orca's PAUSE) and swap the roll on one head when the
+printer stops. The Hub refused it, because two different colors on one head is
+normally a mistake that prints wrong. Now, when the file carries a pause, the
+Hub explains the swap and asks you to confirm instead of refusing; without a
+pause it still refuses, and the message tells you that adding one is the way
+through. Raised as GitHub issue #3. Also the first release cut from the single
+install on the development machine - the staging copy that let rfid.js ship
+stale for five releases is gone.
+
 ## New in 2.23 - the speed release
 
 - **The dashboard and Dispatch load in well under a second, from your phone,

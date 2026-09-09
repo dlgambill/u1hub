@@ -56,6 +56,22 @@ function uploadWithProgress(base, fp, name, job) {
 }
 
 
+// Count the manual filament-change / pause commands in a gcode file, streamed
+// (files run 200-400 MB and must never be read whole). Only called when a
+// mapping puts two DIFFERENT colors on one head - the one case where a pause
+// is the explanation. M600 is the slicer's filament change; PAUSE is the
+// Klipper macro Orca's custom templates use; M0/M1/M226 are the classic
+// program-stop forms. A leading ';' is a comment and does not count.
+function countPauses(fp) {
+  return new Promise(resolve => {
+    let n = 0;
+    const rl = require("readline").createInterface({ input: fs.createReadStream(fp) });
+    rl.on("line", l => { if (/^\s*(M600|M0|M1|M226|PAUSE)\b/i.test(l)) n++; });
+    rl.on("close", () => resolve(n));
+    rl.on("error", () => resolve(n));
+  });
+}
+
 const JOBS = new Map();   // jobId -> { phase, sent, total, done, error, result, ts }
 
 const newJobId = () => "j" + Date.now() + Math.random().toString(16).slice(2, 6);
@@ -128,8 +144,22 @@ app.post("/api/print", async (req, res) => {
         const hexes = ts.map(x => norm(hexByIdx[x]));
         if (hexes.some(h => !h))                                  // unknown color — can't prove it's safe
           return res.status(400).json({ error: "Two colors are mapped to T" + (Number(head) + 1) + " and the file's colors for them couldn't be read — give each its own head." });
-        if (new Set(hexes).size !== 1)
-          return res.status(400).json({ error: "T" + (Number(head) + 1) + " is mapped to different colors (" + hexes.map(h => "#" + h).join(" and ") + ") — one head prints one color, so give each its own head." });
+        if (new Set(hexes).size !== 1) {
+          // v2.23.1 (GitHub #3): more colors than heads is a real workflow -
+          // a 5-color file with an M600/PAUSE where you swap the roll on one
+          // head. Two DIFFERENT colors on a head is allowed exactly when the
+          // file carries a pause to do the swap at, and even then only after
+          // the person confirms (409 + force, the class-guard pattern below).
+          // Without a pause the two colors would simply print wrong, so that
+          // stays a hard reject - now with the pause named as the way out.
+          const label = "T" + (Number(head) + 1) + " is mapped to different colors (" + hexes.map(h => "#" + h).join(" and ") + ")";
+          const pauses = await countPauses(fp);
+          if (pauses > 0 && force) { hublog("info", "print: " + label + " — allowed on confirm, file has " + pauses + " pause(s)"); continue; }
+          if (pauses > 0)
+            return res.status(409).json({ classWarning: true,
+              error: label + ". The file has " + pauses + " pause" + (pauses === 1 ? "" : "s") + " (M600/PAUSE), so this works if you swap the roll on T" + (Number(head) + 1) + " when the printer stops. Send anyway?" });
+          return res.status(400).json({ error: label + " — one head prints one color, so give each its own head. If you meant to swap rolls mid-print, add a filament-change pause (M600 or PAUSE) to the gcode at the swap and the Hub will let it through." });
+        }
       }
       hublog("info", "print: " + shared.map(([h, ts]) => ts.length + " same-color tools → T" + (Number(h) + 1)).join(", "));
     }

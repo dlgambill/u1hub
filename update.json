@@ -1,7 +1,7 @@
 {
-  "_comment": "Release manifest. Every Hub with update checks on fetches this file and compares its own version against `version`. Bump it as part of cutting a release, not before — the harness pins it equal to package.json so a manifest that lies about the current release cannot ship.",
-  "version": "2.23.0",
+  "_comment": "Release manifest. Every Hub with update checks on fetches this file and compares its own version against `version`. Bump it as part of cutting a release, not before - the harness pins it equal to package.json so a manifest that lies about the current release cannot ship.",
+  "version": "2.23.1",
   "url": "https://github.com/dlgambill/u1hub/releases",
-  "notes": "The speed release. The dashboard and Dispatch load in well under a second on a big farm, even from a phone over the tunnel (they took several seconds before). A paused print now says why, in the firmware's own words. The Dispatch badge shows a spool glyph so it reads as filament short, not behind schedule. Under the hood the server is split into small files, one per concern.",
-  "published": "2026-09-09"
+  "notes": "2.23.1: more colors than heads now works - with an M600 or PAUSE in the gcode, two colors can share a head and the Hub asks you to confirm the swap. 2.23 was the speed release: The dashboard and Dispatch load in well under a second on a big farm, even from a phone over the tunnel (they took several seconds before). A paused print now says why, in the firmware's own words. The Dispatch badge shows a spool glyph so it reads as filament short, not behind schedule. Under the hood the server is split into small files, one per concern.",
+  "published": "2026-09-10"
 }

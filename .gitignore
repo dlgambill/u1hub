@@ -60,3 +60,14 @@ access.log
 
 # v2.23: extracted-thumbnail cache (rebuilt from the gcode folder on demand)
 thumbs/
+
+# Harness fixtures (real 3MF bytes, ~4 MB, copied by hand - see test/run-tests.js SLICE)
+# and the harness/shot logs the helper scripts write next to themselves.
+test/fixtures/
+scripts/hout.txt
+scripts/herr.txt
+scripts/_*.txt
+scripts/_*.log
+scripts/harness.log
+hub-console.log
+claude/
