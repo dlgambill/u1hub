@@ -423,7 +423,7 @@
 
     // What is on the beds right now, from plan.running — a separate list, and
     // kept separate here too. It is the most certain thing on the guide and it
-    // is not planned work: no deadline colour, no move, no tap-to-replan.
+    // is not planned work: no deadline color, no move, no tap-to-replan.
     const RUN = (PLAN && PLAN.running) || [];
     const runBlocks = idx => RUN.filter(r => r.printer === idx).map((r, i) => {
       const l = Math.max(0, x(now)), w = Math.max(7, x(r.est_end) - l);
@@ -462,7 +462,7 @@
           `${s.est_assumed ? "\n(no estimate in file — 1 h assumed)" : ""}${s.misses_deadline ? "\n⚠ MISSES ITS DEADLINE" : ""}">` +
           `<span class="dsp-gtext">${body}</span>${swapBadge}${clash}${idle}</div>`;
       }).join("");
-      // v2.19 maintenance. Deliberately its own word and its own colour: an
+      // v2.19 maintenance. Deliberately its own word and its own color: an
       // offline machine is a fact the Hub discovered, a machine down for
       // maintenance is a decision you made, and a farm where those two look the
       // same is a farm where you go hunting for a fault you caused.
@@ -709,7 +709,7 @@
         { btn.disabled = false; return; }
       // Hand off to the dashboard's tool-head picker rather than starting
       // blind: Dispatch knows WHICH file goes WHERE, the dashboard owns the
-      // mapping UI (and 2.10's duplicate-colour rules). Select the file, jump
+      // mapping UI (and 2.10's duplicate-color rules). Select the file, jump
       // to the dashboard, and let the human confirm heads and press send.
       if (typeof selectFile === "function") selectFile(next.file);
       setView("dash");
@@ -977,7 +977,7 @@
       .dsp-jfile{font-weight:700;min-width:180px}
       .dsp-jstate{color:var(--ink-dim, #9aa)}
       .dsp-done{opacity:.55}
-      /* v2.22 priority picker in the job list. Compact; colour-cued so a P5
+      /* v2.22 priority picker in the job list. Compact; color-cued so a P5
          (top) and a P1 (low) read at a glance without opening anything. */
       .dsp-jprio{font:inherit;font-size:12px;padding:2px 4px;border:1px solid var(--line,#3C4250);
         border-radius:5px;background:var(--chassis,#12151a);color:var(--ink-dim,#AEB6C4);cursor:pointer}
@@ -1059,7 +1059,7 @@
       .dsp-gz,.dsp-gjump{font:inherit;font-size:11.5px;padding:3px 9px;border:1px solid var(--line,#3C4250);border-radius:6px;background:var(--panel,#1b1e24);color:var(--ink-dim,#AEB6C4);cursor:pointer}
       .dsp-gzon{border-color:var(--signal, #FFB200);color:var(--signal, #FFB200);font-weight:700}
       /* v2.22 fluid/locked toggle. Fluid reads calm; locked reads deliberate
-         (solid amber, the "you decided this" colour used for maintenance). */
+         (solid amber, the "you decided this" color used for maintenance). */
       .dsp-glock{font:inherit;font-size:11.5px;padding:3px 10px;border:1px solid var(--line,#3C4250);
         border-radius:6px;background:var(--panel,#1b1e24);color:var(--ink-dim,#AEB6C4);cursor:pointer;white-space:nowrap}
       .dsp-glock:hover{border-color:var(--ink-faint,#828B9A);color:var(--ink,#F4F6FA)}

@@ -18,9 +18,10 @@ already run, and nothing leaves your network unless you turn remote access on.
 ## What it does
 
 **See the whole farm at a glance.** Every printer gets a card with its live
-status, progress, loaded colors, camera, and bed temperature. A printer that is
-down for maintenance says so right on the card, and the scheduler routes work
-around it until you bring it back.
+status, progress, loaded colors, camera, and bed temperature. A print that
+paused or failed says why, in the firmware's own words, so you know whether to
+walk over. A printer that is down for maintenance says so right on the card,
+and the scheduler routes work around it until you bring it back.
 
 **Open any printer's own control page in one click.** Click a printer's name
 and its full Klipper interface (Fluidd) opens, no typing IP addresses. On your

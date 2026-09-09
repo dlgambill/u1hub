@@ -60,8 +60,9 @@ function req(method, path, body) {
 
   console.log("\n== the client actually served carries the new controls");
   const page = await req("GET", "/");
-  const m = (page.text || "").match(/\/modules\/dispatch-ui\.js\?v=([0-9.]+)/);
-  ok(m && m[1] === "2.22.0", "the page loads dispatch-ui.js stamped v2.22.0 (no stale cache)", m && m[0]);
+  // v2.23: the stamp is <version>-<content hash>; only the version half is checked here.
+  const m = (page.text || "").match(/\/modules\/dispatch-ui\.js\?v=([0-9.]+)(-[0-9a-f]{8})?/);
+  ok(m && m[1] === WANT, "the page loads dispatch-ui.js stamped v" + WANT + " (no stale cache)", m && m[0]);
   const ui = await req("GET", (m ? m[0] : "/modules/dispatch-ui.js"));
   const js = ui.text || "";
   ok(/dsp-glock/.test(js) && /id="dsp-glockbtn"/.test(js), "the served module has the fluid/locked toggle", /dsp-glock/.test(js));

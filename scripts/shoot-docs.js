@@ -38,7 +38,10 @@ const SHOTS = [
   // Dispatch needs the fleet AND a rendered plan; land on the dashboard so the
   // fleet is up, switch, then wait for actual plan rows (.dsp-grow), not just
   // the empty form.
-  { name: "dispatch",  file: "dispatch.png",         w: 1440, h: 1300, url: "/#dash", ready: ".pcard .pill", thenView: "dispatch", thenReady: ".dsp-grow", extraMs: 2500 },
+  // v2.23: the JOBS drawer opens by default in a fresh profile and, on a
+  // 35-job farm, fills the whole frame - collapse it so the timeline, which is
+  // what the README caption promises, is the picture.
+  { name: "dispatch",  file: "dispatch.png",         w: 1440, h: 1300, url: "/#dash", ready: ".pcard .pill", thenView: "dispatch", thenReady: ".dsp-grow", thenClick: "#dsp-jobs-toggle", extraMs: 2500 },
   { name: "resources", file: "resources.png",        w: 1440, h: 1300, url: "/#resources", ready: "#modview-resources .rtab td" },
   { name: "spools",    file: "spools-inventory.png", w: 1440, h: 1300, url: "/#spools",    ready: ".spoolrow" },
   // Match renders from the fleet snapshot, and the deep link lands before the
@@ -75,6 +78,7 @@ const SHOTS = [
           await page.evaluate(v => setView(v), s.thenView);
           await page.waitForSelector(s.thenReady, { timeout: 30000 });
         }
+        if (s.thenClick) { await page.click(s.thenClick); await new Promise(r => setTimeout(r, 600)); }
         // Let live tiles (progress bars, sparklines, thumbnails) finish a tick.
         await new Promise(r => setTimeout(r, s.extraMs || 1500));
         await page.screenshot({ path: dest });

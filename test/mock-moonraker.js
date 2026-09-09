@@ -56,8 +56,12 @@ function createMock(profile) {
     if (u.pathname === "/printer/objects/query") {
       const want = [...u.searchParams.keys()];
       const status = {};
-      if (want.some(k => k.startsWith("print_stats")))
-        status.print_stats = { state: state.printState, filename: state.filename };
+      if (want.some(k => k.startsWith("print_stats"))) {
+        status.print_stats = { state: state.printState, filename: state.filename, message: state.printMessage || "" };
+        // v2.23: Snapmaker's fork reports detector pauses here, not in .message
+        // (shape captured live from U2, 2026-09-08).
+        if (state.exception) status.print_stats.exception = state.exception;
+      }
       if (want.some(k => k.startsWith("print_task_config")) && profile === "u1")
         status.print_task_config = ptc;
       if (want.some(k => k.startsWith("display_status"))) status.display_status = { progress: 0 };

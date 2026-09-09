@@ -35,7 +35,7 @@
   }
 
   // Swatch. Gradient/multi spools carry several hexes; show them as hard
-  // segments so a rainbow silk never reads as a flat colour it isn't.
+  // segments so a rainbow silk never reads as a flat color it isn't.
   function swatch(hexes, size) {
     const s = size || 22;
     const hx = (hexes || []).filter(Boolean);
@@ -127,7 +127,7 @@
   /* ---- Phone layout ------------------------------------------------------
      Below 700px an 8-column table is unreadable at any zoom, and Danny checks
      this from his phone while away from the shop — that is the primary use,
-     not a fallback. Each row becomes a card: colour identity on top, then the
+     not a fallback. Each row becomes a card: color identity on top, then the
      numbers as labelled pairs. th labels come through data-label so there is
      one source of truth for the column names. */
   @media (max-width:700px){
@@ -140,11 +140,11 @@
     #modview-resources .rtab td{border:0;padding:0}
     #modview-resources .rtab tr.short td:first-child,
     #modview-resources .rtab tr.unknown td:first-child{box-shadow:none}
-    /* material rides along with the colour cell instead of owning a line */
+    /* material rides along with the color cell instead of owning a line */
     #modview-resources .rtab td.c-material{position:absolute;left:-9999px}
-    #modview-resources .rtab td.c-colour{margin-bottom:9px}
-    #modview-resources .rtab td.c-colour .rspool{margin-top:5px}
-    #modview-resources .rtab td.c-colour select.rmap{max-width:100%;width:100%;padding:7px}
+    #modview-resources .rtab td.c-color{margin-bottom:9px}
+    #modview-resources .rtab td.c-color .rspool{margin-top:5px}
+    #modview-resources .rtab td.c-color select.rmap{max-width:100%;width:100%;padding:7px}
     /* numbers: two per row, label above value */
     #modview-resources .rtab td.num{display:inline-block;width:50%;text-align:left;
       padding:5px 0;vertical-align:top}
@@ -249,7 +249,7 @@
     $$("#res-stats").innerHTML = [
       `<div class="rstat money"><b>${money(T.est_cost)}</b><span>to buy</span></div>`,
       `<div class="rstat"><b>${g(T.needed_g)}</b><span>needed</span></div>`,
-      `<div class="rstat short"><b>${T.short_colors}</b><span>colours short</span></div>`,
+      `<div class="rstat short"><b>${T.short_colors}</b><span>colors short</span></div>`,
       `<div class="rstat"><b>${T.rolls_to_buy}</b><span>rolls</span></div>`,
       `<div class="rstat"><b>${DATA.counted_units}</b><span>units queued</span></div>`
     ].join("");
@@ -274,16 +274,16 @@
     }
     const T = DATA.totals;
     // Orphans get their own warning rather than a quiet tag, because the row
-    // that caused this bug looked exactly like a colour you had simply never
+    // that caused this bug looked exactly like a color you had simply never
     // got around to mapping.
     const OI = DATA.orphaned_inv || [];
     if (T.orphaned || OI.length) {
       const bits = [];
-      if (T.orphaned) bits.push(`<b>${T.orphaned} colour${T.orphaned > 1 ? "s were" : " was"}
+      if (T.orphaned) bits.push(`<b>${T.orphaned} color${T.orphaned > 1 ? "s were" : " was"}
         mapped to a spool that is no longer on the shelf.</b> The mapping is kept, not
         guessed at — pick the replacement from the dropdown on those rows.`);
       // v2.20: an entry nothing refers to is deleted server-side the moment the
-      // spool goes, so this can only be an entry a colour above still points at
+      // spool goes, so this can only be an entry a color above still points at
       // — i.e. numbers being HELD for a mapping, not litter. Say that, and keep
       // the manual escape hatch for someone who wants them gone now.
       if (OI.length) bits.push(`${OI.length === 1 ? "A roll" : OI.length + " rolls"} above
@@ -300,7 +300,7 @@
     }
     if (T.unknown_on_hand) {
       w.push(`<div class="rwarn" style="border-color:var(--line);background:transparent">
-        <b style="color:var(--ink)">${T.unknown_on_hand} colour${T.unknown_on_hand > 1 ? "s have" : " has"}
+        <b style="color:var(--ink)">${T.unknown_on_hand} color${T.unknown_on_hand > 1 ? "s have" : " has"}
         no on-hand amount set.</b> Shortfall and cost stay blank for those rows rather than
         assuming the shelf is empty — click a dash in the ON HAND column to set one.
         <button class="btn" id="res-assume" style="margin-left:10px;padding:3px 9px;font-size:11.5px">
@@ -414,7 +414,7 @@
       // v2.21: one label, "Replenish on Amazon", whether the click lands on a
       // saved product link or a search. "Buy" vs "Search" made the user read
       // the button to work out which kind of link they had — a distinction that
-      // matters to the code and not at all to the person restocking a colour.
+      // matters to the code and not at all to the person restocking a color.
       // The destination still differs and the title still says which.
       const b = r.buy;
       const buy = !b
@@ -425,11 +425,11 @@
           : `<a class="rbuy go" href="${esc(b.url)}" target="_blank" rel="noopener"
                title="${esc(b.url)}${b.tagged ? " (affiliate link)" : ""}">Replenish on Amazon</a>`;
       // On a phone the material cell is hidden and its value rides in the
-      // colour cell instead — one line per row of chrome saved, and material
-      // only ever matters next to the colour anyway.
+      // color cell instead — one line per row of chrome saved, and material
+      // only ever matters next to the color anyway.
       return `<tr class="${cls}">
         <td class="c-material">${esc(r.material)}</td>
-        <td class="c-colour"><div class="rcol">${swatch(r.unassigned ? [r.color_hex] : (r.spool_hexes.length ? r.spool_hexes : [r.color_hex]))}
+        <td class="c-color"><div class="rcol">${swatch(r.unassigned ? [r.color_hex] : (r.spool_hexes.length ? r.spool_hexes : [r.color_hex]))}
           <div style="min-width:0"><span class="rhex">${esc(r.color_hex)}</span>
           <span class="rtag rmat">${esc(r.material)}</span>${matchTag(r)}
           <div class="rspool">${r.spool_name ? esc(r.spool_name)
@@ -447,7 +447,7 @@
 
     $$("#res-body").innerHTML = `<div class="rscroll"><table class="rtab">
       <thead><tr>
-        <th>Material</th><th>Colour</th>
+        <th>Material</th><th>Color</th>
         <th class="num">Needed</th><th class="num">On hand</th><th class="num">Short</th>
         <th class="num">Rolls</th><th class="num">$/roll</th><th class="num">Est. cost</th><th class="hide"></th>
       </tr></thead><tbody>${body}</tbody></table></div>`;
@@ -502,9 +502,9 @@
       (queued, printing and paused), ${DATA.cache_entries} file${DATA.cache_entries === 1 ? "" : "s"} parsed`);
     if (T.unpriced_rows) bits.push(`${T.unpriced_rows} row${T.unpriced_rows > 1 ? "s" : ""}
       excluded from the total — no cost per roll set on that spool`);
-    if (T.unassigned) bits.push(`${T.unassigned} colour${T.unassigned > 1 ? "s" : ""}
+    if (T.unassigned) bits.push(`${T.unassigned} color${T.unassigned > 1 ? "s" : ""}
       not matched to any spool — still counted in "needed"`);
-    if (T.review) bits.push(`${T.review} nearest-colour match${T.review > 1 ? "es" : ""} worth reviewing`);
+    if (T.review) bits.push(`${T.review} nearest-color match${T.review > 1 ? "es" : ""} worth reviewing`);
     bits.push(`purge is already inside these numbers — the slicer charges flush to the
       slot doing it, so nothing is added on top`);
     $$("#res-foot").innerHTML = bits.join(" &middot; ");
@@ -527,7 +527,7 @@
   window.HubModules.register("resources", { tab: "Resources", mount, onShow });
 
   // ---- Schedule badge -------------------------------------------------------
-  // "N colours short" on the Dispatch tab, linking here. Same server code path
+  // "N colors short" on the Dispatch tab, linking here. Same server code path
   // as the table (/api/resources/badge calls the identical compute), so the
   // badge can never claim something the tab contradicts.
   async function paintBadge() {
@@ -545,8 +545,11 @@
         dot.addEventListener("click", e => { e.stopPropagation(); setView("resources"); });
         tab.appendChild(dot);
       }
-      dot.textContent = n ? n + " short" : un + " unread";
-      dot.title = n ? n + " colour(s) short for the current schedule"
+      // v2.23: a spool glyph instead of the word "short" - on a scheduling tab
+      // "33 short" read as "behind schedule" (it is filament, not time), and
+      // the tab has no room for "33 colors short" on a phone.
+      dot.textContent = n ? "\u{1F9F5} " + n : un + " unread";
+      dot.title = n ? n + " color(s) short of filament for the current schedule - tap for Resources"
                     : un + " scheduled job(s) whose gcode could not be read";
     });
   }

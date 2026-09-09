@@ -286,6 +286,41 @@ module.exports = function mountRfid(app, express, BASE_DIR, ASSET_DIR, helpers) 
     res.json({ ok: true, spool_id: sid, uid: uid || null, spool: ident });
   });
 
+  // Edit a bound spool in place (v2.12). Partial merge: only fields present in
+  // `patch` change; everything else — boundAt, tag UIDs, loadout — survives
+  // untouched. This replaces the forget→rescan→rebind workaround for
+  // refillable spools: the spool_id IS the identity, so nothing on the tag
+  // ever needs rewriting.
+  //
+  // Provenance rule: if the edit changes `hex`, the record's measured LAB and
+  // swatch_id no longer describe this spool — both are dropped and
+  // color_source becomes "user". Cosmetic edits (brand, name, temps) keep the
+  // measured data intact, so a catalog-bound spool stays a measured pick.
+  const EDITABLE = ["brand", "material", "material_variant", "color_name", "hex", "hot_end_temp", "bed_temp"];
+  app.post("/api/spools/update", (req, res) => {
+    const b = req.body || {};
+    const sid = String(b.spool_id || "");
+    const cur = STATE.spools[sid];
+    if (!cur) return res.status(404).json({ error: "Unknown spool" });
+    const patch = (b.patch && typeof b.patch === "object" && !Array.isArray(b.patch)) ? b.patch : null;
+    if (!patch) return res.status(400).json({ error: "Provide patch { brand, material_variant, color_name, hex, hot_end_temp, bed_temp }" });
+    const merged = { ...cur };
+    for (const k of EDITABLE) if (k in patch) merged[k] = patch[k];
+    const newHex = ("hex" in patch) ? String(patch.hex || "").replace(/^#/, "").toUpperCase() : cur.hex;
+    const hexChanged = newHex !== cur.hex;
+    if (hexChanged) { merged.lab = null; merged.color_source = "user"; }
+    const cleaned = cleanIdentity(merged, merged.color_source || "user");
+    if (!cleaned) return res.status(400).json({ error: "Bad color — hex needs 6 hex digits" });
+    // cleanIdentity coerces +null → 0 for swatch_id; a changed hex means the
+    // catalog swatch no longer describes this spool, so null it explicitly.
+    if (hexChanged) cleaned.swatch_id = null;
+    cleaned.boundAt = cur.boundAt || Date.now();
+    STATE.spools[sid] = cleaned;
+    saveState();
+    if (helpers && helpers.log) helpers.log("info", "spool edited: " + (cleaned.color_name || "#" + cleaned.hex) + " (" + sid + ")");
+    res.json({ ok: true, spool_id: sid, spool: cleaned });
+  });
+
   // Forget a spool (and any tag UIDs pointing at it), or detach a single UID.
   app.post("/api/spools/forget", (req, res) => {
     const b = req.body || {};

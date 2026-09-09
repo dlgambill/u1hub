@@ -480,33 +480,33 @@ function register(ctx) {
 
   // ---- spool exclusivity ----------------------------------------------------
   // A roll of filament is a physical object: it cannot be in two printers at
-  // once. The Hub assumes ONE roll per distinct colour unless a tray somewhere
+  // once. The Hub assumes ONE roll per distinct color unless a tray somewhere
   // is already showing it. Two jobs needing black therefore cannot overlap.
   //
   // 2026-09-01: it was proposed to soften this using the Resource Monitor's
   // on-hand figures — count the rolls, only warn when concurrent demand exceeds
   // them. Danny said no, and was right: the shelf is only partly entered. A
-  // colour with two rolls recorded and eight on the wall would stop warning
-  // correctly; a colour with two recorded and two on the wall would stop
+  // color with two rolls recorded and eight on the wall would stop warning
+  // correctly; a color with two recorded and two on the wall would stop
   // warning by luck. Inferring capacity from an inventory nobody has finished
   // filling in turns a conservative warning into a confident wrong one, and it
   // fails silently — you find out when two machines want the same roll.
   //
   // So it stays at one. Revisit only if the shelf ever becomes authoritative,
-  // and even then only for colours whose count is explicitly confirmed rather
+  // and even then only for colors whose count is explicitly confirmed rather
   // than merely present.
   //
   // We do NOT silently serialise them: the second job is planned where it
-  // naturally falls and the slot carries a `contention` note naming the colour
+  // naturally falls and the slot carries a `contention` note naming the color
   // and the machine holding it, so a human can decide (buy another roll,
   // reorder, let it wait). Invisible constraints are how you end up staring at
   // a plan wondering why nothing starts.
   function colorNeedsOf(job, fp) {
-    // Colours this job needs that aren't already loaded on that printer.
+    // Colors this job needs that aren't already loaded on that printer.
     const loaded = loadedHexes(fp);
     return (job.colors || []).map(norm).filter(h => h && !loaded.has(h));
   }
-  // Which colours does a planned slot OCCUPY while it runs? Everything the job
+  // Which colors does a planned slot OCCUPY while it runs? Everything the job
   // prints with — loaded or freshly mounted — is tied up for the duration.
   function colorsHeld(job) { return (job.colors || []).map(norm).filter(Boolean); }
   function findContention(colors, startMs, endMs, placed) {

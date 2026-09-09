@@ -16,16 +16,49 @@ Running log of things that broke, why, and the rule that stops a repeat.
 | Cluster | Entries | Law |
 |---|---|---|
 | Test depends on when it runs / what else runs | 4 incidents, 5 checks | rule 7 |
-| Asserted or acted without checking first | 6 incidents | rule 8 |
-| Harness green while the feature was broken | 2 incidents | rule 2 — "green" is not "verified" |
+| Asserted or acted without checking first | 11 incidents | rule 8 |
+| Harness green while the feature was broken | 3 incidents | rule 2 — "green" is not "verified" |
 | Unverified shape trusted as complete | 2 incidents | rule 6 |
 | Shipped onto one surface, not every surface that draws the thing | 3 incidents | *approaching a law* — check every tab that renders it before calling it done |
 | Version drift across the three files | 1 | rule 4 |
-| Staging vs git clone drift | 1 | rule 3 |
-| Bridge / tooling sharp edges | 5 incidents | *not a law* — reference block, "Working over the bridge" |
+| Staging vs git clone drift | 2 incidents | rule 3 |
+| Claimed done without opening the artifact | 1 | *watch this one* — a summary is not evidence |
+| Bridge / tooling sharp edges | 6 incidents | *not a law* — reference block, "Working over the bridge" |
 
 Bridge quirks are operating facts, not judgment failures; a rule that says
 "remember these four things" is a lookup table wearing a rule's clothes.
+
+---
+
+## 2026-09-08 — Shipped a feature the server had and the phone could not see, because of a cache I had added a week earlier
+
+**What happened:** Danny asked why U2 was paused. The reason was in
+`print_stats.exception` (Snapmaker's fork), which the Hub never read. I wired
+it through the fleet shape and the card, added five harness checks against the
+exact object U2 reported, restarted production, told him the card would show
+it. He opened a fresh tab: no line. The server's own `/api/fleet` for U2 said
+"detect filament tangled! (extruder 0) · code 38" the whole time.
+
+**Root cause:** During the v2.23 speed work I made `app.js` and the tab scripts
+cacheable for a year, keyed on `?v=<VERSION>`. Right for releases: the number
+changes, the URL changes. Wrong for a test week: the number stayed 2.23.0 for
+six days of edits, so every phone that had loaded the page once kept the old
+`app.js` and drew the card the old way. The harness reads `app.js` from disk,
+so it was green against code no browser was running.
+
+**Consequence:** A confident "reload and you'll see it" that was false, and
+had he not sent the screenshot, every client-side change of the test week
+(spool glyph, spelling, the pause line) would have reached him only at the
+next version bump, while I reported each as done.
+
+**Rule:** A cache key must change whenever the cached thing changes, not
+whenever a person decides to call it a release. The stamp is now
+`<version>-<content hash of the stamped assets>`, computed at boot, so a
+restart after any client edit moves every asset URL together. More generally:
+when a change is client-side, the proof is a screenshot from a device that had
+the old page, never a passing check that reads the file from disk. Rule-2
+family, third incident; and the file this feature touched (`core/app.js`,
+`setHeaders`) is exactly where the check should have started.
 
 ---
 
@@ -744,3 +777,146 @@ redirection, chaining, and running node/python over SMB are unsupported.
 **Rule:** Write files with the filesystem tool to a grantable location, then
 `copy` into place with a single shell command. For small targeted patches, one
 Python one-liner per patch. Never `>` and never `&&`.
+
+---
+
+## 2026-09-07 — Told Danny his production code was not in git, from a stale ref
+
+**What happened:** I compared the working tree against `origin/master` and
+reported that 14 commits of production code existed only on the machine. The
+claim was alarming and wrong.
+
+**Root cause:** `origin/master` is a local cache of where the remote was the
+last time anything fetched. `.git/FETCH_HEAD` was dated the same day as the
+commit I was quoting as "the latest on the remote". One `git fetch` showed
+origin was 14 commits *ahead* of my cached ref, not behind.
+
+**Consequence:** A false alarm about lost work, and the time spent
+hash-comparing blobs afterwards to prove nothing had actually been lost.
+
+**Rule:** `git fetch` before any statement about what the remote contains.
+A ref you did not fetch this session is a memory, not an observation. This is
+also a rule-3 repeat: staging, clone and remote drift, and the one you did not
+refresh is always the one you quote.
+
+---
+
+## 2026-09-07 — Quoted "$79 and up to 200 runs" for a tick that cost $1.48
+
+**What happened:** I estimated the cost of a Scout tick at roughly $79 across
+up to 200 runs. It cost $1.48 across 3.
+
+**Root cause:** I sized the work queue from a `status='scored'` survey count of
+202 rows. The loop does not iterate that set — it filters on
+`viability_verdict IS NULL`, and all 202 already had verdicts. I had read that
+filter and quoted it in the same session before building an estimate that
+ignored it.
+
+**Consequence:** An estimate wrong by more than 50x, offered to someone who had
+explicitly said estimates in this stack have been wrong by 2-5x before and to
+verify before asserting.
+
+**Rule:** An estimate of "how much work will this do" must be built from the
+loop's own filter, executed as a query, not from a nearby count that looks like
+the same population. Run the count the code would run.
+
+---
+
+## 2026-09-07 — Repeated a Supabase security advisory three times without testing it
+
+**What happened:** I reported that five `sf3d_*` tables were exposed to the
+public anon key with RLS disabled, and repeated it across three messages as an
+open vulnerability.
+
+**Root cause:** I was reading the Supabase advisor output and never issued a
+single request with the anon key. Postgres has two independent layers: the
+table GRANT, then RLS. The advisor reports only the second. Four of the five
+tables were unreachable by any public key — `42501 permission denied` — because
+the GRANT was never made. No vulnerability existed.
+
+**Consequence:** Three same-shaped errors in one session, all of them
+"asserted without checking", on a topic where the assertion was frightening.
+
+**Rule:** A security claim gets tested with a live request before it is spoken,
+not after. A tool that reports on one layer of a two-layer system is evidence
+about that layer only.
+
+---
+
+## 2026-09-07 — Reported a moving number as if it were settled
+
+**What happened:** I told Danny the new scoring formula "tops out around 64",
+based on a query run at 13:20 UTC. The Scout pipeline ran at 15:00 UTC, the
+ViabilityCheck pass re-scored the same rows, and the real ceiling is 75.
+
+**Root cause:** I read a table that a scheduled pipeline writes to, on a day
+that pipeline was due to run, and quoted the value with no timestamp and no
+acknowledgement that it was a snapshot of live state mid-flight.
+
+**Consequence:** A number in Danny's hands that was already stale when he read
+it. The conclusion it supported (legacy scores outrank current ones) survived;
+the figure did not.
+
+**Rule:** When quoting a value from a table an automated job writes, say when
+it was read, and check the job's schedule before treating it as settled. Same
+family as the stale git ref above: a snapshot presented as a fact.
+
+---
+
+## 2026-09-07 — A handoff summary claimed MISTAKES.md entries that were never written
+
+**What happened:** A session summary stated that three entries had been appended
+to this file and two promoted-cluster counters bumped. None of it was here. The
+file was clean in git with no uncommitted changes.
+
+**Root cause:** Unknown — either the writes never happened and the summary
+recorded intent as completion, or they happened somewhere that is not this file.
+Either way nothing verified them at the time.
+
+**Consequence:** Four incidents nearly lost, and a handoff that would have had
+the next session believe this file was current when it was two days behind.
+
+**Rule:** Work is not done because a summary says it is. When a handoff claims a
+file was changed, open the file. And when appending to this file, confirm the
+append landed before saying so — the same standard every other check here gets.
+
+---
+
+## 2026-09-07 — `npx @latest` in the MCP config, and three orphaned servers
+
+**What happened:** desktop-commander disconnected and respawned repeatedly
+through a working session, surfacing in the UI as "Failed / Server
+disconnected". Six `node.exe` processes were alive; three were orphaned
+desktop-commander instances from 9/5 and 9/6, holding ~215 MB between them.
+
+**Root cause:** partly unknown, and worth saying so. Claude's own MCP logs
+(`%APPDATA%\Claude\logs\mcp*.log`) stopped being written on 2026-08-29, so
+there is no record of why the server exited. What IS established: the process
+start time proves the server genuinely restarted rather than the client
+dropping a live connection, and the config was
+
+    "command": "npx", "args": ["-y", "@wonderwhy-er/desktop-commander@latest"]
+
+which puts an npm registry round-trip (measured: 1.6 s) and an extra wrapper
+process (`npx-cli.js`) in the startup and pipe chain of every single launch.
+`@latest` also means an upstream publish can change the running version
+mid-session with no warning.
+
+**Consequence:** a working session interrupted four times; every interruption
+costs a tool-schema reload and a retry.
+
+**Rule:** MCP servers get a **pinned global install invoked directly** —
+`node.exe` plus an absolute path to `dist/index.js` — never `npx`, never
+`@latest`. Trade-off accepted deliberately: no auto-update, in exchange for a
+startup path with no network in it.
+
+Two operating notes from doing it:
+
+1. **Verify the new command speaks MCP before writing the config.** "The file
+   exists" is not "the server works", and if the config is wrong there is no
+   shell left on the machine to fix it with. Send a JSON-RPC `initialize` down
+   stdin and require a `result` back. Back up the config first.
+2. **Kill orphans by PID, after reading each command line** — `Get-CimInstance
+   Win32_Process`. Never by image name: `node server.js` was also running and
+   is something else entirely, and rule "taskkill /IM node.exe /F kills the
+   bridge" is already in this file for the same reason.

@@ -1,7 +1,7 @@
 // modules/resources.js — Resource Monitor (v2.16).
 //
 // Answers one question: "for everything Dispatch has scheduled, how much
-// filament of each colour do I need, how much is on the shelf, and what do I
+// filament of each color do I need, how much is on the shelf, and what do I
 // have to buy?"
 //
 // Design notes, and why it looks like this:
@@ -41,12 +41,12 @@ const TAIL_BYTES = 512 * 1024;
 // job is still on the board and its filament is still spoken for.
 const COUNTED_STATES = new Set(["queued", "printing", "paused"]);
 
-// Nearest-colour match ceiling. Above this dE2000 nothing is proposed at all —
-// the colour lands in Unassigned rather than being silently attached to
+// Nearest-color match ceiling. Above this dE2000 nothing is proposed at all —
+// the color lands in Unassigned rather than being silently attached to
 // something that is not it. Below REVIEW_DE the match is treated as confident.
 //
 // These defaults were tuned against the real shelf (11 spools) and the real
-// schedule (56 distinct colours) on 2026-08-31. A first pass at dE 25 produced
+// schedule (56 distinct colors) on 2026-08-31. A first pass at dE 25 produced
 // confidently wrong rows — slicer blue #0080FF matched "Ash Gray" at 20.7 and
 // pink #FF80FF matched "Orchid Rainbow" at 12.0. Neither is the same filament in
 // any sense that helps someone shopping. At 10 the survivors are the ones that
@@ -67,7 +67,7 @@ const COUNTED_STATES = new Set(["queued", "printing", "paused"]);
 const DEFAULT_MATCH_DE_MAX = 7;
 const REVIEW_DE = 3;
 
-// ---- colour maths -----------------------------------------------------------
+// ---- color maths -----------------------------------------------------------
 function hexToRgb(hex) {
   if (!hex) return null;
   let h = String(hex).trim().replace(/^#/, "");
@@ -135,7 +135,7 @@ function deltaE2000(l1, l2) {
                    + Rt * (dCp / Sc) * (dHp / Sh));
 }
 
-// ---- resources.json (inventory + colour map) ---------------------------------
+// ---- resources.json (inventory + color map) ---------------------------------
 // State file. Never committed — see CLAUDE.md rule #5.
 function emptyState() {
   return { inv: {}, color_map: {},
@@ -212,14 +212,14 @@ function readShelf(baseDir, store, meta) {
     });
   };
   // ONLY `spools`. STATE.local is deliberately not read here: despite the name
-  // it is rfid.js's local colour LIBRARY, concatenated with the 2,266
+  // it is rfid.js's local color LIBRARY, concatenated with the 2,266
   // FilamentColors swatches to search when binding a tag (rfid.js:142). It is
   // a palette, not a shelf.
   //
   // v2.16 read it as a shelf and invented seven spools out of it — including a
   // nameless #C44FFF and two "Panchroma" entries whose hex was the #888888
-  // placeholder rather than their actual colour. Each got a default 1000 g of
-  // filament it does not have, polluted the colour-match pool, and appeared in
+  // placeholder rather than their actual color. Each got a default 1000 g of
+  // filament it does not have, polluted the color-match pool, and appeared in
   // the map-to-spool dropdown. Tagless rolls created through "New roll (no
   // tag)" land in `spools` like any other, so nothing real is lost by ignoring
   // `local` here.
@@ -240,7 +240,7 @@ function readShelf(baseDir, store, meta) {
 //      strength of a failed read of a file on a network share; and
 //   2. nothing in color_map still points at that spool id.
 //
-// (2) is what keeps this from being data loss. A colour deliberately mapped to
+// (2) is what keeps this from being data loss. A color deliberately mapped to
 // a roll that is briefly off the shelf — swapped brands, tag rebound, spool in
 // a drawer — still names it, and the existing orphan path already reports that
 // case in a way you can act on (and re-adding the spool restores the mapping
@@ -266,7 +266,7 @@ function reconcileInventory(hublog, store, shelfIds, authoritative) {
         " (" + (d.remaining_g == null ? "no grams" : d.remaining_g + " g") +
         (d.cost_per_roll == null ? "" : " @ " + d.cost_per_roll) + ") — nothing referenced it");
   }
-  // Only entries a colour still points at are reported. Everything else is
+  // Only entries a color still points at are reported. Everything else is
   // already gone, and a report of something you cannot act on is noise.
   return authoritative ? kept : [];
 }
@@ -385,12 +385,17 @@ function makeParseCache(hublog) {
   }
   // Returns { ok:true, slots } or { ok:false, reason } — never throws, because a
   // single unreadable file must not take out the whole rollup.
-  function slotsFor(slug, name, fp) {
+  // `known` ({ size, mtime }) is the library snapshot's view of the file when
+  // the caller has one: it settles the cache check without a stat against the
+  // gcode share (v2.23 PERF — each of those was ~30 ms of blocked event loop
+  // on a networked folder, per job, per badge poll).
+  function slotsFor(slug, name, fp, known) {
+    const key = slug + ":" + name;
+    const hit = CACHE.get(key);
+    if (known && hit && hit.size === known.size && hit.mtime === known.mtime) return { ok: true, slots: hit.slots, cached: true };
     let st;
     try { st = fs.statSync(fp); }
     catch (e) { return { ok: false, reason: e.code === "ENOENT" ? "file not found" : ("stat failed: " + e.message) }; }
-    const key = slug + ":" + name;
-    const hit = CACHE.get(key);
     if (hit && hit.size === st.size && hit.mtime === st.mtimeMs) return { ok: true, slots: hit.slots, cached: true };
     let r;
     try { r = parseGcodeMap(readEnds(fp, st.size), { scanBody: false }); }
@@ -461,7 +466,7 @@ function matchSpool(hex, material, shelf, colorMap, deMax) {
 
 // ---- rollup ---------------------------------------------------------------------
 function rollup(opts) {
-  const { jobs, shelf, store, cache, folderFor, deadlineOnly, from, to } = opts;
+  const { jobs, shelf, store, cache, folderFor, statFor, deadlineOnly, from, to } = opts;
   const settings = store.state.settings || {};
   const colorMap = store.state.color_map || {};
   const assumeEmpty = !!settings.assume_empty_when_unset;
@@ -487,7 +492,7 @@ function rollup(opts) {
     try { dir = folderFor(slug); } catch { dir = null; }
     if (!dir) { unresolved.push({ job: job.id, file: job.file, units, reason: "no folder for type '" + slug + "'" }); continue; }
     const fp = path.join(dir, path.basename(String(job.file || "")));
-    const r = cache.slotsFor(slug, job.file, fp);
+    const r = cache.slotsFor(slug, job.file, fp, statFor ? statFor(job.file, slug) : null);
     if (!r.ok) { unresolved.push({ job: job.id, file: job.file, units, reason: r.reason }); continue; }
 
     totalUnits += units;
@@ -614,13 +619,14 @@ function register(ctx) {
     const shelf = readShelf(ctx.baseDir, store, meta);
     // Inventory rows whose spool no longer exists. Unreferenced ones are simply
     // dropped here (see reconcileInventory); what comes back is the short list a
-    // colour still points at, which is the only kind you can actually act on.
+    // color still points at, which is the only kind you can actually act on.
     const shelfIds = new Set(shelf.map(s => s.id));
     const orphaned_inv = reconcileInventory(ctx.hublog, store, shelfIds, meta.authoritative);
     const agg = rollup({
       jobs, shelf,
       store, cache,
       folderFor: slug => ctx.gcodeFolderFor(slug),
+      statFor: ctx.fileStat ? (name, slug) => ctx.fileStat(name, slug) : null,
       deadlineOnly: String(q.deadline_only || "") === "1",
       from: num(q.from),
       to: num(q.to)

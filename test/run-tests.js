@@ -51,6 +51,11 @@ const jpost = async (p, b) => {
   return { status: r.status, body: await r.json().catch(() => null) };
 };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+// v2.23: the application script moved out of index.html into public/app.js so
+// a phone can cache it, compiled, between releases. "What the page contains"
+// is therefore the HTML plus that script; page-content checks read both.
+const APP_JS = () => fs.readFileSync(path.join(REPO, "public", "app.js"), "utf8");
+const PAGE_SRC = () => fs.readFileSync(path.join(REPO, "public", "index.html"), "utf8") + "\n" + APP_JS();
 
 // Minimal multi- and single-color gcode fixtures (Orca-style config tail).
 const GCODE_MULTI = [
@@ -122,6 +127,7 @@ function stageHub(dir) {
   fs.mkdirSync(dir, { recursive: true });
   for (const f of DOCKER_SET) fs.copyFileSync(path.join(REPO, f), path.join(dir, f));
   fs.cpSync(path.join(REPO, "scripts"), path.join(dir, "scripts"), { recursive: true });
+  fs.cpSync(path.join(REPO, "core"), path.join(dir, "core"), { recursive: true });        // v2.23: the split core (Dockerfile COPY core)
   fs.cpSync(path.join(REPO, "modules"), path.join(dir, "modules"), { recursive: true });
   fs.cpSync(path.join(REPO, "public"), path.join(dir, "public"), { recursive: true });
   // Dependencies are copied INTO the staged dir rather than reached via
@@ -897,8 +903,8 @@ async function stopHub() {
       "live feature map injected as window.HUB_FEATURES (race-free)");
     ok(!/@hub-features/.test(page) && !/@client-modules/.test(page),
       "no template markers leak into the served page");
-    ok(/HubModules\.register|window\.HubModules/.test(page),
-      "client module registry present (dispatch's mount point)");
+    ok(/src="app\.js\?v=/.test(page) && /HubModules\.register|window\.HubModules/.test(APP_JS()),
+      "client module registry present (dispatch's mount point) — the page loads app.js and app.js carries it");
     // Back to defaults: everything reappears.
     await stopHub();
     const cfgPath = path.join(hubDir, "config.json");
@@ -1671,11 +1677,25 @@ async function stopHub() {
       ok(vre.test(dpage), "…and the script URL is stamped with the running version, so a phone's cache cannot serve last release's tab", (dpage.match(/modules\/dispatch-ui\.js[^"]*/) || [])[0]);
       ok(new RegExp("gold\\.css\\?v=" + EXPECTED_VERSION.replace(/\./g, "\\.")).test(dpage),
         "…the stylesheet too", (dpage.match(/gold\.css[^"]*/) || [])[0]);
+      // v2.23: the application script is external now (cached, compiled). It
+      // is the one asset that MUST match the server release, so its stamp is
+      // the most important of the lot.
+      // v2.23 (2026-09-08): the stamp is <version>-<8 hex content hash>. The
+      // hash is what moves the URL between releases: with a year-long immutable
+      // cache, an app.js edit during the test week was invisible to a phone
+      // that had already loaded 2.23.0 - the server said "paused: tangled",
+      // the cached card never drew it.
+      ok(new RegExp('src="app\\.js\\?v=' + EXPECTED_VERSION.replace(/\./g, "\\.") + '-[0-9a-f]{8}"').test(dpage),
+        "…and app.js, the page's own script, carries version + content hash so a cached client never runs against newer code", (dpage.match(/app\.js[^"]*/) || [])[0]);
+      const stamp = (dpage.match(/app\.js\?v=([^"]+)"/) || [])[1];
+      ok(stamp && new RegExp("gold\\.css\\?v=" + stamp.replace(/[.\-]/g, "\\$&") + '"').test(dpage)
+               && new RegExp("dispatch-ui\\.js\\?v=" + stamp.replace(/[.\-]/g, "\\$&") + '"').test(dpage),
+        "…and every stamped asset shares the one stamp, so one restart moves them together", stamp);
       ok(/no-cache/.test(r.headers.get("cache-control") || ""),
         "…and the page that carries the stamps always revalidates", r.headers.get("cache-control"));
     }
-    ok(/application\/x-u1hub-file/.test(dpage), "library rows carry the draggable module payload");
-    ok(/id="dispadd"/.test(dpage) && /HubModules\.fileAction/.test(dpage),
+    ok(/application\/x-u1hub-file/.test(APP_JS()), "library rows carry the draggable module payload");
+    ok(/id="dispadd"/.test(dpage) && /HubModules\.fileAction/.test(APP_JS()),
       "core exposes a module file-action button (the mobile path \u2014 touch never fires drag events)");
     // v2.22: FLUID/LOCKED schedule, a 1-5 priority (deadlines win, priority
     // breaks ties), and the clamp on both. Danny, 2026-09-03. Each check here
@@ -2014,6 +2034,37 @@ async function stopHub() {
       "the removed job is still gone after a restart", (r.body.jobs || []).map(j => j.id));
   }
 
+  console.log("\n== Fleet: a detector pause says WHY (v2.23, print_stats.exception) ==");
+  {
+    // Snapmaker's Klipper fork pauses on its own detectors (tangle, runout,
+    // ...) and reports the reason in print_stats.exception while .message
+    // stays "". Shape captured live on U2 2026-09-08. Before this, a paused
+    // card said "paused" and nothing else - Danny had to walk to the machine.
+    mockU1.state.printState = "paused"; mockU1.state.filename = "penguin.gcode";
+    mockU1.state.exception = { id: 523, index: 0, code: 38, message: "detect filament tangled!", level: 2 };
+    await sleep(4300);                                   // outlive the 4 s probe cache
+    const byPort = f => f.find(p => String(p.url || "").endsWith(":" + portU1)) || {};
+    let fl = (await jget("/api/fleet")).body || [];
+    let u1 = byPort(fl);
+    ok(u1.state === "paused" && /filament tangled/.test(u1.message || ""),
+      "a paused printer's card carries the firmware's reason", { state: u1.state, message: u1.message });
+    ok(/extruder 0/.test(u1.message || ""), "…and names the extruder the firmware blamed", u1.message);
+    ok(/errline[^`]*paused/.test(APP_JS()) && /Paused: /.test(APP_JS()),
+      "the card renders the reason for paused, not only for error");
+    // Stock Klipper path is unchanged: state "error" + .message still surfaces.
+    mockU1.state.exception = null; mockU1.state.printState = "error"; mockU1.state.printMessage = "Heater extruder not heating at expected rate";
+    await sleep(4300);
+    fl = (await jget("/api/fleet")).body || []; u1 = byPort(fl);
+    ok(u1.state === "error" && /not heating/.test(u1.message || ""), "stock Klipper error text still surfaces", u1.message);
+    // A plain pause with no detector behind it stays quiet - no invented reason.
+    mockU1.state.printState = "paused"; mockU1.state.printMessage = "";
+    await sleep(4300);
+    fl = (await jget("/api/fleet")).body || []; u1 = byPort(fl);
+    ok(u1.state === "paused" && !u1.message, "a manual pause carries no message", u1.message);
+    mockU1.state.printState = "standby"; mockU1.state.filename = ""; mockU1.state.exception = null; mockU1.state.printMessage = "";
+    await sleep(600);
+  }
+
   console.log("\n== UI: printer name links to its own Klipper UI (v2.16) ==");
   {
     // Community request: click the card's name, land on the printer's Klipper
@@ -2230,7 +2281,7 @@ async function stopHub() {
     // And the page must actually render it. The old markup gated the link on
     // purchase_url, which is why an entire shelf showed no links at all.
     {
-      const idx = fs.readFileSync(path.join(REPO, "public", "index.html"), "utf8");
+      const idx = PAGE_SRC();   // v2.23: the page's HTML plus its (now external) script
       ok(/v\.buy\s*\?/.test(idx),
         "index.html renders the spool buy link from v.buy, not from purchase_url alone");
       ok(!/v\.purchase_url\s*\?\s*`<a class="invbuy"/.test(idx),
@@ -2315,7 +2366,7 @@ async function stopHub() {
     ok(ag.body.affiliate.enabled === true && ag.body.affiliate.tag_set === true,
       "…and tracks it back on, tag intact", ag.body);
     {
-      const idx = fs.readFileSync(path.join(REPO, "public", "index.html"), "utf8");
+      const idx = PAGE_SRC();   // v2.23: the page's HTML plus its (now external) script
       ok(/setAffOn/.test(idx) && /receives a small commission/.test(idx) && /uncheck this box/.test(idx),
         "Settings carries the affiliate choice, in plain words, with the box Danny asked for");
       // And the slicing warning: the feature ships unfinished, so ticking its
@@ -2530,7 +2581,7 @@ async function stopHub() {
         "…and reports null for a machine that is fine", fl[1] && fl[1].maintenance);
       // And the page has to render it, not merely receive it. An API contract
       // check is not a check that the user can see the thing.
-      const idx = fs.readFileSync(path.join(REPO, "public", "index.html"), "utf8");
+      const idx = PAGE_SRC();   // v2.23: the page's HTML plus its (now external) script
       ok(/p\.maintenance\s*\?/.test(idx) && /pill\.maint|pillCls\s*=\s*"maint"/.test(idx),
         "the Dash card renders a maintenance state rather than showing Idle");
       ok(/maintline/.test(idx), "…and says it in words on the card, not just a colour");
@@ -3107,10 +3158,11 @@ async function stopHub() {
       const code = kl.split(/\r?\n/).map(l => l.replace(/^\s*\/\/.*$/, "")).join("\n");
       ok(/ctx\.onUpgrade\(/.test(code) && /ctx\.isAuthed\(req\)/.test(code),
         "the WebSocket upgrade is gated by the same session check as every other route");
-      const srv = fs.readFileSync(path.join(REPO, "server.js"), "utf8");
+      // v2.23: the Express app and its middleware live in core/app.js now.
+      const srv = fs.readFileSync(path.join(REPO, "core", "app.js"), "utf8");
       ok(/PRINTER_PROXY_PREFIX/.test(srv) && /req\.path\.startsWith\(PRINTER_PROXY_PREFIX\)/.test(srv),
         "core skips the JSON body parser for the proxy prefix");
-      const idx = fs.readFileSync(path.join(REPO, "public", "index.html"), "utf8");
+      const idx = PAGE_SRC();   // v2.23: the page's HTML plus its (now external) script
       ok(/function klipperHref/.test(idx) && /"\/p\/"\s*\+\s*p\.id/.test(idx),
         "the Dash card link can go through the Hub proxy (the remote path)");
       // v2.21.1: on the LAN the link goes STRAIGHT to the printer IP; the proxy

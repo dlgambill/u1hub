@@ -56,3 +56,7 @@ test-out.txt
 slicejobs.json
 
 slicejobs.json
+access.log
+
+# v2.23: extracted-thumbnail cache (rebuilt from the gcode folder on demand)
+thumbs/

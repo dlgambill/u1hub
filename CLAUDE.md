@@ -153,7 +153,7 @@ writes). `scripts/check-core.js` syntax-checks the root plus every core file.
 
 ## Harness
 
-`npm test` → **543 checks**, expect **543 passed, 0 failed**. A red harness
+`npm test` → **549 checks**, expect **549 passed, 0 failed**. A red harness
 blocks everything.
 
 Takes ~2.5 min over SMB. Run it with `scripts/run-harness.cmd` and poll

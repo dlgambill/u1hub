@@ -77,6 +77,74 @@ printers, and nothing leaves your network unless you turn remote access on.
 
 ---
 
+## New in 2.23 - the speed release
+
+- **The dashboard and Dispatch load in well under a second, from your phone,
+  on a big farm.** On the nine-printer, few-hundred-file farm this is built on,
+  each took seven to ten seconds over cellular. Three things were to blame, and
+  all three were the Hub reading the gcode share on every request: the library
+  list walked every file (5.8 s on a network share, and it blocked everything
+  else while it did), the on-board file listing waited on the slowest printer
+  (5 to 9 s), and every thumbnail was extracted from its gcode file on the spot,
+  one at a time, with the rest of the Hub queued behind it. Now the library and
+  the printer listings are snapshots kept warm in the background and refreshed
+  when something actually changes, thumbnails are extracted once into a small
+  on-disk cache and never re-read, and a page asks for its images only when
+  they scroll into view. The page's own script, stylesheet and tab modules are
+  cached by the phone between releases instead of being re-downloaded on every
+  visit. Measured on the same farm: first load 3.8 s to 1.6 s over the LAN and
+  "pretty much non-existent" over the tunnel, in the author's words.
+
+- **A paused print says why.** Snapmaker's firmware reports the reason it
+  paused - tangle detected, filament run-out, and so on - in a place the Hub
+  was not looking, so the card said *paused* and nothing else and you had to
+  walk to the machine. The card now shows the firmware's own words under the
+  filename ("Paused: detect filament tangled! (extruder 0) · code 38"), the way
+  it already did for errors. A pause you pressed yourself stays quiet.
+
+- **The Dispatch tab's red badge is a spool, not a deadline.** It counts the
+  colors your scheduled prints are short of filament for, and it links to
+  Resources, but on a scheduling tab "33 short" read as "33 behind schedule".
+  It now shows a spool glyph and the number, and the hover text says what it
+  means. It only counts a color as short when a matched spool has a known
+  weight below what is needed, or when *assume empty when unset* is on.
+
+- **Under the hood: one 2,500-line server file is now thirteen small ones,**
+  one per concern, loaded in a fixed order through a shared object. Nothing
+  changes in how the Hub behaves; it is the reason the slow spots above were
+  found, and it is what makes the code readable for anyone who wants to
+  contribute. The split was done mechanically and the full test harness (549
+  checks, booting real instances against mock printers) passes unchanged before
+  and after.
+
+- **Fixed: editing a bound spool failed with "not found" in every downloaded
+  build since 2.12.** The Spools tab has offered an edit form since 2.12 (fix a
+  brand, a color, temperatures, without forgetting and rescanning the tag), but
+  the server route behind it only ever existed on the development machine: the
+  file that carries it was missing from the list that stages code for release,
+  so 2.12 through 2.22.2 shipped the button without the endpoint. The author's
+  own farm runs from the development copy, which is why it went unnoticed. The
+  staging list now covers every file the repo tracks, and a check reports any
+  file that differs between the two before a release is cut.
+
+- **Spelling is American throughout** (color, not colour). The two Orca gcode
+  keys `filament_colour` and `extruder_colour` keep their names because they
+  are the file format's, not ours.
+
+### 2.21 and 2.22, folded in
+
+2.21 opened each printer's own Klipper page in one click from the card (direct
+on your network, proxied page-only over the tunnel), moved the affiliate
+disclosure to a footnote, and version-stamped every asset URL so a phone's
+cache can never serve last release's tab. 2.22 gave Dispatch a **fluid or
+locked** schedule (lock the plan you like; unlock and it slides forward on its
+own), a **1 to 5 priority** on every job where deadlines still win and priority
+breaks ties, and a highlight on lanes that are printing right now. 2.22.1 and
+2.22.2 made loading a spool tell the printer the **material** as well as the
+color, using the exact command the touchscreen itself sends (the first attempt
+raised a *System Anomaly* on the screen; the second was captured from the
+machine and verified on it).
+
 ## New in 2.20 â€” the maintenance release
 
 - **Push a job back one place when two want the same spool.** Three jobs all
