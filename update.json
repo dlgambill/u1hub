@@ -1,7 +1,7 @@
 {
   "_comment": "Release manifest. Every Hub with update checks on fetches this file and compares its own version against `version`. Bump it as part of cutting a release, not before - the harness pins it equal to package.json so a manifest that lies about the current release cannot ship.",
-  "version": "2.23.1",
+  "version": "2.23.2",
   "url": "https://github.com/dlgambill/u1hub/releases",
-  "notes": "2.23.1: more colors than heads now works - with an M600 or PAUSE in the gcode, two colors can share a head and the Hub asks you to confirm the swap. 2.23 was the speed release: The dashboard and Dispatch load in well under a second on a big farm, even from a phone over the tunnel (they took several seconds before). A paused print now says why, in the firmware's own words. The Dispatch badge shows a spool glyph so it reads as filament short, not behind schedule. Under the hood the server is split into small files, one per concern.",
+  "notes": "2.23.2: a Dispatch job whose file was deleted from the library is now flagged on the row, the next-print handoff explains it instead of opening an empty dashboard, and the library refuses to delete a file an open job still needs. 2.23.1: more colors than heads works when the gcode carries a pause. 2.23 was the speed release: dashboard and Dispatch load in well under a second on a big farm, a paused print says why, and the Dispatch badge shows a spool glyph.",
   "published": "2026-09-10"
 }

@@ -95,12 +95,15 @@ const MODULE_CTX = Object.freeze({
   // reads. Live lookup, same reassignment-safety rules as the getters below.
   gcodeFolderFor: (slug) => typeFolder(typeBySlug(String(slug || "u1")) || typeBySlug("u1")),
   // v2.23 PERF: { size, mtime } for a library file from the library's own
-  // snapshot - no stat against the share. null when the snapshot has not seen
-  // the file (just arrived, or not warmed yet); callers fall back to a stat.
+  // snapshot - no stat against the share. `null` when the snapshot exists and
+  // does not contain the file (deleted, or arrived since the last refresh);
+  // `undefined` when there is no snapshot yet (boot), so a caller can tell
+  // "missing" from "don't know yet". Callers needing certainty stat.
   fileStat: (name, slug) => {
     const t = typeBySlug(String(slug || "u1")) || typeBySlug("u1");
     const snap = t && hub.librarySnapshot ? hub.librarySnapshot(t) : null;
-    const f = snap && snap.files.find(x => x.name === path.basename(String(name || "")));
+    if (!snap) return undefined;
+    const f = snap.files.find(x => x.name === path.basename(String(name || "")));
     return f ? { size: f.size, mtime: f.mtime } : null;
   },
   // v2.12: modules may own a slice of config.json (slicing does — its slicer

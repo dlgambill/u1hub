@@ -310,6 +310,14 @@ app.post("/api/files/delete", async (req, res) => {
   if (!fp || !fs.existsSync(fp)) return res.status(404).json({ error: "File not found: " + name });
   if (hub.QUEUE.some(q => q.file === name && q.type === t.slug))
     return res.status(409).json({ error: "'" + name + "' is in the print queue — remove it from the queue first." });
+  // v2.23.2: the same guard for Dispatch. The queue was protected since v2.7;
+  // Dispatch jobs were not, so a file could be deleted out from under an open
+  // job and the job's "next" tap opened an empty dashboard. Resolved at call
+  // time through the capability registry: the module may be off or not loaded.
+  const dispatchJobs = hub.CAPS_PROVIDED && hub.CAPS_PROVIDED.get("dispatch.jobs");
+  const openJob = dispatchJobs && (dispatchJobs() || []).find(j => j.file === name && (j.type || "u1") === t.slug && j.state !== "done");
+  if (openJob)
+    return res.status(409).json({ error: "'" + name + "' is a Dispatch job (" + (openJob.remaining ?? openJob.qty) + " cop" + ((openJob.remaining ?? openJob.qty) === 1 ? "y" : "ies") + " left) — remove the job from Dispatch first." });
   if (activePushOf(name))
     return res.status(409).json({ error: "'" + name + "' is being sent to a printer right now — wait for the upload to finish." });
   try { fs.unlinkSync(fp); }

@@ -1021,7 +1021,20 @@ function register(ctx) {
   // ---- API ------------------------------------------------------------------
   const app = ctx.app;
   app.get("/api/dispatch", (req, res) => {
-    res.json({ jobs: D.jobs, bundles: D.bundles, settings: D.settings,
+    // v2.23.2: each open job says whether its file is still in the library
+    // (`file_missing`), so the list can flag a job the dashboard cannot start.
+    // Computed per request, not stored, so a file put back reappears within a
+    // library refresh. Uses the library SNAPSHOT (ctx.fileStat), never a stat
+    // against the share: this endpoint is polled every second by an open
+    // Dispatch tab, and twenty synchronous stats on a network folder per poll
+    // is precisely the class of stall v2.23 removed.
+    const jobs = D.jobs.map(j => {
+      if (j.state === "done" || !ctx.fileStat) return j;
+      // null = the library has been read and the file is not there. undefined
+      // = no snapshot yet (boot); say nothing rather than cry wolf.
+      return ctx.fileStat(j.file, j.type || "u1") === null ? { ...j, file_missing: true } : j;
+    });
+    res.json({ jobs, bundles: D.bundles, settings: D.settings,
                maintenance: D.maintenance,
                awaiting: [...AWAITING], auto_start_available: false });
   });
@@ -1419,6 +1432,19 @@ function register(ctx) {
     try {
       const p = await plan();
       const next = (p.slots || []).find(s => s.printer === idx && !s.unplannable) || null;
+      // v2.23.2: say up front when the planned file is no longer in the Hub
+      // library. Danny pressed "next", confirmed the filament dialog, landed on
+      // an empty dashboard: the job's file had been deleted from the library
+      // after it was queued (it only existed on two printers' storage), and
+      // the handoff's selectFile() failed silently. The planner does not care
+      // where bytes live; the dashboard does.
+      if (next) {
+        const job = D.jobs.find(j => j.id === next.job_id);
+        // One stat here is fine (a human just tapped), and this is the moment
+        // certainty matters, so fileInfo rather than the snapshot.
+        const info = ctx.fileInfo(next.file, job ? job.type : "u1");
+        next.in_library = !!(info && info.exists);
+      }
       res.json({ ok: true, next });
     } catch (e) { res.status(500).json({ error: "Cleared, but planning the next job failed: " + e.message }); }
   });

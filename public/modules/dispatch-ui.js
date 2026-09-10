@@ -285,8 +285,13 @@
         `title="Priority — 5 runs first. Breaks ties between jobs sharing a deadline; it never jumps one ahead of an earlier deadline.">` +
         [5, 4, 3, 2, 1].map(n => `<option value="${n}"${n === prio ? " selected" : ""}>P${n}${n === 5 ? " top" : n === 3 ? " normal" : n === 1 ? " low" : ""}</option>`).join("") +
         `</select>`;
-      return `<div class="dsp-job dsp-${esc(j.state)}${j.bundle_id ? " dsp-inbundle" : ""}">
-        <span class="dsp-jfile">${esc(j.file)}</span><span>${j.remaining}/${j.qty}</span>
+      // v2.23.2: a job whose file has left the library cannot be started from
+      // the dashboard, so say so on the row instead of at the last tap.
+      const gone = j.file_missing
+        ? ` <span class="dsp-jmissing" title="This file is no longer in the Hub library (deleted after the job was queued?). Re-slice it or copy it back from a printer's storage, or remove the job.">file missing</span>`
+        : "";
+      return `<div class="dsp-job dsp-${esc(j.state)}${j.bundle_id ? " dsp-inbundle" : ""}${j.file_missing ? " dsp-filemissing" : ""}">
+        <span class="dsp-jfile">${esc(j.file)}${gone}</span><span>${j.remaining}/${j.qty}</span>
         <span title="deadline">${esc(dl)}</span>
         ${prioSel}
         <span>${j.est_minutes ? fmtMin(j.est_minutes) + "/ea" : "est ?"}</span>
@@ -695,6 +700,14 @@
       const r = await jpost("/api/dispatch/clear-bed", { printer: idx });
       const next = r.body && r.body.next;
       if (!next) { btn.textContent = "nothing planned"; setTimeout(load, 1200); return; }
+      // v2.23.2: the file must be in the Hub library for the dashboard to send
+      // it. Before this the handoff below selected a file that was not there,
+      // the dashboard opened with nothing loaded, and nothing said why.
+      if (next.in_library === false) {
+        alert("'" + next.file + "' is planned next for " + next.printerName + ", but it is no longer in the Hub's library, so the dashboard can't send it.\n\n" +
+              "Put the file back in the library (re-slice it, or copy it from a printer's storage), or remove the job from Dispatch.");
+        btn.disabled = false; return;
+      }
       const mounts = next.swaps.length
         ? "\n\nMount first (any free tray \u2014 the order below doesn't matter,\nyou'll map tools to heads on the next screen):\n" +
           next.swaps.map(x => "  \u2022 " + (x.spool ? x.spool + " (" + x.color + ")" : x.color)).join("\n")
@@ -976,6 +989,8 @@
       .dsp-bhead button{margin-left:auto}
       .dsp-jfile{font-weight:700;min-width:180px}
       .dsp-jstate{color:var(--ink-dim, #9aa)}
+.dsp-jmissing{font-family:var(--mono);font-size:10px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--bad,#F26B5E);border:1px solid color-mix(in srgb,var(--bad,#F26B5E) 55%,transparent);border-radius:9px;padding:1px 6px;margin-left:6px;vertical-align:middle}
+.dsp-job.dsp-filemissing .dsp-jfile{color:var(--ink-dim,#9aa)}
       .dsp-done{opacity:.55}
       /* v2.22 priority picker in the job list. Compact; color-cued so a P5
          (top) and a P1 (low) read at a glance without opening anything. */

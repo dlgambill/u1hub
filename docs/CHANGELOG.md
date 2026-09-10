@@ -77,6 +77,15 @@ printers, and nothing leaves your network unless you turn remote access on.
 
 ---
 
+### 2.23.2 - a Dispatch job whose file is gone
+
+If a file was deleted from the library after a Dispatch job was queued for it,
+pressing *next* on a printer walked you through the filament dialog and then
+opened an empty dashboard with no explanation. Now the job row says *file
+missing*, the *next* tap tells you the file is no longer in the library and
+what to do about it, and the library refuses to delete a file an open Dispatch
+job still needs, the same way it has always refused for the print queue.
+
 ### 2.23.1 - more colors than heads
 
 A five-color file on a four-head printer is a real workflow: you put a pause in

@@ -1022,6 +1022,45 @@ async function stopHub() {
     r = await jpost("/api/dispatch/clear-bed", { printer: 0 });
     ok(r.status === 200 && r.body.next && r.body.next.file === "multi.gcode" && Array.isArray(r.body.next.swaps),
       "clear-bed tap returns the next planned slot with its mount list", r.body.next && r.body.next.file);
+    // v2.23.2: a job whose file has left the library. Found live 2026-09-10:
+    // "next" on U5 -> filament dialog -> OK -> empty dashboard, because the
+    // job's file had been deleted from the library after it was queued. Three
+    // guards: the library refuses to delete a file an open job needs, the job
+    // list flags a file that is gone anyway, and the clear-bed handoff says so
+    // instead of selecting nothing.
+    {
+      ok(r.body.next.in_library === true, "clear-bed reports the planned file is in the library", r.body.next.in_library);
+      // multi.gcode is ALSO in the print queue (seeded), and that older guard
+      // answers first - so prove the Dispatch guard on a file only Dispatch
+      // holds: a far-future, low-priority job that stays behind multi.gcode.
+      fs.copyFileSync(path.join(gcodeDir, "single.gcode"), path.join(gcodeDir, "dsp-guard.gcode"));
+      await jget("/api/files?type=u1");
+      let d = await jpost("/api/dispatch/jobs", { file: "dsp-guard.gcode", type: "u1", qty: 2, priority: 1, deadline: Date.now() + 30 * 86400000 });
+      const GUARDJOB = d.body.job && d.body.job.id;
+      d = await jpost("/api/files/delete", { name: "dsp-guard.gcode", type: "u1" });
+      ok(d.status === 409 && /Dispatch job/.test(d.body.error) && /2 copies/.test(d.body.error),
+        "the library refuses to delete a file an open Dispatch job needs, naming the copies left", d.body);
+      if (GUARDJOB) await jpost("/api/dispatch/jobs/remove", { id: GUARDJOB });
+      d = await jpost("/api/files/delete", { name: "dsp-guard.gcode", type: "u1" });
+      ok(d.status === 200, "…and deletes it once the job is gone", d.body);
+      const mp = path.join(gcodeDir, "multi.gcode"), hidden = mp + ".hidden";
+      fs.renameSync(mp, hidden);                      // gone behind the Hub's back (a share, an Explorer window)
+      await jget("/api/files?type=u1");               // folder mtime changed -> the snapshot re-walks on this request
+      d = await jget("/api/dispatch");
+      let jj = (d.body.jobs || []).find(x => x.file === "multi.gcode" && x.state !== "done");
+      ok(jj && jj.file_missing === true, "the job list flags a job whose file has left the library", jj && jj.file_missing);
+      d = await jpost("/api/dispatch/clear-bed", { printer: 0 });
+      ok(d.status === 200 && d.body.next && d.body.next.in_library === false,
+        "…and the clear-bed handoff says the file is not in the library, so the client can explain instead of selecting nothing", d.body.next && d.body.next.in_library);
+      ok(/in_library === false/.test(fs.readFileSync(path.join(REPO, "public/modules/dispatch-ui.js"), "utf8")),
+        "…which the Dispatch client acts on before the handoff");
+      fs.renameSync(hidden, mp);
+      await jget("/api/files?type=u1");
+      d = await jget("/api/dispatch");
+      jj = (d.body.jobs || []).find(x => x.file === "multi.gcode" && x.state !== "done");
+      ok(jj && !jj.file_missing, "putting the file back clears the flag on the next library refresh", jj && jj.file_missing);
+      r = await jpost("/api/dispatch/clear-bed", { printer: 0 });
+    }
     r = await jpost("/api/print", { file: r.body.next.file, printer: 0, type: "u1", start: true });
     ok(r.status === 200 && r.body.jobId, "the handed-off start rides the normal guarded print path", r.body);
     await sleep(1200);
