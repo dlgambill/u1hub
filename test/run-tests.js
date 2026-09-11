@@ -2980,6 +2980,114 @@ async function stopHub() {
     await new Promise(r2 => manifest.close(r2));
   }
 
+  console.log("\n== SPM: Spoolman one-way import (v2.24) ==");
+  {
+    // A mock Spoolman. The Hub is running with default features from the end
+    // of the UPD section and is left that way for the UI section after this.
+    const mkSpool = (id, extra, fil) => ({
+      id, remaining_weight: 850, used_weight: 150, initial_weight: 1000, price: 29.99,
+      location: "Shelf A", lot_nr: null, archived: false, ...extra,
+      filament: { id: 100 + id, name: "Galaxy Black", vendor: { name: "Prusament" }, material: "PLA",
+        price: 27.5, weight: 1000, spool_weight: 200, diameter: 1.75, density: 1.24,
+        settings_extruder_temp: 215, settings_bed_temp: 60, color_hex: "1A1A1A", ...(fil || {}) }
+    });
+    let SPOOLS = [
+      mkSpool(1),
+      mkSpool(2, { price: undefined, remaining_weight: 400 }, { name: "Red/Blue Silk", color_hex: "FF0000", multi_color_hexes: "FF0000,0000FF", multi_color_direction: "coaxial", material: "PLA Silk" }),
+      mkSpool(3, {}, { name: "No color", color_hex: null }),
+      mkSpool(4, { archived: true }, { name: "Empty White", color_hex: "FFFFFF" })
+    ];
+    let smHits = [];
+    const sm = http.createServer((rq, rs) => {
+      smHits.push(rq.method + " " + rq.url);
+      if (rq.method !== "GET") { rs.writeHead(405).end(); return; }   // the Hub must never write
+      if (rq.url.startsWith("/api/v1/info")) { rs.writeHead(200, { "Content-Type": "application/json" }); rs.end(JSON.stringify({ version: "0.22.1" })); return; }
+      if (rq.url.startsWith("/api/v1/spool")) { rs.writeHead(200, { "Content-Type": "application/json" }); rs.end(JSON.stringify(SPOOLS)); return; }
+      rs.writeHead(404).end();
+    });
+    await new Promise(r => sm.listen(45992, "127.0.0.1", r));
+
+    const mod = require(path.join(REPO, "modules", "spoolman.js"));
+    ok(mod.normUrl("http://spoolman.local:7912/") === "http://spoolman.local:7912", "normUrl strips the trailing slash");
+    ok(mod.normUrl("http://10.0.0.5:7912/api/v1") === "http://10.0.0.5:7912", "normUrl strips a pasted /api/v1");
+    ok(mod.normUrl("ftp://x") === null && mod.normUrl("spoolman") === null, "normUrl rejects non-http schemes and bare words");
+    {
+      const m = mod.mapSpool(SPOOLS[1]);
+      ok(m && m.ident.hex === "FF0000" && Array.isArray(m.ident.hexes) && m.ident.hexes.length === 2 && m.ident.color_style === "multi",
+        "mapSpool: coaxial multi_color_hexes become hexes[] + color_style multi", m && m.ident);
+      ok(m && m.inv.cost_per_roll === 27.5, "mapSpool: spool price missing falls back to the filament price", m && m.inv);
+      ok(mod.mapSpool(SPOOLS[2]) === null, "mapSpool: a filament with no color_hex is unusable (null)");
+      const g = mod.mapSpool(mkSpool(9, {}, { multi_color_hexes: "FF0000,00FF00,0000FF", multi_color_direction: "longitudinal" }));
+      ok(g && g.ident.color_style === "gradient" && g.ident.hexes.length === 3, "mapSpool: longitudinal = gradient, up to three colors");
+    }
+
+    let r = await jget("/api/spoolman");
+    ok(r.status === 200 && r.body.configured === false && r.body.available === true, "GET /api/spoolman: unconfigured, spools module available", r.body);
+    r = await jpost("/api/spoolman/import", {});
+    ok(r.status === 400, "import without a URL is refused", r.status);
+    r = await jpost("/api/spoolman/settings", { url: "not a url" });
+    ok(r.status === 400, "a bad URL is refused", r.status);
+    r = await jpost("/api/spoolman/settings", { url: "http://127.0.0.1:45992/" });
+    ok(r.status === 200 && r.body.url === "http://127.0.0.1:45992" && r.body.configured === true, "URL saved and normalized", r.body);
+    ok(JSON.parse(fs.readFileSync(path.join(hubDir, "config.json"), "utf8")).spoolman.url === "http://127.0.0.1:45992", "…and persisted in config.json");
+
+    r = await jpost("/api/spoolman/test", {});
+    ok(r.status === 200 && r.body.ok && r.body.version === "0.22.1", "test reaches /api/v1/info", r.body);
+
+    const shelfBefore = ((await jget("/api/spools")).body.spools || []).length;
+    r = await jpost("/api/spoolman/import", {});
+    ok(r.status === 200 && r.body.imported === 3 && r.body.created === 3 && r.body.updated === 0, "first import: 3 of 4 rolls land (the colorless one cannot)", r.body);
+    ok(r.body.skipped.length === 1 && r.body.skipped[0].id === 3, "…the skipped roll is named by Spoolman id", r.body.skipped);
+    ok(r.body.retired === 1, "…the archived roll counts as retired", r.body.retired);
+    ok(smHits.every(h => h.startsWith("GET ")), "the Hub only ever GETs from Spoolman (one-way)", smHits);
+
+    let shelf = (await jget("/api/spools")).body.spools || [];
+    ok(shelf.length === shelfBefore + 3, "Spools tab shows three more rolls", { before: shelfBefore, after: shelf.length });
+    const s1 = shelf.find(s => s.spool_id === "spoolman_1");
+    ok(!!s1 && s1.brand === "Prusament" && s1.material === "PLA" && s1.color_name === "Galaxy Black" && s1.hex === "1A1A1A",
+      "spoolman_1 carries brand / material / name / hex from Spoolman", s1);
+    ok(!!s1 && s1.hot_end_temp === 215 && s1.bed_temp === 60, "…and its temperatures", s1 && [s1.hot_end_temp, s1.bed_temp]);
+    ok(!!s1 && s1.imported && s1.imported.source === "spoolman" && s1.imported.id === "1", "…and remembers where it came from", s1 && s1.imported);
+
+    let res = (await jget("/api/resources/spools")).body.spools || [];
+    let r1 = res.find(s => s.id === "spoolman_1");
+    ok(!!r1 && r1.remaining_g === 850 && r1.net_weight_g === 1000 && r1.cost_per_roll === 29.99, "inventory: grams and price landed in Resources", r1);
+    ok(!!r1 && /Spoolman #1/.test(r1.notes) && /Shelf A/.test(r1.notes), "inventory: notes name the Spoolman id and location", r1 && r1.notes);
+    const r4 = res.find(s => s.id === "spoolman_4");
+    ok(!!r4 && r4.active === false, "the archived roll is on the shelf but inactive", r4);
+
+    // Load spoolman_2 into a slot, then re-import with changed weights and #4
+    // gone from Spoolman. Same ids, updated numbers, slot untouched.
+    r = await jpost("/api/slots/assign", { printer: 0, slot: 1, spool_id: "spoolman_2" });
+    ok(r.status === 200, "an imported roll can be loaded into a slot like any other", r.status + " " + JSON.stringify(r.body));
+    SPOOLS[0].remaining_weight = 700;
+    SPOOLS = SPOOLS.filter(s => s.id !== 4);
+    r = await jpost("/api/spoolman/import", {});
+    ok(r.status === 200 && r.body.imported === 2 && r.body.created === 0 && r.body.updated === 2, "second import: same rolls update, nothing duplicated", r.body);
+    ok(r.body.retired === 1, "…a roll deleted in Spoolman is retired here", r.body.retired);
+    shelf = (await jget("/api/spools")).body.spools || [];
+    ok(shelf.length === shelfBefore + 3, "re-import did not mint duplicates", shelf.length);
+    res = (await jget("/api/resources/spools")).body.spools || [];
+    r1 = res.find(s => s.id === "spoolman_1");
+    ok(!!r1 && r1.remaining_g === 700, "remaining grams follow Spoolman on re-import", r1 && r1.remaining_g);
+    ok(res.find(s => s.id === "spoolman_4").active === false, "the vanished roll stays on the shelf, inactive, never deleted");
+    const slots = (await jget("/api/slots")).body;
+    const loaded = JSON.stringify(slots).includes("spoolman_2");
+    ok(loaded, "the loaded roll is still in its slot after re-import", slots);
+    await jpost("/api/slots/clear", { spool_id: "spoolman_2" });
+
+    // Spoolman down: a clear error, the shelf untouched, the failure recorded.
+    if (sm.closeAllConnections) sm.closeAllConnections();
+    await new Promise(r2 => sm.close(r2));
+    r = await jpost("/api/spoolman/import", {});
+    ok(r.status === 502 && /Import failed/.test(r.body.error), "Spoolman unreachable: 502 with a plain reason", r.body);
+    ok(r.body.last && r.body.last.ok === false, "…and the failure is recorded as the last result", r.body.last);
+    ok(((await jget("/api/spools")).body.spools || []).length === shelfBefore + 3, "…and the shelf is exactly as it was");
+    r = await jpost("/api/spoolman/settings", { url: "" });
+    ok(r.status === 200 && r.body.configured === false, "clearing the URL turns the import off again", r.body);
+    ok(/\/modules\/spoolman-ui\.js/.test(await (await fetch(HUB + "/")).text()), "spoolman client script injected when on");
+  }
+
   console.log("\n== UI: gold.css discipline layer (v2.17) ==");
   {
     // Restart with default features so this exercises the stylesheet the way

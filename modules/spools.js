@@ -9,11 +9,17 @@
 "use strict";
 
 function register(ctx) {
-  require("../rfid.js")(ctx.app, ctx.express, ctx.baseDir, ctx.assetDir, {
+  const api = require("../rfid.js")(ctx.app, ctx.express, ctx.baseDir, ctx.assetDir, {
     getPrinters: () => ctx.printers,
     getCaps: (idx) => ctx.detectCaps(idx),
     log: ctx.hublog
-  });
+  }) || {};
+  // v2.24: importers (Spoolman) write spool identities through these instead
+  // of touching spools.json themselves.
+  if (api.upsertImported && ctx.provide) {
+    ctx.provide("spools.upsertImported", api.upsertImported);
+    ctx.provide("spools.saveImported", api.saveImported);
+  }
 }
 
 module.exports = { register };

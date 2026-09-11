@@ -697,22 +697,35 @@ function register(ctx) {
   // body is ignored rather than silently stored.
   const INV_NUM = ["remaining_g", "net_weight_g", "cost_per_roll", "diameter_mm", "density"];
   const INV_STR = ["purchase_url", "notes"];
-  app.post("/api/resources/inventory", express.json ? express.json() : (q, s, n) => n(), (req, res) => {
-    const b = req.body || {};
-    const id = String(b.spool_id || "").trim();
-    if (!id) return res.status(400).json({ error: "Body needs { spool_id }" });
+  // applyInventory(id, patch, save) — the one writer for inventory rows. The
+  // route below and the "resources.setInventory" capability (Spoolman import,
+  // v2.24) both go through it so the whitelist and validation stay in one place.
+  // Returns { error } on a bad value, otherwise the row.
+  function applyInventory(id, b, save) {
     const inv = store.state.inv[id] || (store.state.inv[id] = {});
     for (const k of INV_NUM) {
       if (!(k in b)) continue;
       if (b[k] === null || b[k] === "") { delete inv[k]; continue; }
       const n = parseFloat(b[k]);
-      if (isNaN(n) || n < 0) return res.status(400).json({ error: k + " must be a non-negative number" });
+      if (isNaN(n) || n < 0) return { error: k + " must be a non-negative number" };
       inv[k] = n;
     }
     for (const k of INV_STR) if (k in b) inv[k] = String(b[k] || "");
     if ("active" in b) inv.active = !!b.active;
-    store.save();
-    res.json({ ok: true, spool_id: id, inv });
+    if (save !== false) store.save();
+    return { inv };
+  }
+  if (ctx.provide) {
+    ctx.provide("resources.setInventory", (id, patch, save) => applyInventory(String(id), patch || {}, save));
+    ctx.provide("resources.saveInventory", () => store.save());
+  }
+  app.post("/api/resources/inventory", express.json ? express.json() : (q, s, n) => n(), (req, res) => {
+    const b = req.body || {};
+    const id = String(b.spool_id || "").trim();
+    if (!id) return res.status(400).json({ error: "Body needs { spool_id }" });
+    const r = applyInventory(id, b);
+    if (r.error) return res.status(400).json({ error: r.error });
+    res.json({ ok: true, spool_id: id, inv: r.inv });
   });
 
   // POST /api/resources/inventory/forget { spool_id } — drop an inventory row

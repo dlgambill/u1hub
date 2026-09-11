@@ -79,7 +79,8 @@ const CLIENT_TABLE = {
   dispatch: "/modules/dispatch-ui.js",  // public/modules/dispatch-ui.js, static-served
   slicing: "/modules/slicing-ui.js",    // v2.12 Slice tab, same pattern
   resources: "/modules/resources-ui.js", // v2.16 Resources tab
-  updates: "/modules/updates-ui.js"      // v2.18 version chip in the topbar (no tab)
+  updates: "/modules/updates-ui.js",     // v2.18 version chip in the topbar (no tab)
+  spoolman: "/modules/spoolman-ui.js"    // v2.24 import card on the Spools tab (no tab)
   // (named -ui deliberately: the server module is modules/dispatch.js, and two
   //  same-named files in different folders is a foot-gun during deploys)
 };

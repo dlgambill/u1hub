@@ -183,6 +183,27 @@ module.exports = function mountRfid(app, express, BASE_DIR, ASSET_DIR, helpers) 
     } finally { REFRESHING = false; }
   });
 
+  // ---- imported spools (v2.24, Spoolman) ------------------------------------
+  // One-way upsert from an external inventory. The spool_id is DERIVED from
+  // the source and its id ("sm_12"), so re-importing updates the same record
+  // instead of minting a duplicate, and a spool loaded in a printer slot keeps
+  // its slot: loadout and tag bindings key on spool_id and are never touched
+  // here. Identity fields are replaced from the source each time (the source
+  // is authoritative for what it knows); boundAt survives the first import.
+  // Returns { spool_id, created }. Callers hand inventory numbers (grams,
+  // price) to the resources module - they are not identity.
+  function upsertImported(source, externalId, ident) {
+    const sid = String(source).replace(/[^a-z0-9]/gi, "").slice(0, 8).toLowerCase() + "_" + String(externalId).replace(/[^A-Za-z0-9_-]/g, "");
+    const cleaned = cleanIdentity(ident, source);
+    if (!cleaned) return { error: "no usable color (hex) for " + source + " #" + externalId };
+    const prev = STATE.spools[sid];
+    cleaned.boundAt = (prev && prev.boundAt) || Date.now();
+    cleaned.imported = { source: String(source), id: String(externalId), at: Date.now() };
+    STATE.spools[sid] = cleaned;
+    return { spool_id: sid, created: !prev };
+  }
+  function saveImported() { saveState(); }
+
   // ---- spools --------------------------------------------------------------
   app.get("/api/spools", (req, res) => {
     const spools = Object.entries(STATE.spools).map(([id, ident]) => ({
@@ -429,4 +450,6 @@ module.exports = function mountRfid(app, express, BASE_DIR, ASSET_DIR, helpers) 
     saveSlots();
     res.json({ ok: true });
   });
+
+  return { upsertImported, saveImported };
 };

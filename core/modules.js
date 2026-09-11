@@ -28,6 +28,9 @@ const MODULE_TABLE = {
   // capability, and provide()/use() is resolved at call time, not registration
   // time — but keeping the order honest makes the dependency readable.
   resources: require("../modules/resources.js"),
+  // v2.24: one-way Spoolman import. AFTER spools and resources because it
+  // writes through their provide()d capabilities and nothing reads its own.
+  spoolman: require("../modules/spoolman.js"),
   // Last on purpose: it owns no data anyone else reads, and its only side
   // effect is one outbound HTTPS GET that must never delay a registration
   // above it.
