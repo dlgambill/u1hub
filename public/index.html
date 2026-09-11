@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- U1 Print Hub — index v2.23.2 -->
+<!-- U1 Print Hub — index v2.24.0 -->
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
@@ -558,7 +558,7 @@
     <div class="typebar" id="typebar" style="display:none"></div>
     <div class="folderline" id="folderline">…</div>
     <div class="filter">
-      <input id="filter" placeholder="Filter files…" />
+      <input id="filter" placeholder="Filter files… (* ? -word)" title="Plain text matches anywhere. Several words must all match. * and ? are wildcards (baby* = starts with baby). -word excludes." />
       <select id="sort" class="sortsel" title="Sort files">
         <option value="mtime_desc">Newest first</option>
         <option value="mtime_asc">Oldest first</option>
@@ -658,6 +658,11 @@
         </div>
         <div class="pstatus" id="tunMsg" style="margin-top:6px"></div>
 
+        <!-- v2.24: feature modules that own a settings block (notify) append
+             their card here, so Settings grows with the module table rather
+             than this file. -->
+        <div id="setModules"></div>
+
         <label class="fl" style="margin-top:18px">Diagnostics <span class="hint">for bug reports — nothing is sent anywhere automatically</span></label>
         <div class="row" style="margin-top:6px">
           <button class="btn ghost" id="diagDl">⬇ Download diagnostics</button>
@@ -740,7 +745,7 @@
   </div>
 </div>
 
-<script>const VERSION = "2.23.2";</script>
+<script>const VERSION = "2.24.0";</script>
 <script src="app.js"></script>
 <!-- @client-modules -->
 </body>

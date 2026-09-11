@@ -1055,9 +1055,17 @@ async function stopHub() {
       ok(/in_library === false/.test(fs.readFileSync(path.join(REPO, "public/modules/dispatch-ui.js"), "utf8")),
         "…which the Dispatch client acts on before the handoff");
       fs.renameSync(hidden, mp);
-      await jget("/api/files?type=u1");
-      d = await jget("/api/dispatch");
-      jj = (d.body.jobs || []).find(x => x.file === "multi.gcode" && x.state !== "done");
+      // A walk that was already in flight when the file came back (the 30 s
+      // background warm, or the stale-while-revalidate kick) is coalesced and
+      // answers with the pre-rename membership once; the next request sees the
+      // changed folder mtime and walks again. Allow that one extra round.
+      for (let i = 0; i < 4; i++) {
+        await jget("/api/files?type=u1");
+        d = await jget("/api/dispatch");
+        jj = (d.body.jobs || []).find(x => x.file === "multi.gcode" && x.state !== "done");
+        if (jj && !jj.file_missing) break;
+        await sleep(400);
+      }
       ok(jj && !jj.file_missing, "putting the file back clears the flag on the next library refresh", jj && jj.file_missing);
       r = await jpost("/api/dispatch/clear-bed", { printer: 0 });
     }
@@ -3088,6 +3096,169 @@ async function stopHub() {
     ok(/\/modules\/spoolman-ui\.js/.test(await (await fetch(HUB + "/")).text()), "spoolman client script injected when on");
   }
 
+  console.log("\n== EVT: fleet edges + ntfy notifications (v2.24) ==");
+  {
+    // A mock ntfy. Every publish the Hub makes lands here as JSON; the test
+    // reads titles back, so "off means no request" is provable.
+    const posts = [];
+    const ntfy = http.createServer((rq, rs) => {
+      let body = "";
+      rq.on("data", c => body += c);
+      rq.on("end", () => {
+        let j = null; try { j = JSON.parse(body); } catch {}
+        posts.push({ method: rq.method, url: rq.url, auth: rq.headers.authorization || null, body: j });
+        rs.writeHead(200, { "Content-Type": "application/json" }); rs.end("{}");
+      });
+    });
+    await new Promise(r => ntfy.listen(45993, "127.0.0.1", r));
+    const NTFY = "http://127.0.0.1:45993";
+    const byPort = f => f.find(p => String(p.url || "").endsWith(":" + portU1)) || {};
+    // Outlive the 4 s probe cache, force a pass, then give the listener's
+    // outbound POST a moment to land. Events are read back from /api/events
+    // by timestamp rather than from the forced pass alone, because the 5 s
+    // background poller may legitimately have seen the edge first.
+    let since = 0;
+    const settle = async () => {
+      await sleep(4300);
+      await jpost("/api/fleet-events/check", {});
+      await sleep(700);
+      const rec = ((await jget("/api/fleet-events")).body || {}).recent || [];
+      const out = rec.filter(e => e.at >= since);
+      since = Date.now();
+      return out;
+    };
+
+    const nmod = require(path.join(REPO, "modules", "notify.js"));
+    {
+      const on = nmod.DEFAULTS.events;
+      const m = nmod.compose({ type: "print.paused", printer: "U2", filename: "penguin.gcode", reason: "detect filament tangled! (extruder 0)" }, on);
+      ok(m && /U2 paused: detect filament tangled/.test(m.title) && m.priority >= 4, "compose: a detector pause carries the firmware's reason in the title", m);
+      const m2 = nmod.compose({ type: "print.paused", printer: "U2", filename: "penguin.gcode", reason: "" }, on);
+      ok(m2 && /manual pause or filament change/.test(m2.body) && m2.priority === 3, "compose: a plain pause says so and is not urgent", m2);
+      const m3 = nmod.compose({ type: "print.done", printer: "U5", filename: "Baby Elephant x20.gcode", durationSec: 5400 }, on);
+      ok(m3 && /U5 finished/.test(m3.title) && /Baby Elephant x20 · 1 h 30 min/.test(m3.body), "compose: finished carries file and duration", m3);
+      ok(nmod.compose({ type: "print.started", printer: "U1", filename: "x.gcode" }, on) === false, "compose: started is off by default");
+      const m4 = nmod.compose({ type: "printer.offline", printer: "U3", sinceMs: Date.now() - 120000 }, on);
+      ok(m4 && /U3 is unreachable/.test(m4.title) && /2 min/.test(m4.body), "compose: offline names the printer and how long", m4);
+      ok(nmod.topicOk("dannys-farm_7f3a") && !nmod.topicOk("has space") && !nmod.topicOk(""), "topic validation: ntfy's character set");
+    }
+
+    let r = await jget("/api/notify");
+    ok(r.status === 200 && r.body.enabled === false && r.body.url === "https://ntfy.sh", "GET /api/notify: off by default, public server as the default", r.body);
+    r = await jpost("/api/notify/settings", { enabled: true });
+    ok(r.status === 400, "turning on without a topic is refused", r.status);
+    r = await jpost("/api/notify/settings", { topic: "has space" });
+    ok(r.status === 400, "a topic outside ntfy's character set is refused", r.status);
+    r = await jpost("/api/notify/settings", { url: NTFY, topic: "hub-harness", token: "tok123", enabled: true, events: { started: true, cancelled: true } });
+    ok(r.status === 200 && r.body.enabled && r.body.topic === "hub-harness" && r.body.token_set === true && r.body.events.started === true, "settings saved", r.body);
+    ok(!JSON.stringify(r.body).includes("tok123"), "the token is never echoed back");
+    ok(JSON.parse(fs.readFileSync(path.join(hubDir, "config.json"), "utf8")).notify.topic === "hub-harness", "…and persisted in config.json");
+
+    r = await jpost("/api/notify/test", { url: NTFY, topic: "hub-harness", token: "tok123" });
+    ok(r.status === 200 && r.body.ok, "a test notification goes out", r.body);
+    ok(posts.length === 1 && posts[0].body && posts[0].body.topic === "hub-harness" && /Test notification/.test(posts[0].body.message),
+      "…as a JSON publish to the topic", posts[0]);
+    ok(posts[0].auth === "Bearer tok123", "…with the token as a Bearer header", posts[0].auth);
+    ok(Array.isArray(posts[0].body.tags) && posts[0].body.tags.includes("tada"), "…tags ride as a list", posts[0].body.tags);
+
+    // Fleet edges, driven through the mock printer. Sync the watcher first so
+    // the standby state is its baseline.
+    mockU1.state.printState = "standby"; mockU1.state.filename = ""; mockU1.state.exception = null; mockU1.state.printMessage = ""; mockU1.state.printDuration = 0;
+    await settle(); await settle();
+    posts.length = 0;
+    // The file about to "print" is in the Hub library with per-slot grams, and
+    // two imported rolls (SPM section) are loaded in T1/T2 with known weights —
+    // the automatic deduction below needs all three.
+    fs.writeFileSync(path.join(gcodeDir, "deduct.gcode"), GCODE_MULTI);   // 10.0 / 12.5 / 3.2 / 0 g
+    await jget("/api/files?type=u1");
+    await jpost("/api/resources/inventory", { spool_id: "spoolman_1", remaining_g: 700 });
+    await jpost("/api/resources/inventory", { spool_id: "spoolman_2", remaining_g: 400 });
+    const U1ID = byPort((await jget("/api/fleet")).body || []).id;
+    ok(Number.isInteger(U1ID), "the mock U1 is in the fleet", U1ID);
+    r = await jpost("/api/slots/assign", { printer: U1ID, slot: 0, spool_id: "spoolman_1" });
+    ok(r.status === 200, "roll 1 loaded in T1 of the mock", r.body);
+    r = await jpost("/api/slots/assign", { printer: U1ID, slot: 1, spool_id: "spoolman_2" });
+    ok(r.status === 200, "roll 2 loaded in T2 of the mock", r.body);
+    mockU1.state.printState = "printing"; mockU1.state.filename = "deduct.gcode";
+    let ev = await settle();
+    ok(ev.some(e => e.type === "print.started" && /deduct/.test(e.filename)), "standby → printing raises print.started", ev);
+    ok(posts.some(p => /started/.test(p.body.title)), "…and ntfy hears it when that event is on", posts.map(p => p.body.title));
+    const u1name = byPort((await jget("/api/fleet")).body || []).name;
+    ok(posts.some(p => p.body.title.startsWith(u1name + " ")), "…the title starts with the printer's name", { u1name, titles: posts.map(p => p.body.title) });
+
+    posts.length = 0;
+    mockU1.state.printState = "paused"; mockU1.state.exception = { id: 523, index: 0, code: 38, message: "detect filament tangled!", level: 2 };
+    ev = await settle();
+    ok(ev.some(e => e.type === "print.paused" && /filament tangled/.test(e.reason)), "printing → paused raises print.paused with the firmware's reason", ev);
+    ok(posts.some(p => /paused: detect filament tangled/.test(p.body.title) && p.body.priority === 4), "…and the phone gets the reason, high priority", posts.map(p => p.body));
+
+    posts.length = 0;
+    mockU1.state.printState = "printing"; mockU1.state.exception = null;
+    ev = await settle();
+    ok(!ev.some(e => e.type === "print.started"), "paused → printing (resume) is not a new start", ev);
+    mockU1.state.printState = "complete"; mockU1.state.printDuration = 3600;
+    ev = await settle();
+    ok(ev.some(e => e.type === "print.done" && e.durationSec === 3600), "printing → complete raises print.done with the duration", ev);
+    ok(posts.some(p => /finished/.test(p.body.title) && /deduct · 1 h 0 min/.test(p.body.message)), "…and the phone hears it finished", posts.map(p => p.body));
+    ev = await settle();
+    ok(!ev.length, "a state that has not changed raises nothing", ev);
+
+    // Automatic deduction rode on that print.done.
+    {
+      const inv = (await jget("/api/resources/spools")).body.spools || [];
+      const a = inv.find(s => s.id === "spoolman_1"), b = inv.find(s => s.id === "spoolman_2");
+      ok(a && a.remaining_g === 690, "T1's roll lost the 10.0 g slot 0 used (700 → 690)", a && a.remaining_g);
+      ok(b && b.remaining_g === 387.5, "T2's roll lost the 12.5 g slot 1 used (400 → 387.5)", b && b.remaining_g);
+      r = await jget("/api/resources/deductions");
+      const d = (r.body.deductions || [])[0];
+      ok(r.status === 200 && d && d.file === "deduct.gcode" && d.entries.length === 2, "the deduction is logged with the file and two entries", d);
+      ok(d && d.misses.length === 1 && /T3/.test(d.misses[0]), "…and says slot 3's 3.2 g had no roll to come off (T3 empty)", d && d.misses);
+      ok(r.body.auto_deduct === true, "auto_deduct is on by default");
+      ok(d && d.grams === 22.5 && d.cost === 0.64 && d.cost_partial === false,
+        "cost per print: 10 g of a $29.99 roll + 12.5 g of a $27.50 roll = $0.64", d && { grams: d.grams, cost: d.cost, entries: d.entries.map(e => e.cost) });
+      r = await jpost("/api/resources/deductions/undo", { at: d.at });
+      ok(r.status === 200 && r.body.deduction.undone, "a deduction can be undone", r.body);
+      const inv2 = (await jget("/api/resources/spools")).body.spools || [];
+      ok(inv2.find(s => s.id === "spoolman_1").remaining_g === 700 && inv2.find(s => s.id === "spoolman_2").remaining_g === 400, "…and the grams are back exactly");
+      r = await jpost("/api/resources/deductions/undo", { at: d.at });
+      ok(r.status === 409, "…but only once", r.status);
+      // A roll with no recorded weight is never touched; a cancelled print deducts nothing.
+      await jpost("/api/resources/inventory", { spool_id: "spoolman_1", remaining_g: null });
+      mockU1.state.printState = "printing"; await settle();
+      mockU1.state.printState = "cancelled"; ev = await settle();
+      ok(ev.some(e => e.type === "print.cancelled"), "printing → cancelled raises print.cancelled", ev);
+      const inv3 = (await jget("/api/resources/spools")).body.spools || [];
+      ok(inv3.find(s => s.id === "spoolman_2").remaining_g === 400, "a cancelled print deducts nothing");
+      mockU1.state.printState = "printing"; await settle();
+      mockU1.state.printState = "complete"; ev = await settle();
+      const inv4 = (await jget("/api/resources/spools")).body.spools || [];
+      ok(inv4.find(s => s.id === "spoolman_1").remaining_g === null, "a roll with no recorded grams stays unknown rather than going negative");
+      ok(inv4.find(s => s.id === "spoolman_2").remaining_g === 387.5, "…while its neighbor with a weight is deducted normally");
+      r = await jpost("/api/resources/settings", { auto_deduct: false });
+      mockU1.state.printState = "printing"; await settle();
+      mockU1.state.printState = "complete"; ev = await settle();
+      ok((await jget("/api/resources/spools")).body.spools.find(s => s.id === "spoolman_2").remaining_g === 387.5, "auto_deduct off: a finished print changes nothing");
+      await jpost("/api/resources/settings", { auto_deduct: true });
+      await jpost("/api/slots/clear", { spool_id: "spoolman_1" }); await jpost("/api/slots/clear", { spool_id: "spoolman_2" });
+    }
+
+    // OFF means no request is made at all.
+    r = await jpost("/api/notify/settings", { enabled: false });
+    posts.length = 0;
+    mockU1.state.printState = "error"; mockU1.state.printMessage = "Heater not heating";
+    ev = await settle();
+    ok(ev.some(e => e.type === "print.error" && /not heating/.test(e.reason)), "→ error raises print.error (the edge is computed whether or not anyone listens)", ev);
+    ok(posts.length === 0, "…but with notifications off nothing is sent", posts.length);
+    r = await jget("/api/fleet-events");
+    ok(r.status === 200 && Array.isArray(r.body.recent) && r.body.recent.some(e => e.type === "print.error"), "GET /api/fleet-events lists what the Hub noticed", r.body.recent && r.body.recent.length);
+
+    mockU1.state.printState = "standby"; mockU1.state.filename = ""; mockU1.state.printMessage = ""; mockU1.state.printDuration = 0;
+    await settle();
+    ok(/\/modules\/notify-ui\.js/.test(await (await fetch(HUB + "/")).text()), "notify client script injected when on");
+    if (ntfy.closeAllConnections) ntfy.closeAllConnections();
+    await new Promise(r2 => ntfy.close(r2));
+  }
+
   console.log("\n== UI: gold.css discipline layer (v2.17) ==");
   {
     // Restart with default features so this exercises the stylesheet the way
@@ -3345,6 +3516,28 @@ async function stopHub() {
       ok(/192\\.168\\./.test(idx) && /10\\./.test(idx),
         "…and onLan recognises private address ranges");
     }
+  }
+
+  console.log("\n== LIB: wildcard filter (v2.24) ==");
+  {
+    // nameMatcher is a pure function in app.js with no DOM dependency, so the
+    // harness runs the real one rather than a regex over its source.
+    const src = fs.readFileSync(path.join(REPO, "public", "app.js"), "utf8");
+    const m = /function nameMatcher\(q\)\{[\s\S]*?\r?\n\}\r?\n/.exec(src);
+    ok(!!m, "nameMatcher exists in app.js");
+    const nameMatcher = new Function(m[0] + "; return nameMatcher;")();
+    const files = ["Baby Elephant x20.gcode", "baby-elephant-x1.gcode", "Penguin x20.gcode", "test cube.gcode", "Elephant Test.gcode"];
+    const hits = q => files.filter(nameMatcher(q));
+    ok(hits("").length === 5, "empty filter shows everything");
+    ok(hits("elephant").length === 3, "plain text is a case-insensitive substring match (as before)");
+    ok(hits("baby*").length === 2, "baby* = starts with baby", hits("baby*"));
+    ok(hits("*x20*").length === 2, "*x20* = contains x20", hits("*x20*"));
+    ok(hits("*.gcode").length === 5 && hits("*x1.gcode").length === 1, "*x1.gcode = ends with", hits("*x1.gcode"));
+    ok(hits("baby?elephant*").length === 2, "? matches exactly one character", hits("baby?elephant*"));
+    ok(hits("elephant x20").length === 1, "two words must both match, any order", hits("elephant x20"));
+    ok(hits("elephant -test").length === 2, "-word excludes", hits("elephant -test"));
+    ok(hits("x20 -penguin").length === 1, "wildcards, words and exclusions combine", hits("x20 -penguin"));
+    ok(hits("*(x20)*").length === 0 && hits("*a+b*").length === 0 && hits("*x20.*").length === 2, "regex metacharacters in a glob are literal, not a crash", hits("*x20.*"));
   }
 
   await stopHub();

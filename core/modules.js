@@ -31,6 +31,8 @@ const MODULE_TABLE = {
   // v2.24: one-way Spoolman import. AFTER spools and resources because it
   // writes through their provide()d capabilities and nothing reads its own.
   spoolman: require("../modules/spoolman.js"),
+  // v2.24: ntfy push notifications. Listens on hub.events; provides notify.send.
+  notify: require("../modules/notify.js"),
   // Last on purpose: it owns no data anyone else reads, and its only side
   // effect is one outbound HTTPS GET that must never delay a registration
   // above it.
@@ -115,6 +117,10 @@ const MODULE_CTX = Object.freeze({
   loadout: (idx) => loadoutSnapshot(idx),
   spoolShelf: () => { try { return (JSON.parse(fs.readFileSync(path.join(BASE_DIR, "spools.json"), "utf8")) || {}).spools || {}; } catch { return {}; } },
   fleet: () => fleetSnapshot(),
+  // v2.24: fleet edges. ctx.events.on("print.done", ev => …) — see core/events.js
+  // for the event names and payloads. Listeners run inside the poller; keep
+  // them quick and never let them throw.
+  get events() { return hub.events; },
   get cfg() { return hub.CFG; },
   get printers() { return hub.PRINTERS; },
   get types() { return hub.TYPES; },

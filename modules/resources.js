@@ -809,13 +809,110 @@ function register(ctx) {
     res.json({ ok: true, color_map: store.state.color_map });
   });
 
-  // POST /api/resources/settings { assume_empty_when_unset }
+  // POST /api/resources/settings { assume_empty_when_unset, auto_deduct }
   app.post("/api/resources/settings", express.json ? express.json() : (q, s, n) => n(), (req, res) => {
     const b = req.body || {};
     if ("assume_empty_when_unset" in b)
       store.state.settings.assume_empty_when_unset = !!b.assume_empty_when_unset;
+    if ("auto_deduct" in b) store.state.settings.auto_deduct = !!b.auto_deduct;
     store.save();
     res.json({ ok: true, settings: store.state.settings });
+  });
+
+  // ---- automatic deduction (v2.24) ------------------------------------------
+  // When a print finishes, the grams each file slot used come off the roll that
+  // was loaded in the head that printed it. The pieces were all here already:
+  // the file's per-slot grams (slotsFor), the printer's logical->physical head
+  // map (fleet mapTable), and the loadout (which spool is in which head). This
+  // joins them once, on the print.done edge from core/events.js.
+  //
+  // Deliberately conservative:
+  //   * Only rolls with a recorded remaining_g are touched. A roll nobody ever
+  //     weighed does not get an invented number that then goes negative.
+  //   * Never below zero. A roll that hits 0 is reported, not hidden.
+  //   * Cancelled prints deduct nothing (the file's total is wrong for them and
+  //     the Hub does not know how far it got). Paused-then-finished is a finish.
+  //   * Every deduction is written to a log the Spools tab can show, with the
+  //     before/after, so a wrong one can be undone by hand in ten seconds.
+  //   * One switch (settings.auto_deduct) turns it off.
+  const DEDUCT_LOG_MAX = 200;
+  async function deductFor(ev) {
+    if (store.state.settings.auto_deduct === false) return { skipped: "auto_deduct off" };
+    const idx = Number(ev.id);
+    const p = (ctx.printers || [])[idx];
+    if (!p) return { skipped: "unknown printer" };
+    const name = path.basename(String(ev.filename || ""));
+    if (!name) return { skipped: "no filename" };
+    const slug = p.type || "u1";
+    const folder = ctx.gcodeFolderFor(slug);
+    const fp = path.join(folder, name);
+    const known = ctx.fileStat ? ctx.fileStat(name, slug) : undefined;
+    if (known === null || !fs.existsSync(fp)) return { skipped: "file not in the Hub library (" + name + ")" };
+    const parsed = cache.slotsFor(slug, name, fp, known || undefined);
+    if (!parsed.ok) return { skipped: parsed.reason };
+    let mapTable = null;
+    try {
+      const fl = await ctx.fleet();
+      const me = (fl || []).find(x => x.id === idx);
+      if (me && Array.isArray(me.mapTable)) mapTable = me.mapTable;
+    } catch {}
+    const loadout = ctx.loadout ? (ctx.loadout(idx) || []) : [];
+    const entries = [];
+    const misses = [];
+    for (const s of parsed.slots) {
+      const head = (mapTable && Number.isInteger(mapTable[s.slot_index])) ? mapTable[s.slot_index] : s.slot_index;
+      const lo = loadout.find(l => l.slot === head);
+      if (!lo || !lo.spool_id) { misses.push("T" + (head + 1) + ": no spool recorded in that head"); continue; }
+      const inv = store.state.inv[lo.spool_id];
+      if (!inv || inv.remaining_g == null) { misses.push("T" + (head + 1) + ": " + (lo.color_name || lo.spool_id) + " has no remaining grams recorded"); continue; }
+      const before = Number(inv.remaining_g);
+      const after = Math.max(0, Math.round((before - s.grams) * 10) / 10);
+      inv.remaining_g = after;
+      // Cost per print (v2.24): what this slot's grams cost at the roll's price.
+      // Null when the roll has no price — never a guessed number.
+      const net = Number(inv.net_weight_g) > 0 ? Number(inv.net_weight_g) : 1000;
+      const cost = inv.cost_per_roll != null ? Math.round((s.grams / net) * Number(inv.cost_per_roll) * 100) / 100 : null;
+      entries.push({ spool_id: lo.spool_id, color_name: lo.color_name || null, head, grams: Math.round(s.grams * 10) / 10, before, after, empty: after === 0, cost });
+    }
+    const priced = entries.filter(e => e.cost != null);
+    const rec = { at: Date.now(), printer: p.name, printer_id: idx, file: name, entries, misses,
+                  grams: Math.round(entries.reduce((a, e) => a + e.grams, 0) * 10) / 10,
+                  cost: priced.length ? Math.round(priced.reduce((a, e) => a + e.cost, 0) * 100) / 100 : null,
+                  cost_partial: priced.length > 0 && priced.length < entries.length };
+    store.state.deductions = (store.state.deductions || []);
+    store.state.deductions.push(rec);
+    if (store.state.deductions.length > DEDUCT_LOG_MAX) store.state.deductions.splice(0, store.state.deductions.length - DEDUCT_LOG_MAX);
+    store.save();
+    if (entries.length)
+      hublog("info", "resources: " + p.name + " finished " + name + " — " + entries.map(e => "-" + e.grams + " g " + (e.color_name || e.spool_id) + (e.empty ? " (EMPTY)" : "")).join(", "));
+    else if (misses.length) hublog("info", "resources: " + p.name + " finished " + name + " — nothing deducted: " + misses.join("; "));
+    return rec;
+  }
+  if (ctx.events) ctx.events.on("print.done", ev => { deductFor(ev).catch(e => hublog("warn", "resources: deduction failed - " + e.message)); });
+  ctx.provide("resources.deductFor", ev => deductFor(ev));
+
+  // GET /api/resources/deductions — the log, newest first.
+  app.get("/api/resources/deductions", (req, res) => {
+    const all = (store.state.deductions || []).slice().reverse();
+    res.json({ deductions: all.slice(0, Number(req.query.limit) || 50), auto_deduct: store.state.settings.auto_deduct !== false });
+  });
+
+  // POST /api/resources/deductions/undo { at } — put the grams back for one
+  // finished print. Exact inverse of what was taken, entry by entry; the log
+  // keeps the record and marks it undone rather than deleting it.
+  app.post("/api/resources/deductions/undo", express.json ? express.json() : (q, s, n) => n(), (req, res) => {
+    const at = Number((req.body || {}).at);
+    const rec = (store.state.deductions || []).find(d => d.at === at);
+    if (!rec) return res.status(404).json({ error: "No deduction with that timestamp" });
+    if (rec.undone) return res.status(409).json({ error: "Already undone" });
+    for (const e of rec.entries) {
+      const inv = store.state.inv[e.spool_id];
+      if (!inv) continue;
+      inv.remaining_g = Math.round(((Number(inv.remaining_g) || 0) + (e.before - e.after)) * 10) / 10;
+    }
+    rec.undone = Date.now();
+    store.save();
+    res.json({ ok: true, deduction: rec });
   });
 
   // Badge for the Schedule page: "N colors short". Deliberately the same code

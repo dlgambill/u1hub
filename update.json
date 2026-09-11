@@ -1,7 +1,7 @@
 {
   "_comment": "Release manifest. Every Hub with update checks on fetches this file and compares its own version against `version`. Bump it as part of cutting a release, not before - the harness pins it equal to package.json so a manifest that lies about the current release cannot ship.",
-  "version": "2.23.2",
+  "version": "2.24.0",
   "url": "https://github.com/dlgambill/u1hub/releases",
-  "notes": "2.23.2: a Dispatch job whose file was deleted from the library is now flagged on the row, the next-print handoff explains it instead of opening an empty dashboard, and the library refuses to delete a file an open job still needs. 2.23.1: more colors than heads works when the gcode carries a pause. 2.23 was the speed release: dashboard and Dispatch load in well under a second on a big farm, a paused print says why, and the Dispatch badge shows a spool glyph.",
-  "published": "2026-09-10"
+  "notes": "2.24: import your rolls from Spoolman (one way, re-import any time); push notifications to your phone through ntfy when a print finishes, pauses with the reason, errors, or a printer stops answering; rolls count down by themselves when a print finishes, with cost per print and an Undo; wildcards in the library filter; the QR scan button says why it is off on plain http.",
+  "published": "2026-09-11"
 }

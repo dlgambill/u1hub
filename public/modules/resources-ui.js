@@ -555,4 +555,74 @@
   }
   setTimeout(paintBadge, 1500);
   setInterval(paintBadge, 60000);
+
+  // ---- Filament used (v2.24) --------------------------------------------------
+  // A card on the Spools tab: every finished print the Hub deducted from a
+  // roll, with grams, cost at the roll's price, and an Undo per line. Lives on
+  // the Spools tab because that is where the numbers it changes are shown.
+  let USAGE = null;
+  function usageCard() {
+    if (USAGE) return USAGE;
+    const wrap = document.querySelector("#spoolview .spoolwrap");
+    if (!wrap) return null;
+    USAGE = document.createElement("div");
+    USAGE.className = "spoolcard";
+    USAGE.id = "usagecard";
+    USAGE.innerHTML = '<div class="fshead" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">Filament used by finished prints' +
+      '<label class="hint" style="display:flex;align-items:center;gap:5px;cursor:pointer;font-weight:400;text-transform:none;letter-spacing:0;margin-left:auto">' +
+      '<input type="checkbox" id="usage-auto"> deduct automatically</label></div>' +
+      '<div id="usage-body" class="subnote" style="margin-top:8px">Loading…</div>';
+    const attrib = wrap.querySelector(".attrib");
+    if (attrib) wrap.insertBefore(USAGE, attrib); else wrap.appendChild(USAGE);
+    USAGE.querySelector("#usage-auto").addEventListener("change", async e => {
+      await jpost("/api/resources/settings", { auto_deduct: e.target.checked });
+      loadUsage();
+    });
+    USAGE.addEventListener("click", async e => {
+      const b = e.target.closest("[data-undo]");
+      if (!b) return;
+      b.disabled = true;
+      const r = await jpost("/api/resources/deductions/undo", { at: Number(b.dataset.undo) });
+      if (!r) { b.disabled = false; return; }
+      loadUsage();
+      if (typeof window.loadSpools === "function") window.loadSpools().catch(() => {});
+    });
+    return USAGE;
+  }
+  const when = ms => {
+    const d = new Date(ms), now = new Date();
+    const sameDay = d.toDateString() === now.toDateString();
+    return (sameDay ? "" : d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " ") +
+      d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  };
+  async function loadUsage() {
+    const card = usageCard();
+    if (!card) return;
+    let d; try { d = await jget("/api/resources/deductions?limit=15"); } catch { d = null; }
+    if (!d) return;
+    card.querySelector("#usage-auto").checked = d.auto_deduct !== false;
+    const body = card.querySelector("#usage-body");
+    const list = d.deductions || [];
+    if (!list.length) {
+      body.innerHTML = "Nothing yet. When a print finishes, the grams each head used come off the roll recorded in that head" +
+        " (load a roll into a head from its row above). Rolls with no remaining weight recorded are left alone.";
+      return;
+    }
+    body.className = "";
+    body.style.marginTop = "8px";
+    body.innerHTML = list.map(r => {
+      const parts = (r.entries || []).map(e => "−" + e.grams + " g " + esc(e.color_name || e.spool_id) + (e.cost != null ? " (" + money(e.cost) + ")" : "") + (e.empty ? ' <b style="color:var(--bad)">EMPTY</b>' : "")).join(" · ");
+      const miss = (r.misses || []).length ? ' <span class="hint" title="' + esc(r.misses.join("\n")) + '">' + r.misses.length + " head" + (r.misses.length === 1 ? "" : "s") + " not deducted</span>" : "";
+      const tot = (r.entries || []).length ? '<span style="font-family:var(--mono);font-size:11px;color:var(--ink-dim)">' + r.grams + " g" + (r.cost != null ? " · " + money(r.cost) + (r.cost_partial ? "+" : "") : "") + "</span>" : "";
+      return '<div class="spoolrow" style="align-items:flex-start;gap:10px' + (r.undone ? ";opacity:.5" : "") + '">' +
+        '<div class="spoolmeta"><div class="spoolname" style="font-size:13px">' + esc(r.printer) + " · " + esc(String(r.file).replace(/\.gcode$/i, "")) + ' <span class="hint">' + when(r.at) + "</span></div>" +
+        '<div class="spoolsub" style="word-break:normal">' + (parts || "nothing deducted") + miss + (r.undone ? " · undone" : "") + "</div></div>" +
+        tot + ((r.entries || []).length && !r.undone ? '<button class="btn ghost" data-undo="' + r.at + '" style="font-size:11px;padding:3px 9px">Undo</button>' : "") +
+        "</div>";
+    }).join("");
+  }
+  // Refresh whenever the Spools tab is opened, and every minute while it is.
+  document.addEventListener("click", e => { if (e.target.closest('.vtab[data-view="spools"]')) setTimeout(loadUsage, 150); });
+  setTimeout(loadUsage, 2500);
+  setInterval(() => { const v = document.getElementById("spoolview"); if (v && v.style.display !== "none") loadUsage(); }, 60000);
 })();

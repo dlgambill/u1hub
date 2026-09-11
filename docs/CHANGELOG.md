@@ -77,6 +77,55 @@ printers, and nothing leaves your network unless you turn remote access on.
 
 ---
 
+## New in 2.24 - the phone knows, the shelf keeps count
+
+- **Import your rolls from Spoolman.** If you already keep inventory in
+  [Spoolman](https://github.com/Donkie/Spoolman), a card at the bottom of the
+  Spools tab takes its address, tests it, and pulls every roll in: brand,
+  material, color name and hex (two- and three-color silks and gradients come
+  across too), nozzle and bed temperatures, and the remaining grams, roll
+  weight, price and shelf location. One way only: the Hub reads Spoolman and
+  never writes to it. Import again whenever you like; the same roll updates
+  rather than duplicating, a roll loaded in a printer stays loaded, and a roll
+  you archive or delete in Spoolman goes inactive here rather than vanishing.
+  A roll with no color set in Spoolman is skipped and named, because the Hub
+  keys everything on color. Asked for on Reddit; Spoolman is where a lot of
+  Klipper farms already keep this.
+- **Push notifications to your phone.** Settings has a *Phone notifications*
+  block that talks to [ntfy](https://ntfy.sh) - free app, no account, or your
+  own server. The Hub posts when a print finishes (with how long it took), when
+  a printer pauses (with the firmware's reason, the same one the card shows
+  since 2.23: "detect filament tangled!"), on an error, and when a printer stops
+  answering for a minute and a half. Started, cancelled and back-online are
+  there too, off by default. Pick which ones you want, send a test, and turn
+  the whole thing off with one box - off means no request is made at all.
+  Nothing about your Hub goes anywhere but your topic.
+- **Rolls count down by themselves.** When a print finishes, the grams each
+  head used (from the gcode, per slot) come off the roll recorded in that head.
+  A new *Filament used by finished prints* card on the Spools tab lists every
+  deduction with the grams, the cost at that roll's price, and an Undo. Only
+  rolls with a recorded remaining weight are touched - a roll nobody weighed
+  does not get an invented number that goes negative - a roll that reaches zero
+  is marked EMPTY rather than hidden, and a cancelled print deducts nothing. One
+  checkbox on the card turns it off.
+- **Cost per print**, as a by-product of the above: each finished print shows
+  what its filament cost at the price you paid for the rolls it used, with a +
+  when one of the rolls had no price.
+- **Wildcards in the library filter.** `baby*` is every file starting with
+  baby, `*x20*` every file containing x20, `?` matches one character, two words
+  must both match, and `-test` leaves files out. Plain text still works exactly
+  as before.
+- **The QR scan button explains itself.** On plain http over the LAN, browsers
+  refuse to hand out the camera, and the Spools tab used to simply not show the
+  button - which read as "QR doesn't work on my phone". Now it shows, greyed,
+  and says why: open the Hub over its tunnel address or on the Hub computer as
+  localhost, and it works.
+- Under the hood: the Hub now computes fleet *edges* once (a print finishing,
+  pausing, erroring; a printer going unreachable or coming back) and publishes
+  them to every module - notifications and the automatic deduction are the
+  first two riders, and `GET /api/fleet-events` lists the last fifty for anyone
+  curious. Harness: 653 checks.
+
 ### 2.23.2 - a Dispatch job whose file is gone
 
 If a file was deleted from the library after a Dispatch job was queued for it,

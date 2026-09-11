@@ -218,6 +218,26 @@ function onboardIndex(){
   }); });
   return m;
 }
+// v2.24: the filter box understands wildcards. Plain text is a substring match
+// as before. Several words separated by spaces must ALL appear (any order).
+// A term with * or ? is a glob, anchored at both ends the way a shell would
+// read it: "baby*" = starts with baby, "*x20*" = contains x20, "*.3mf.gcode"
+// = ends with. -term excludes. Case-insensitive throughout.
+function nameMatcher(q){
+  const terms=String(q||"").trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if(!terms.length) return ()=>true;
+  const tests=terms.map(t=>{
+    let neg=false;
+    if(t.length>1 && t[0]==="-"){ neg=true; t=t.slice(1); }
+    let fn;
+    if(/[*?]/.test(t)){
+      const re=new RegExp("^"+t.split(/([*?])/).map(p=>p==="*"?".*":p==="?"?".":p.replace(/[.+^${}()|[\]\\]/g,"\\$&")).join("")+"$");
+      fn=n=>re.test(n);
+    } else fn=n=>n.includes(t);
+    return neg ? n=>!fn(n) : fn;
+  });
+  return name=>{ const n=String(name||"").toLowerCase(); return tests.every(fn=>fn(n)); };
+}
 function renderList(){
   const q=$("filter").value.trim().toLowerCase(), list=$("list");
   const ob=onboardIndex();
@@ -228,7 +248,8 @@ function renderList(){
     size:Math.max(...locs.map(l=>l.size||0)), mtime:Math.max(...locs.map(l=>l.mtime||0))
   }); });
   if(!rows.length){ list.innerHTML='<div class="empty-list">No <code>.gcode</code> files here yet.<br><br>Point <code>gcodeFolder</code> in <code>config.json</code> at your Orca output folder, then Refresh.</div>'; return; }
-  const shown=rows.filter(srcVisible).filter(f=>!q||f.name.toLowerCase().includes(q));
+  const match=nameMatcher(q);
+  const shown=rows.filter(srcVisible).filter(f=>match(f.name));
   if(!shown.length){ list.innerHTML='<div class="empty-list">Nothing matches the filter / source selection.</div>'; return; }
   sortFiles(shown);
   list.innerHTML="";
@@ -1180,7 +1201,19 @@ function renderScanCtl(){
   // QR is the second shipped adapter: any camera (iOS included) reads a label
   // WE printed, which encodes the spool_id directly — no UID involved.
   const camOk = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
-  const qrBtn = camOk ? `<button class="scanbtn" id="qrscan" style="background:var(--panel-2);color:var(--ink);border:1px solid var(--line)">⌗ Scan QR label</button>` : "";
+  // v2.24: when the camera API is missing, say WHY instead of hiding the
+  // button. Nearly always it is the page being plain http on a LAN address:
+  // browsers only hand out the camera on a secure origin (https, or
+  // localhost). A user on http://192.168.x.x:4545 saw no QR button at all and
+  // filed it as "QR scanning doesn't work on my phone" (Reddit, 2026-09).
+  const insecure = !window.isSecureContext;
+  const qrWhy = insecure
+    ? "Camera access needs HTTPS. Open the Hub through its tunnel address (Settings → Remote access), or on this computer as http://localhost:" + (location.port || 80) + "."
+    : "This browser has no camera API.";
+  const qrBtn = camOk
+    ? `<button class="scanbtn" id="qrscan" style="background:var(--panel-2);color:var(--ink);border:1px solid var(--line)">⌗ Scan QR label</button>`
+    : `<button class="scanbtn" id="qrscan-off" disabled title="${esc(qrWhy)}" style="background:var(--panel-2);color:var(--ink-faint);border:1px dashed var(--line)">⌗ Scan QR label</button>`;
+  const qrNote = camOk ? "" : `<div class="subnote" style="margin-top:6px">QR scanning is off here: ${esc(qrWhy)}</div>`;
   const labelLink = `<a class="gear" href="/labels.html" target="_blank" style="text-decoration:none">🏷 Print QR labels</a>`;
   // v2.16: most filament arrives on a plain disposable roll with no tag on it.
   // The bind panel never needed a UID — /api/spools/bind treats `uid` as
@@ -1190,12 +1223,12 @@ function renderScanCtl(){
   const newBtn = `<button class="scanbtn" id="newroll" style="background:var(--panel-2);color:var(--ink);border:1px solid var(--line)">＋ New roll (no tag)</button>`;
   if(nfcSupported()){
     ctl.innerHTML=`<div class="row" style="gap:10px;flex-wrap:wrap"><button class="scanbtn" id="nfcscan">📶 Tap to scan a spool tag</button>${qrBtn}${newBtn}${labelLink}</div>
-      <div class="subnote" style="margin-top:8px">NFC: hold the tag to the back of the phone (HTTPS + Android Chrome). QR: point the camera at a printed spool label. No tag at all? <b>New roll</b> makes the record first and prints its own label.</div>
+      <div class="subnote" style="margin-top:8px">NFC: hold the tag to the back of the phone (HTTPS + Android Chrome). QR: point the camera at a printed spool label. No tag at all? <b>New roll</b> makes the record first and prints its own label.</div>${qrNote}
       <div class="row" style="margin-top:10px"><input class="field" id="uidmanual" placeholder="…or type a tag UID (hex)" style="max-width:260px"><button class="btn ghost" id="uidgo">Look up</button></div>`;
     $("nfcscan").addEventListener("click",startScan);
   } else {
     ctl.innerHTML=`<div class="row" style="gap:10px;flex-wrap:wrap">${qrBtn}${newBtn}${labelLink}</div>
-      <div class="subnote" style="margin-top:8px">No Web NFC in this browser (Android Chrome over HTTPS is the NFC scanner)${camOk?" — but QR labels scan fine with this camera":""}. <b>New roll</b> needs no tag or NFC at all: describe the filament, print the QR, stick it on.</div>
+      <div class="subnote" style="margin-top:8px">No Web NFC in this browser (Android Chrome over HTTPS is the NFC scanner)${camOk?" — but QR labels scan fine with this camera":""}. <b>New roll</b> needs no tag or NFC at all: describe the filament, print the QR, stick it on.</div>${qrNote}
       <div class="row" style="margin-top:10px"><input class="field" id="uidmanual" placeholder="tag UID (hex)" style="max-width:260px"><button class="btn ghost" id="uidgo">Look up</button></div>`;
   }
   const qb=$("qrscan");

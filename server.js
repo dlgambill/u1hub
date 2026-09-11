@@ -3,7 +3,7 @@
 // and pushes the chosen file to the chosen printer via Moonraker (server-side,
 // so no browser CORS headaches).
 
-const VERSION = "2.23.2";
+const VERSION = "2.24.0";
 
 const fs = require("fs");
 const http = require("http");
@@ -20,6 +20,7 @@ require("./core/app.js")(hub);
 require("./core/library.js")(hub);
 require("./core/print.js")(hub);
 require("./core/fleet.js")(hub);
+require("./core/events.js")(hub);      // v2.24: fleet edges (done/paused/error/offline) on hub.events
 require("./core/telemetry.js")(hub);
 require("./core/thumbs.js")(hub);
 require("./core/filament.js")(hub);

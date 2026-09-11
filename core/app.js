@@ -80,7 +80,8 @@ const CLIENT_TABLE = {
   slicing: "/modules/slicing-ui.js",    // v2.12 Slice tab, same pattern
   resources: "/modules/resources-ui.js", // v2.16 Resources tab
   updates: "/modules/updates-ui.js",     // v2.18 version chip in the topbar (no tab)
-  spoolman: "/modules/spoolman-ui.js"    // v2.24 import card on the Spools tab (no tab)
+  spoolman: "/modules/spoolman-ui.js",   // v2.24 import card on the Spools tab (no tab)
+  notify: "/modules/notify-ui.js"        // v2.24 ntfy card in Settings (no tab)
   // (named -ui deliberately: the server module is modules/dispatch.js, and two
   //  same-named files in different folders is a foot-gun during deploys)
 };

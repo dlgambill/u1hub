@@ -51,10 +51,19 @@ exact filament.
 
 **Give every spool an identity.** Scan a spool's RFID tag with your phone, or
 print a QR label for rolls that have no tag. The Hub remembers the brand,
-color, and temps, tracks which machine each spool is loaded in, and can track
-grams left and price per roll.
+color, and temps, tracks which machine each spool is loaded in, and tracks
+grams left and price per roll. When a print finishes, the grams each head used
+come off the roll that was in it, with the cost of that print at the price you
+paid, and an Undo if it got one wrong. Already keep your rolls in
+[Spoolman](https://github.com/Donkie/Spoolman)? Import them in one click; the
+Hub reads Spoolman and never writes to it.
 
 ![Spools: every roll you own, where it is, and what is left on it](docs/spools-inventory.png)
+
+**Let your phone tell you.** Settings can send push notifications through
+[ntfy](https://ntfy.sh) (free, no account) when a print finishes, a printer
+pauses (with the reason), errors, or stops answering. Pick the events you want;
+one box turns it all off.
 
 **Ask "what can I print right now?"** The Match tab reads the colors loaded
 on each printer and lists the library files those colors can already produce,

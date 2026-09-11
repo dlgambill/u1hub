@@ -6,6 +6,18 @@ Log mistakes in `MISTAKES.md` (what happened, root cause, prevention). Newest
 first. Read it before touching an area you have broken before. When the same
 failure appears 4–5 times, promote it to a hard rule below.
 
+**Only mistakes made in THIS repo.** `MISTAKES.md` is committed to a public
+repo, and `SESSIONS.md` sends every lane here at startup whatever repo it is
+working in. If you are not the `u1-print-hub` lane, your mistake goes in
+`C:\Users\Danny\code\MISTAKES-shared.md` - never here. This has now happened
+twice and been undone by hand both times (SESSIONS.md thread 6, and the
+2026-09-10 02:50 UTC entry, where a foreign entry was sitting uncommitted
+under a release commit). The same applies to the promoted-cluster table: the
+cross-project clusters are counted in `MISTAKES-shared.md`, which keeps its
+own table and its own sequence. The paragraph under "Where durable
+instructions belong" said this already; it is repeated here because this is
+where a lane is standing when it decides where to write.
+
 ## Other sessions on this machine
 
 Danny runs more than one Claude session against ichabod at once, and they
@@ -152,7 +164,7 @@ writes). `scripts/check-core.js` syntax-checks the root plus every core file.
 
 ## Harness
 
-`npm test` → **560 checks**, expect **560 passed, 0 failed**. A red harness
+`npm test` → **653 checks**, expect **653 passed, 0 failed**. A red harness
 blocks everything.
 
 Takes ~2.5 min over SMB. Run it with `scripts/run-harness.cmd` and poll
