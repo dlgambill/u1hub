@@ -33,6 +33,8 @@ const MODULE_TABLE = {
   spoolman: require("../modules/spoolman.js"),
   // v2.24: ntfy push notifications. Listens on hub.events; provides notify.send.
   notify: require("../modules/notify.js"),
+  // v2.25: AI pre-flight with the person's own Anthropic key. Inert without one.
+  advisor: require("../modules/advisor.js"),
   // Last on purpose: it owns no data anyone else reads, and its only side
   // effect is one outbound HTTPS GET that must never delay a registration
   // above it.

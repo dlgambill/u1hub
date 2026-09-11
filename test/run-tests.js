@@ -3259,6 +3259,126 @@ async function stopHub() {
     await new Promise(r2 => ntfy.close(r2));
   }
 
+  console.log("\n== ADV: AI pre-flight with the person's own key (v2.25) ==");
+  {
+    // A mock Anthropic Messages endpoint. Records every request so the tests
+    // can prove what was sent (headers, model, brief) and count calls.
+    const calls = [];
+    let reply = { text: "**CHECK**: PLA file, PLA loaded, but T3 is empty.\n- T3 has no roll recorded; the file's third color has nowhere to go.\n- hot_plate_temp 60 is fine for PLA.", status: 200 };
+    const anth = http.createServer((rq, rs) => {
+      let body = "";
+      rq.on("data", c => body += c);
+      rq.on("end", () => {
+        let j = null; try { j = JSON.parse(body); } catch {}
+        calls.push({ url: rq.url, key: rq.headers["x-api-key"] || null, ver: rq.headers["anthropic-version"] || null, body: j });
+        rs.writeHead(reply.status, { "Content-Type": "application/json" });
+        if (reply.status !== 200) return rs.end(JSON.stringify({ error: { type: "authentication_error", message: "invalid x-api-key" } }));
+        rs.end(JSON.stringify({ id: "msg_1", model: j && j.model, content: [{ type: "text", text: reply.text }], usage: { input_tokens: 1200, output_tokens: 150 } }));
+      });
+    });
+    await new Promise(r => anth.listen(45994, "127.0.0.1", r));
+    const ANTH = "http://127.0.0.1:45994";
+    const KEY = "sk-ant-api03-" + "x".repeat(40);
+    const byPort = f => f.find(p => String(p.url || "").endsWith(":" + portU1)) || {};
+
+    const amod = require(path.join(REPO, "modules", "advisor.js"));
+    {
+      const text = GCODE_MULTI + "\n; layer_height = 0.2\n; enable_support = 0\n; nozzle_temperature = 220;220;220;220\n; hot_plate_temp = 60\n; curr_bed_type = Textured PEI Plate\n; total layer number: 143\n; max_z_height: 28.6\nEXCLUDE_OBJECT_DEFINE NAME=cube_1 CENTER=1,1\nEXCLUDE_OBJECT_DEFINE NAME=cube_2 CENTER=2,2\n";
+      const b = amod.briefFromText(text, "advisor.gcode");
+      const s = b.lines.join("\n");
+      ok(/^FILE: advisor\.gcode/.test(s), "brief starts with the file name");
+      ok(/PLATE: .*1h 2m.*143 layers.*height 28\.6 mm.*2 objects/.test(s), "brief carries time, layers, height and object count", s.split("\n")[1]);
+      ok(/T1: PLA #FF0000 10 g/.test(s) && /T4: PLA #FFFFFF 0 g \(not used\)/.test(s), "brief lists each logical filament with type, color, grams and whether it is used", s);
+      ok(/layer_height = 0\.2/.test(s) && /enable_support = 0/.test(s) && /hot_plate_temp = 60/.test(s) && /curr_bed_type = Textured PEI Plate/.test(s), "brief carries the whitelisted slicer settings", b.meta);
+      ok(!/filament_colour/.test(s.split("SLICER SETTINGS")[1] || ""), "…and not the raw color line (already summarized above)");
+      ok(b.lines.join("\n").length < 4000, "the brief is a few thousand characters, not the file", s.length);
+      ok(amod.parseVerdict("**CHECK**: x") === "CHECK" && amod.parseVerdict("GO: fine") === "GO" && amod.parseVerdict("Stop. really") === "STOP" && amod.parseVerdict("hello") === null, "verdict parsing tolerates markdown and case");
+      ok(amod.estimateCost("claude-sonnet-5", { input_tokens: 1200, output_tokens: 150 }) === 0.0039, "cost estimate: 1200 in + 150 out on Sonnet 5 = $0.0039");
+      ok(amod.SYSTEM.length < 2500 && /GO, CHECK, or STOP/.test(amod.SYSTEM), "system prompt asks for a one-word verdict first");
+    }
+
+    let r = await jget("/api/advisor");
+    ok(r.status === 200 && r.body.key_set === false && r.body.model === "claude-sonnet-5" && Array.isArray(r.body.models), "GET /api/advisor: no key, Sonnet 5 default, model menu", r.body);
+    fs.writeFileSync(path.join(gcodeDir, "advisor.gcode"), GCODE_MULTI + "\n; layer_height = 0.2\n; nozzle_temperature = 220;220;220;220\n; hot_plate_temp = 60\n");
+    await jget("/api/files?type=u1");
+    const U1ID = byPort((await jget("/api/fleet")).body || []).id;
+    r = await jpost("/api/advisor/review", { file: "advisor.gcode", type: "u1", printer: U1ID });
+    ok(r.status === 409 && /API key/.test(r.body.error), "a review without a key is refused with a pointer to Settings", r.body);
+    r = await jpost("/api/advisor/settings", { key: "hunter2" });
+    ok(r.status === 400, "a key that is not sk-ant-… is refused", r.status);
+    r = await jpost("/api/advisor/settings", { key: KEY, model: "claude-sonnet-5", url: ANTH });
+    ok(r.status === 200 && r.body.key_set === true && r.body.key_tail === "xxxx", "key saved; the API reports key_set and the last four only", r.body);
+    ok(!JSON.stringify(r.body).includes(KEY), "…the key itself is never echoed");
+    ok(JSON.parse(fs.readFileSync(path.join(hubDir, "config.json"), "utf8")).advisor.key === KEY, "…and lives in config.json on the Hub computer");
+    ok(calls.length === 0, "saving a key sends nothing", calls.length);
+
+    r = await jpost("/api/advisor/test", {});
+    ok(r.status === 200 && r.body.ok && calls.length === 1 && calls[0].key === KEY && calls[0].ver === "2023-06-01", "Test key makes one tiny call with the key and API version headers", { status: r.status, body: r.body, call: calls[0] && { key: calls[0].key, ver: calls[0].ver } });
+    ok(calls[0].body && calls[0].body.max_tokens <= 10, "…and caps it at a handful of tokens", calls[0].body && calls[0].body.max_tokens);
+
+    // A real review: rolls in T1/T2, the file needs three colors.
+    await jpost("/api/slots/assign", { printer: U1ID, slot: 0, spool_id: "spoolman_1" });
+    await jpost("/api/slots/assign", { printer: U1ID, slot: 1, spool_id: "spoolman_2" });
+    calls.length = 0;
+    r = await jpost("/api/advisor/review", { file: "advisor.gcode", type: "u1", printer: U1ID, mapping: { 0: 0, 1: 1 } });
+    ok(r.status === 200 && r.body.verdict === "CHECK" && /T3 is empty/.test(r.body.text), "a review comes back with the verdict and the text", r.body);
+    ok(r.body.cached === false && r.body.cost === 0.0039 && r.body.usage && r.body.usage.input_tokens === 1200, "…with usage and an estimated cost", { cached: r.body.cached, cost: r.body.cost });
+    ok(calls.length === 1 && calls[0].url === "/v1/messages" && calls[0].body.model === "claude-sonnet-5", "one POST to /v1/messages with the chosen model", calls[0] && calls[0].url);
+    const sent = calls[0].body.messages[0].content;
+    ok(/FILE: advisor\.gcode/.test(sent) && /layer_height = 0\.2/.test(sent) && /T1: PLA/.test(sent), "the brief sent carries the file's settings and filaments", sent.slice(0, 300));
+    ok(/T1: Prusament PLA Galaxy Black \(215 C nozzle, 60 C bed\)/.test(sent) && /T3: empty/.test(sent), "…and the printer's loadout with the rolls' temps, empty heads named", sent.split("LOADED IN ITS HEADS")[1]);
+    ok(/T1 -> T1, T2 -> T2/.test(sent), "…and the mapping the user chose", sent.split("COLOR MAPPING")[1]);
+    ok(!/127\.0\.0\.1:\d+/.test(sent) && !/http:\/\//.test(sent), "…but no printer addresses", sent);
+    ok(/Snapmaker U1/.test(calls[0].body.system), "the system prompt sets the printer context");
+    ok(sent.length < 5000 && !/G28|G1 X/.test(sent), "the gcode body is not sent", sent.length);
+
+    r = await jpost("/api/advisor/review", { file: "advisor.gcode", type: "u1", printer: U1ID, mapping: { 0: 0, 1: 1 } });
+    ok(r.status === 200 && r.body.cached === true && calls.length === 1, "the same file and loadout is answered from the cache, no second call", { cached: r.body.cached, calls: calls.length });
+    r = await jpost("/api/advisor/review", { file: "advisor.gcode", type: "u1", printer: U1ID, mapping: { 0: 0, 1: 1 }, force: true });
+    ok(r.status === 200 && r.body.cached === false && calls.length === 2, "force asks again", calls.length);
+    await jpost("/api/slots/clear", { spool_id: "spoolman_2" });
+    r = await jpost("/api/advisor/review", { file: "advisor.gcode", type: "u1", printer: U1ID, mapping: { 0: 0, 1: 1 } });
+    ok(r.status === 200 && r.body.cached === false && calls.length === 3, "a changed loadout is a new question", calls.length);
+    ok(fs.existsSync(path.join(hubDir, "advisor.json")) && JSON.parse(fs.readFileSync(path.join(hubDir, "advisor.json"), "utf8")).reviews.length >= 2, "reviews persist in advisor.json");
+    r = await jget("/api/advisor");
+    ok(r.body.reviews >= 2 && r.body.spent_usd >= 0.01 && r.body.last && r.body.last.verdict === "CHECK", "GET /api/advisor totals the spend and names the last verdict", r.body);
+
+    const bt = await fetch(HUB + "/api/advisor/brief?file=advisor.gcode&type=u1&printer=" + U1ID);
+    const btxt = await bt.text();
+    ok(bt.status === 200 && /SLICER SETTINGS/.test(btxt) && /LOADED IN ITS HEADS/.test(btxt) && calls.length === 3, "the brief preview shows what would be sent, without sending it", bt.status);
+
+    reply = { status: 401 };
+    r = await jpost("/api/advisor/review", { file: "advisor.gcode", type: "u1", printer: U1ID, force: true });
+    ok(r.status === 502 && /rejected the key/.test(r.body.error), "a 401 from Anthropic comes back as a plain sentence about the key", r.body);
+    reply = { status: 200, text: "GO: looks fine." };
+    r = await jpost("/api/advisor/review", { file: "nope.gcode", type: "u1", printer: U1ID });
+    ok(r.status === 404, "a file that is not in the library is refused", r.status);
+    r = await jpost("/api/advisor/review", { file: "advisor.gcode", type: "u1" });
+    ok(r.status === 400, "a review with no printer is refused", r.status);
+
+    // Regression (found 2026-09-11 while wiring the advisor): POST /api/config
+    // rebuilt config.json from the Settings form's own keys and dropped every
+    // module's slice - one Save of the printer list wiped the ntfy topic, the
+    // Spoolman URL and the API key. The form's save must carry them through.
+    {
+      const cfgNow = (await jget("/api/config")).body;
+      const sv = await jpost("/api/config", { gcodeFolder: cfgNow.gcodeFolder, printers: cfgNow.printers });
+      ok(sv.status === 200, "a Settings save of the printer list succeeds", sv.body && sv.body.error);
+      const raw = JSON.parse(fs.readFileSync(path.join(hubDir, "config.json"), "utf8"));
+      ok(raw.advisor && raw.advisor.key === KEY, "…and does not wipe the advisor key", Object.keys(raw));
+      ok(raw.notify && raw.notify.topic === "hub-harness", "…nor the ntfy topic", raw.notify);
+      ok((await jget("/api/advisor")).body.key_set === true, "…and the running Hub still has the key");
+    }
+
+    r = await jpost("/api/advisor/settings", { key: "" });
+    ok(r.status === 200 && r.body.key_set === false && !("key" in (JSON.parse(fs.readFileSync(path.join(hubDir, "config.json"), "utf8")).advisor || {})), "saving an empty key removes it from config.json", r.body);
+    await jpost("/api/slots/clear", { spool_id: "spoolman_1" });
+    ok(/\/modules\/advisor-ui\.js/.test(await (await fetch(HUB + "/")).text()), "advisor client script injected when on");
+    ok(/setModules/.test(fs.readFileSync(path.join(REPO, "public", "modules", "advisor-ui.js"), "utf8")) && /id="advgo"|advgo/.test(fs.readFileSync(path.join(REPO, "public", "modules", "advisor-ui.js"), "utf8")), "the client adds a Settings block and a job-card button");
+    if (anth.closeAllConnections) anth.closeAllConnections();
+    await new Promise(r2 => anth.close(r2));
+  }
+
   console.log("\n== UI: gold.css discipline layer (v2.17) ==");
   {
     // Restart with default features so this exercises the stylesheet the way

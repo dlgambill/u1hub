@@ -73,6 +73,13 @@ app.post("/api/config", (req, res) => {
       seen.set(o, p.name);
     }
   }
+  // v2.25: modules own slices of config.json (updates, slicing, spoolman,
+  // notify, advisor - saved through their own routes via ctx.saveConfig).
+  // This route rebuilt the file from the keys the Settings form knows about
+  // and silently dropped every other top-level key, so pressing Save on the
+  // printer list wiped the ntfy topic and the Spoolman URL set five minutes
+  // earlier. Carry through everything this form does not own.
+  for (const k of Object.keys(hub.CFG || {})) if (!(k in next)) next[k] = hub.CFG[k];
   try {
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(next, null, 2));
     loadConfig();

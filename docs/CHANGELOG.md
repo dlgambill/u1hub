@@ -77,6 +77,36 @@ printers, and nothing leaves your network unless you turn remote access on.
 
 ---
 
+## New in 2.25 - a second pair of eyes before you press print
+
+- **AI pre-flight, with your own key.** A thread on r/SnapmakerU1 had people
+  uploading their 3MF to ChatGPT before every print to sanity-check the slicer
+  settings. The Hub can do the useful half of that from the job card: press
+  **✦ AI pre-flight**, pick the printer you are about to send to, and Claude
+  reads the slicer settings Orca wrote into the gcode (layer height, speeds,
+  temperatures, fan, supports, prime tower, retraction, plate type), the
+  filaments the file was sliced for, what is on the plate, and - the part a
+  chatbot never has - what is actually loaded in that printer's heads, with
+  each roll's recommended temperatures. You get GO, CHECK or STOP, one
+  sentence, and the reasons, most important first. It cannot see the model's
+  geometry and says so when something depends on it.
+- **Nothing is sent until you press the button**, and never the gcode
+  itself: a text brief of a few thousand characters, which you can read for
+  any file from Settings before you decide to trust the feature with a key.
+  The key (Anthropic, from platform.claude.com) goes in Settings → AI
+  pre-flight, lives in config.json on the Hub computer, is never shown again,
+  and is removed with one button. A review costs about a cent on Claude Sonnet
+  5, half that on Haiku; the same file against the same loadout is answered
+  from a local cache for free, and Settings keeps a running total of what has
+  been spent. Anthropic only for now; a second provider is one more request
+  shape if people ask.
+- **Fixed: Save in Settings no longer wipes module settings.** The printer
+  list's Save rebuilt config.json from the fields on that form and dropped
+  everything else at the top level - the ntfy topic, the Spoolman address,
+  the update-check settings, and now the API key. Found while wiring the
+  advisor; every module slice is carried through now, with a harness check
+  that saves the printer list and reads the others back. Harness: 696 checks.
+
 ## New in 2.24 - the phone knows, the shelf keeps count
 
 - **Import your rolls from Spoolman.** If you already keep inventory in

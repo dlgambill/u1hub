@@ -18,7 +18,7 @@ Running log of things that broke, why, and the rule that stops a repeat.
 | Test depends on when it runs / what else runs | 4 incidents, 5 checks | rule 7 |
 | Asserted or acted without checking first | 11 incidents | rule 8 |
 | Harness green while the feature was broken | 3 incidents | rule 2 — "green" is not "verified" |
-| Unverified shape trusted as complete | 2 incidents | rule 6 |
+| Unverified shape trusted as complete | 3 incidents | rule 6 |
 | Shipped onto one surface, not every surface that draws the thing | 3 incidents | *approaching a law* — check every tab that renders it before calling it done |
 | Version drift across the three files | 1 | rule 4 |
 | Staging vs git clone drift | 2 incidents | rule 3 |
@@ -27,6 +27,34 @@ Running log of things that broke, why, and the rule that stops a repeat.
 
 Bridge quirks are operating facts, not judgment failures; a rule that says
 "remember these four things" is a lookup table wearing a rule's clothes.
+
+---
+
+## 2026-09-11 - Four releases of module settings that one Save in Settings would erase
+
+**What happened:** While wiring the advisor's key into `config.json` I read
+`POST /api/config` (core/settings.js) to see how the Settings form saves, and
+found it builds the file from scratch: gcodeFolder, port, types, printers,
+tip, features. Every other top-level key is dropped. `updates` (2.18),
+`slicing` (2.12), `spoolman` and `notify` (2.24) all write their own slice
+through `ctx.saveConfig()`, so any of them set before a person pressed Save
+on the printer list was gone after it. No harness check saved the form and
+read a module's settings back; every module tested its own route in
+isolation, against a Hub that never touched the form.
+
+**Root cause:** Two writers to one file with two different pictures of what
+the file contains. The form's route predates modules owning config, and when
+modules started writing there (2.12) nobody re-read the older writer.
+
+**Consequence:** Four releases in the field where an ntfy topic or a
+Spoolman address could vanish the next time someone added a printer, with
+nothing in the log. Caught by reading, not by a report, which is luck.
+
+**Rule:** When a second writer is added to a file, read every existing
+writer of that file before shipping, and add a check that exercises BOTH
+writers in sequence. Rule-6 family (an unverified shape trusted as complete):
+the shape here was "what config.json holds", and the form's idea of it was
+five keys old.
 
 ---
 

@@ -11,7 +11,9 @@ watch cameras, plan your printing week, and know what filament to buy before
 you run out.
 
 Nothing gets installed on the printers. The Hub talks to the software they
-already run, and nothing leaves your network unless you turn remote access on.
+already run, and nothing leaves your network unless you turn remote access on,
+ask for a phone notification, or press the AI pre-flight button with your own
+key in place.
 
 ---
 
@@ -59,6 +61,14 @@ paid, and an Undo if it got one wrong. Already keep your rolls in
 Hub reads Spoolman and never writes to it.
 
 ![Spools: every roll you own, where it is, and what is left on it](docs/spools-inventory.png)
+
+**A second pair of eyes before you print.** With your own Anthropic API key
+in Settings, an AI pre-flight button on the job card has Claude read the
+slicer settings baked into the file and compare them with what is loaded in
+the printer you picked: wrong material or temperature for a head, an empty
+head a color needs, a missing prime tower. GO, CHECK or STOP, and why. Nothing
+is sent until you press the button, never the gcode itself, and a review costs
+about a cent.
 
 **Let your phone tell you.** Settings can send push notifications through
 [ntfy](https://ntfy.sh) (free, no account) when a print finishes, a printer

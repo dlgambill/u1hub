@@ -81,7 +81,12 @@ function loadoutSnapshot(printerIdx) {
     const sp = spools[sid] || {};
     return { slot: Number(k), spool_id: sid || null,
              hex: sp.hex || null, color_name: sp.color_name || null,
-             brand: sp.brand || null, material_variant: sp.material_variant || null };
+             brand: sp.brand || null, material_variant: sp.material_variant || null,
+             // v2.25: the advisor's brief and the deduction log want the base
+             // material and the roll's recommended temps too. Additive.
+             material: sp.material || null,
+             hot_end_temp: Number.isFinite(+sp.hot_end_temp) ? +sp.hot_end_temp : null,
+             bed_temp: Number.isFinite(+sp.bed_temp) ? +sp.bed_temp : null };
   }).filter(e => e.spool_id);
 }
 

@@ -81,7 +81,8 @@ const CLIENT_TABLE = {
   resources: "/modules/resources-ui.js", // v2.16 Resources tab
   updates: "/modules/updates-ui.js",     // v2.18 version chip in the topbar (no tab)
   spoolman: "/modules/spoolman-ui.js",   // v2.24 import card on the Spools tab (no tab)
-  notify: "/modules/notify-ui.js"        // v2.24 ntfy card in Settings (no tab)
+  notify: "/modules/notify-ui.js",       // v2.24 ntfy card in Settings (no tab)
+  advisor: "/modules/advisor-ui.js"      // v2.25 AI pre-flight: Settings block + job-card button (no tab)
   // (named -ui deliberately: the server module is modules/dispatch.js, and two
   //  same-named files in different folders is a foot-gun during deploys)
 };
