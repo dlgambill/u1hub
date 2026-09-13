@@ -20,7 +20,11 @@ REM the path is taken from this script's own location, so a moved checkout
 REM still works. Gcode lives on X:\gcode via config.json's gcodeFolder.
 set HUBDIR=%~dp0..
 for %%I in ("%HUBDIR%") do set HUBDIR=%%~fI
-powershell -NoProfile -Command "$r=Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine='cmd /c node %HUBDIR%\server.js >> %HUBDIR%\hub-console.log 2>&1'; CurrentDirectory='%HUBDIR%' }; if($r.ReturnValue -eq 0){ 'started detached, pid ' + $r.ProcessId } else { 'WMI create FAILED rv=' + $r.ReturnValue }"
+REM 2026-09-13: ShowWindow=0 (SW_HIDE). Launched from the logon task, the WMI
+REM cmd got a visible black console titled with the node command line; a
+REM person closing that window closes the Hub. Found the day the old X: exe
+REM ended up on 4545 six minutes after the logon task had put the real one there.
+powershell -NoProfile -Command "$si=New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ ShowWindow=[uint16]0 }; $r=Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine='cmd /c node %HUBDIR%\server.js >> %HUBDIR%\hub-console.log 2>&1'; CurrentDirectory='%HUBDIR%'; ProcessStartupInformation=$si }; if($r.ReturnValue -eq 0){ 'started detached, pid ' + $r.ProcessId } else { 'WMI create FAILED rv=' + $r.ReturnValue }"
 for /l %%i in (1,1,40) do (
   ping -n 2 127.0.0.1 >nul
   curl -s -o nul http://127.0.0.1:4545/api/version && goto :up
