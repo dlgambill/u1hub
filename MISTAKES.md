@@ -30,6 +30,38 @@ Bridge quirks are operating facts, not judgment failures; a rule that says
 
 ---
 
+## 2026-09-14 - Three synchronous reads the speed release missed, found by a slow share
+
+**What happened:** Danny's phone showed an empty dashboard and "server has
+no version" over the tunnel. The Hub was up; access.log showed every
+request from every client taking 45-64 s for about a minute, right after a
+198 MB gcode landed in X:\gcode. `/api/map` read a 3 MB tail with
+`fs.readSync`, `paletteForFile` did the same for Match and the print-time
+color check, and `fileContentHash` read 2 MB the same way. The share was
+crawling; each sync read held the event loop for the length of the read,
+and everything else queued behind it.
+
+**Root cause:** v2.23 ("the speed release") moved the library walk, the
+printer-file listing and thumbnails off the loop and declared victory. It
+never enumerated the remaining `readSync`/`readFileSync` calls that touch
+the gcode share on a request path. A sync read of a network file is a
+stall of unbounded length, and the harness cannot see it because the
+harness's "share" is a local temp folder.
+
+**Consequence:** One bad minute of NAS made the whole farm's dashboard
+unusable from every device. It self-healed, which is why it had never been
+reported.
+
+**Rule:** No synchronous filesystem call may touch a file under the gcode
+folder (or any configured share) from inside a request handler or a timer.
+`grep -n "readSync\|readFileSync\|statSync\|openSync" core modules` and
+justify every hit that takes a library path: it is either a cache hit
+after an async warm, or it is a bug. Still open after this fix:
+`resources.js readEnds` (576 KB, Dispatch rollup) and `modules.js
+fileInfoForModules` (256 KB head) - small, but the rule says they go too.
+
+---
+
 ## 2026-09-11 - Four releases of module settings that one Save in Settings would erase
 
 **What happened:** While wiring the advisor's key into `config.json` I read
