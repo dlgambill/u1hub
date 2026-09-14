@@ -148,6 +148,8 @@ function refreshLibrary(t) {
       // thumbs.js (loads later) keeps every file's thumbnail on local disk;
       // hand it the fresh membership so new arrivals are extracted off-path.
       if (hub.warmThumbs) hub.warmThumbs().catch(() => {});
+      // v2.26.2: and the palettes, so no request ever pays a first read.
+      warmPalettes(t, snap).catch(() => {});
       return snap;
     }).finally(() => LIB_INFLIGHT.delete(t.slug));
   LIB_INFLIGHT.set(t.slug, p);
@@ -586,7 +588,7 @@ app.post("/api/queue/reorder", (req, res) => {
 // cached implementation further down. Removed 2026-07-19 — the cached route
 // with thumbCache + long Cache-Control now actually serves.)
 
-app.get("/api/map", (req, res) => {
+app.get("/api/map", async (req, res) => {
   const t = reqTypeOf(req);
   if (!t) return res.status(400).json({ error: "Unknown printer type" });
   const fp = safeFile(req.query.file, t);
@@ -596,23 +598,13 @@ app.get("/api/map", (req, res) => {
     // the file, so read just the tail — turns a 200MB read into ~2MB and skips
     // the body scan entirely. Fall back to the whole file only if the color
     // config isn't found in the tail.
-    const TAIL = 3 * 1024 * 1024;
-    const size = fs.statSync(fp).size;
-    let text;
-    if (size > TAIL) {
-      const fd = fs.openSync(fp, "r");
-      try {
-        const buf = Buffer.alloc(TAIL);
-        fs.readSync(fd, buf, 0, TAIL, size - TAIL);
-        text = buf.toString("utf8");
-      } finally { fs.closeSync(fd); }
-    } else {
-      text = fs.readFileSync(fp, "utf8");
-    }
-    let result = parseGcodeMap(text, { scanBody: false });
-    if (result.noColors && size > TAIL) {
+    // v2.26.2: async read (readTailAsync, below) - the sync version stalled
+    // the whole process for the length of the read on a slow share.
+    const size = (await fs.promises.stat(fp)).size;
+    let result = parseGcodeMap(await readTailAsync(fp, size), { scanBody: false });
+    if (result.noColors && size > PAL_TAIL) {
       // Colors weren't in the tail — fall back to a full parse (rare).
-      result = parseGcodeMap(fs.readFileSync(fp, "utf8"), { scanBody: true });
+      result = parseGcodeMap(await fs.promises.readFile(fp, "utf8"), { scanBody: true });
     }
     res.json(result);
   } catch (e) {
@@ -629,6 +621,58 @@ app.get("/api/map", (req, res) => {
 // hexes per file (plus FS / no-color flags so the UI can label those).
 const PAL_CACHE = new Map(); // "<slug>:<name>" -> { size, mtime, colors:[hex], usedCount, anyTC, isFS, noColors }
 
+const PAL_TAIL = 3 * 1024 * 1024;
+// v2.26.2: the tail read without blocking the event loop. Three megabytes
+// over a share having a slow minute was a 45 s stall for every request in
+// the process (2026-09-14, a 198 MB file just saved to X:\gcode: /api/map
+// and the palette read both did this synchronously). Whole file if small.
+async function readTailAsync(fp, size) {
+  if (size <= PAL_TAIL) return fs.promises.readFile(fp, "utf8");
+  const fh = await fs.promises.open(fp, "r");
+  try { const buf = Buffer.alloc(PAL_TAIL); await fh.read(buf, 0, PAL_TAIL, size - PAL_TAIL); return buf.toString("utf8"); }
+  finally { await fh.close(); }
+}
+function paletteRecord(r, st) {
+  const colors = (Array.isArray(r.palette) ? r.palette : []).filter(s => s && s.used && s.hex).map(s => s.hex);
+  const hexByIdx = {};
+  if (Array.isArray(r.palette)) for (const s of r.palette) if (s && s.hex != null && s.i != null) hexByIdx[s.i] = s.hex;
+  return { size: st.size, mtime: st.mtimeMs, colors, hexByIdx,
+    usedCount: (r.usedIdx || []).length, anyTC: !!r.anyTC, isFS: !!r.isFS, noColors: !!r.noColors };
+}
+// Async twin of paletteForFile: same cache, same record, the read off the
+// loop. Request handlers and the warm use this; the sync one stays for the
+// callers that cannot await (dispatch's fileInfo) and is a cache hit once
+// the warm has been past the file.
+async function paletteForFileAsync(name, t) {
+  t = t || typeBySlug("u1");
+  const fp = safeFile(name, t);
+  if (!fp) return null;
+  let st; try { st = await fs.promises.stat(fp); } catch { return null; }
+  const key = t.slug + ":" + name;
+  const hit = PAL_CACHE.get(key);
+  if (hit && hit.size === st.size && hit.mtime === st.mtimeMs) return hit;
+  let r = parseGcodeMap(await readTailAsync(fp, st.size), { scanBody: false });
+  if (r.noColors && st.size > PAL_TAIL) r = parseGcodeMap(await fs.promises.readFile(fp, "utf8"), { scanBody: true });
+  const rec = paletteRecord(r, st);
+  PAL_CACHE.set(key, rec);
+  return rec;
+}
+// After every library walk, read the palettes of files the cache has not
+// seen, one at a time, so the sync callers below never pay the read
+// themselves. Same idea as warmThumbs.
+let PAL_WARMING = false;
+async function warmPalettes(t, snap) {
+  if (PAL_WARMING || !snap || !snap.files) return;
+  PAL_WARMING = true;
+  try {
+    for (const f of snap.files) {
+      const hit = PAL_CACHE.get(t.slug + ":" + f.name);
+      if (hit && hit.size === f.size && hit.mtime === f.mtime) continue;
+      try { await paletteForFileAsync(f.name, t); } catch {}
+    }
+  } finally { PAL_WARMING = false; }
+}
+
 function paletteForFile(name, t) {
   t = t || typeBySlug("u1");
   const fp = safeFile(name, t);
@@ -637,7 +681,7 @@ function paletteForFile(name, t) {
   const key = t.slug + ":" + name;
   const hit = PAL_CACHE.get(key);
   if (hit && hit.size === st.size && hit.mtime === st.mtimeMs) return hit;
-  const TAIL = 3 * 1024 * 1024;
+  const TAIL = PAL_TAIL;
   let text;
   if (st.size > TAIL) {
     const fd = fs.openSync(fp, "r");
@@ -661,17 +705,17 @@ function paletteForFile(name, t) {
 
 onModule("match", () => {
 
-app.get("/api/library-palettes", (req, res) => {
+app.get("/api/library-palettes", async (req, res) => {
   const t = reqTypeOf(req);
   if (!t) return res.status(400).json({ error: "Unknown printer type" });
   const dir = typeFolder(t);
   try {
-    const files = fs.readdirSync(dir).filter(f => /\.(gcode|gco|g)$/i.test(f));
+    const files = (await fs.promises.readdir(dir)).filter(f => /\.(gcode|gco|g)$/i.test(f));
     const live = new Set(files.map(f => t.slug + ":" + f));
     for (const k of PAL_CACHE.keys()) if (k.startsWith(t.slug + ":") && !live.has(k)) PAL_CACHE.delete(k); // drop deleted files
     const out = [];
     for (const name of files) {
-      const rec = paletteForFile(name, t);
+      const rec = await paletteForFileAsync(name, t);   // v2.26.2: cache hit after the warm; a miss reads off the loop
       if (rec) out.push({ name, colors: rec.colors, isFS: rec.isFS, noColors: rec.noColors });
     }
     res.json({ files: out });
@@ -679,5 +723,5 @@ app.get("/api/library-palettes", (req, res) => {
 });
 }); // end onModule("match")
 
-Object.assign(hub, { paletteForFile, invalidatePrinterFiles, librarySnapshot: t => LIB_SNAP.get(t.slug) || null });
+Object.assign(hub, { paletteForFile, paletteForFileAsync, invalidatePrinterFiles, librarySnapshot: t => LIB_SNAP.get(t.slug) || null });
 };

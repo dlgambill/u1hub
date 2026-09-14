@@ -77,6 +77,20 @@ printers, and nothing leaves your network unless you turn remote access on.
 
 ---
 
+### 2.26.2 - a slow share no longer freezes the whole Hub
+
+Tonight a 198 MB gcode landed in X:\gcode while the share was having a slow
+few minutes, and for about a minute every request from every device took
+45 to 64 seconds, phone included ("server has no version"). The cause was
+three synchronous reads against the share on the paths a new file goes
+through: the 3 MB tail read behind the job card (/api/map), the same read
+behind the Match palettes and the print-time color check, and the 2 MB
+head-and-tail hash behind filament memory. A synchronous read holds the
+whole process while the share dawdles. All three now read asynchronously,
+and the palettes are warmed in the background after every library walk so
+the callers that cannot wait (Dispatch's file info) find them already
+cached.
+
 ### 2.26.1 - every painted color on the card
 
 The color chips under each model showed only the filaments its objects were

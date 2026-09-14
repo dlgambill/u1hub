@@ -83,13 +83,13 @@ const newJobId = () => "j" + Date.now() + Math.random().toString(16).slice(2, 6)
 // matches. Spool details are re-read from the CURRENT bindings so the UI shows
 // live names/colors; a spool forgotten since is returned from the stored
 // snapshot with missing:true so the client can grey it out.
-app.get("/api/filament-memory", (req, res) => {
+app.get("/api/filament-memory", async (req, res) => {
   const t = reqTypeOf(req);
   if (!t) return res.status(400).json({ error: "Unknown printer type" });
   const fp = safeFile(String(req.query.file || ""), t);
   if (!fp || !fs.existsSync(fp)) return res.status(404).json({ error: "File not found" });
   let hash;
-  try { hash = fileContentHash(fp); }
+  try { hash = await hub.fileContentHashAsync(fp); }   // v2.26.2: off the event loop
   catch (e) { return res.status(500).json({ error: "Could not hash file: " + e.message }); }
   const rec = fmem()[hash];
   if (!rec) return res.json({ known: false, hash });
@@ -138,7 +138,7 @@ app.post("/api/print", async (req, res) => {
     }
     const shared = [...byHead.entries()].filter(([, ts]) => ts.length > 1);
     if (shared.length) {
-      const hexByIdx = (paletteForFile(path.basename(fp), t) || {}).hexByIdx || {};
+      const hexByIdx = ((await hub.paletteForFileAsync(path.basename(fp), t)) || {}).hexByIdx || {};
       const norm = x => String(x == null ? "" : x).trim().replace(/^#/, "").slice(0, 6).toUpperCase();
       for (const [head, ts] of shared) {
         const hexes = ts.map(x => norm(hexByIdx[x]));
@@ -174,7 +174,7 @@ app.post("/api/print", async (req, res) => {
   //   * single-color job → multi-head U1-style instance: soft note only.
   let classNote = null;
   try {
-    const pal = paletteForFile(path.basename(fp), t);
+    const pal = await hub.paletteForFileAsync(path.basename(fp), t);
     const caps = await detectCaps(Number(printer));
     if (pal && caps) {
       const multiJob = pal.isFS || pal.usedCount > 1 || (pal.anyTC && pal.usedCount !== 1);

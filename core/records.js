@@ -64,6 +64,29 @@ function fileContentHash(fp) {
   } finally { fs.closeSync(fd); }
   return "ph1-" + h.digest("hex").slice(0, 40);
 }
+// v2.26.2: the same hash without blocking the event loop. Two megabytes over
+// a network share that is having a slow minute is a 30 s stall for every
+// request in the process when read synchronously (seen 2026-09-14, X:\gcode,
+// a 198 MB file just saved). Request handlers use this; the print-start
+// record keeps the sync one because it runs once per push.
+async function fileContentHashAsync(fp) {
+  const st = await fs.promises.stat(fp);
+  const CH = 1024 * 1024;
+  const h = crypto.createHash("sha256");
+  h.update(String(st.size));
+  const fh = await fs.promises.open(fp, "r");
+  try {
+    const head = Buffer.alloc(Math.min(CH, st.size));
+    await fh.read(head, 0, head.length, 0);
+    h.update(head);
+    if (st.size > CH) {
+      const tail = Buffer.alloc(Math.min(CH, st.size - CH));
+      await fh.read(tail, 0, tail.length, st.size - tail.length);
+      h.update(tail);
+    }
+  } finally { await fh.close(); }
+  return "ph1-" + h.digest("hex").slice(0, 40);
+}
 
 // Loadout snapshot for one printer index, read straight from the state files
 // on disk (slots.json / spools.json are the source of truth and are rewritten
@@ -190,5 +213,5 @@ setInterval(pollPrintStarts, Math.max(250, parseInt(process.env.U1HUB_POLL_MS, 1
 
 pollPrintStarts();   // prime LAST_STATE at startup (won't stamp — prev is undefined)
 
-Object.assign(hub, { dequeueFile, fileContentHash, fmem, loadoutSnapshot, plogOf, savePrintLog, saveQueue });
+Object.assign(hub, { dequeueFile, fileContentHash, fileContentHashAsync, fmem, loadoutSnapshot, plogOf, savePrintLog, saveQueue });
 };
