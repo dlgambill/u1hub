@@ -94,12 +94,16 @@ function infoFromEntries(entries) {
       out.plates = (t.match(/<plate>/g) || []).length;
     } catch {}
   }
-  // Colors that objects actually reference, in extruder order, when the
-  // project has more filaments defined than it paints with (Bambu projects
-  // often carry 16 slots with 4 used). Objects only (painted faces inside an
-  // object can use more; the card says "at least").
+  // Which chips to show. A designer's project normally defines exactly the
+  // filaments it paints with (checked against real MyMiniFactory files:
+  // 2, 3, 4, 5 entries, all used), and painted faces inside one object use
+  // colors the object's own extruder number never mentions - so the full
+  // list is the honest one. Only when a project carries a whole 16-slot
+  // palette does the card fall back to the extruders objects reference.
   const used = new Set(out.objects.map(o => o.extruder).filter(n => Number.isInteger(n) && n >= 1));
-  out.colors_used = used.size ? [...used].sort((a, b) => a - b).map(n => out.colors[n - 1]).filter(Boolean) : out.colors.slice(0, 4);
+  out.colors_used = out.colors.length <= 8 || !used.size
+    ? out.colors
+    : [...used].sort((a, b) => a - b).map(n => out.colors[n - 1]).filter(Boolean);
   return out;
 }
 

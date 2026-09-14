@@ -77,6 +77,14 @@ printers, and nothing leaves your network unless you turn remote access on.
 
 ---
 
+### 2.26.1 - every painted color on the card
+
+The color chips under each model showed only the filaments its objects were
+assigned to, which for a painted model (most designer 3MFs) is one chip on a
+three-color sheep. The card now shows every filament the project defines,
+which on real files is exactly the set it paints with; only a project that
+carries a whole 16-slot palette falls back to the objects' extruders.
+
 ## New in 2.26 - the shelf behind the library
 
 - **A Models tab for the 3MF files you have not sliced yet.** Point it at a
@@ -97,7 +105,7 @@ printers, and nothing leaves your network unless you turn remote access on.
 - **Desktop only, on purpose.** The tab hides itself on a phone (narrow
   screen or touch pointer). Its one action opens a program on a computer you
   are not sitting at, so on a phone it would only be a button that does
-  something somewhere else. Harness: 725 checks.
+  something somewhere else. Harness: 726 checks.
 
 ## New in 2.25 - a second pair of eyes before you press print
 

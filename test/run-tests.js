@@ -3393,7 +3393,7 @@ async function stopHub() {
     const mk = (rel, files) => { const p = path.join(mroot, rel); fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, buildZip(files)); };
     mk("Cinderwing3D/Baby Dragon/Baby_Dragon_Color.3mf", [
       { name: "Metadata/plate_1.png", data: PNG }, { name: "Metadata/plate_1_small.png", data: PNG },
-      { name: "Metadata/project_settings.config", data: proj(["#F7D2EE", "#000000", "#FFFFFF", "#E69E1A", "#111111", "#222222"], "Bambu Lab X1 Carbon") },
+      { name: "Metadata/project_settings.config", data: proj(["#F7D2EE", "#000000", "#FFFFFF", "#E69E1A", "#111111", "#222222", "#333333", "#444444", "#555555", "#666666", "#777777", "#888888", "#999999", "#AAAAAA", "#BBBBBB", "#CCCCCC"], "Bambu Lab X1 Carbon") },
       { name: "Metadata/model_settings.config", data: model([{ name: "Dragon", extruder: 1 }, { name: "Eyes", extruder: 2 }]) },
       { name: "3D/3dmodel.model", data: Buffer.from("<model/>") }
     ]);
@@ -3418,7 +3418,9 @@ async function stopHub() {
       ok(mmod.split("loose.3mf").creator === "" && mmod.split("loose.3mf").model === "loose", "split: a file at the root has no creator");
       const { zipRead } = require(path.join(REPO, "modules", "slicing.js"));
       const info = mmod.infoFromEntries(zipRead(fs.readFileSync(path.join(mroot, "Cinderwing3D/Baby Dragon/Baby_Dragon_Color.3mf"))));
-      ok(info.colors.length === 6 && info.colors_used.length === 2 && info.colors_used[0] === "#F7D2EE" && info.colors_used[1] === "#000000", "info: six filaments defined, two painted - the card shows the two", info);
+      ok(info.colors.length === 16 && info.colors_used.length === 2 && info.colors_used[0] === "#F7D2EE" && info.colors_used[1] === "#000000", "info: a full 16-slot palette falls back to the two extruders the objects use", info);
+      const info2 = mmod.infoFromEntries(zipRead(fs.readFileSync(path.join(mroot, "3D Tinys Prints/Baby Sheep/Tinys_Sheep_Colored.3mf"))));
+      ok(info2.colors.length === 3 && info2.colors_used.length === 3, "info: a normal project shows every filament it defines (painted faces use colors the object's extruder never names)", info2.colors_used);
       ok(info.objects.length === 2 && info.objects[0].name === "Dragon" && info.printer === "Bambu Lab X1 Carbon" && info.plates === 1, "info: objects, printer and plate count come from the project", info);
       ok(mmod.pickThumb(zipRead(fs.readFileSync(path.join(mroot, "Cinderwing3D/Baby Dragon/Baby_Dragon_Color.3mf")))).name === "Metadata/plate_1_small.png", "thumb: the small plate render is preferred");
       ok(mmod.pickThumb(zipRead(fs.readFileSync(path.join(mroot, "loose.3mf")))) === null, "thumb: a file with no preview says so instead of crashing");
@@ -3455,7 +3457,7 @@ async function stopHub() {
     t = await fetch(HUB + "/api/models/thumb?file=" + encodeURIComponent("../config.json"));
     ok(t.status === 404, "a path outside the folder is refused");
     r = await jget("/api/models/info?file=" + encodeURIComponent("3D Tinys Prints/Baby Sheep/Tinys_Sheep_Colored.3mf"));
-    ok(r.status === 200 && r.body.colors_used.length === 1 && r.body.colors_used[0] === "#0000FF" && r.body.objects[0].name === "Sheep", "info route: the sheep is painted with its third filament only", r.body);
+    ok(r.status === 200 && r.body.colors_used.length === 3 && r.body.colors[2] === "#0000FF" && r.body.objects[0].name === "Sheep", "info route: the sheep's three filaments and its object", r.body);
 
     // Never launch the real Orca from the harness (it is installed on the dev
     // box and would pop a window mid-run): point the exe at nothing first.
