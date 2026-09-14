@@ -3379,6 +3379,103 @@ async function stopHub() {
     await new Promise(r2 => anth.close(r2));
   }
 
+  console.log("\n== MDL: the 3MF model library (v2.26) ==");
+  {
+    // A designer-style library on disk: <Creator>/<Model>/*.3mf, with the
+    // members a Bambu/Orca project carries (plate PNG, project settings with
+    // the painted colors, model settings with the objects). One STL-only
+    // folder, one file with no preview, and a folder starting with _ that the
+    // walk must skip - the MyMiniFactory archive keeps its staging there.
+    const mroot = path.join(tmp, "models");
+    const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64");
+    const proj = (colors, printer) => Buffer.from(JSON.stringify({ filament_colour: colors, printer_model: printer, layer_height: "0.2" }));
+    const model = objs => Buffer.from('<?xml version="1.0"?><config>' + objs.map((o, i) => '<object id="' + (i + 2) + '"><metadata key="name" value="' + o.name + '"/><metadata key="extruder" value="' + o.extruder + '"/><part id="1"><metadata key="name" value="' + o.name + '"/></part></object>').join("") + "<plate><metadata key=\"plater_id\" value=\"1\"/></plate></config>");
+    const mk = (rel, files) => { const p = path.join(mroot, rel); fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, buildZip(files)); };
+    mk("Cinderwing3D/Baby Dragon/Baby_Dragon_Color.3mf", [
+      { name: "Metadata/plate_1.png", data: PNG }, { name: "Metadata/plate_1_small.png", data: PNG },
+      { name: "Metadata/project_settings.config", data: proj(["#F7D2EE", "#000000", "#FFFFFF", "#E69E1A", "#111111", "#222222"], "Bambu Lab X1 Carbon") },
+      { name: "Metadata/model_settings.config", data: model([{ name: "Dragon", extruder: 1 }, { name: "Eyes", extruder: 2 }]) },
+      { name: "3D/3dmodel.model", data: Buffer.from("<model/>") }
+    ]);
+    mk("Cinderwing3D/Tiny Horse/Horse_2_Color.3mf", [
+      { name: "Metadata/plate_1.png", data: PNG },
+      { name: "Metadata/project_settings.config", data: proj(["#804000", "#FFFFFF"], "Bambu Lab A1") },
+      { name: "Metadata/model_settings.config", data: model([{ name: "Horse", extruder: 1 }]) }
+    ]);
+    mk("3D Tinys Prints/Baby Sheep/Tinys_Sheep_Colored.3mf", [
+      { name: "Metadata/project_settings.config", data: proj(["#FFFFFF", "#FFE0C1", "#0000FF"], "Bambu Lab P1S") },
+      { name: "Metadata/model_settings.config", data: model([{ name: "Sheep", extruder: 3 }]) }
+    ]);
+    mk("loose.3mf", [{ name: "3D/3dmodel.model", data: Buffer.from("<model/>") }]);
+    mk("_stage/half-downloaded/Nope.3mf", [{ name: "3D/3dmodel.model", data: Buffer.from("<model/>") }]);
+    fs.mkdirSync(path.join(mroot, "3D Tinys Prints", "STL only"), { recursive: true });
+    fs.writeFileSync(path.join(mroot, "3D Tinys Prints", "STL only", "thing.stl"), "solid x\nendsolid x\n");
+
+    const mmod = require(path.join(REPO, "modules", "models.js"));
+    {
+      const s = mmod.split("Cinderwing3D/Baby Dragon/Baby_Dragon_Color.3mf");
+      ok(s.creator === "Cinderwing3D" && s.model === "Baby Dragon" && s.name === "Baby_Dragon_Color", "split: Creator/Model/file becomes creator, model, name", s);
+      ok(mmod.split("loose.3mf").creator === "" && mmod.split("loose.3mf").model === "loose", "split: a file at the root has no creator");
+      const { zipRead } = require(path.join(REPO, "modules", "slicing.js"));
+      const info = mmod.infoFromEntries(zipRead(fs.readFileSync(path.join(mroot, "Cinderwing3D/Baby Dragon/Baby_Dragon_Color.3mf"))));
+      ok(info.colors.length === 6 && info.colors_used.length === 2 && info.colors_used[0] === "#F7D2EE" && info.colors_used[1] === "#000000", "info: six filaments defined, two painted - the card shows the two", info);
+      ok(info.objects.length === 2 && info.objects[0].name === "Dragon" && info.printer === "Bambu Lab X1 Carbon" && info.plates === 1, "info: objects, printer and plate count come from the project", info);
+      ok(mmod.pickThumb(zipRead(fs.readFileSync(path.join(mroot, "Cinderwing3D/Baby Dragon/Baby_Dragon_Color.3mf")))).name === "Metadata/plate_1_small.png", "thumb: the small plate render is preferred");
+      ok(mmod.pickThumb(zipRead(fs.readFileSync(path.join(mroot, "loose.3mf")))) === null, "thumb: a file with no preview says so instead of crashing");
+    }
+
+    let r = await jget("/api/models");
+    ok(r.status === 200 && typeof r.body.total_all === "number" && Array.isArray(r.body.creators),
+      "GET /api/models before a folder is set answers (the slicing tab's 3MF folder, or 'missing'), never an error", r.body && { folder: r.body.folder, missing: r.body.missing });
+    r = await jpost("/api/models/settings", { folder: mroot });
+    ok(r.status === 200 && r.body.folder_found === true, "the folder is set from the tab and found", r.body);
+    ok(JSON.parse(fs.readFileSync(path.join(hubDir, "config.json"), "utf8")).models.folder === mroot, "…and persisted in config.json");
+    // The walk is async; give it a moment.
+    for (let i = 0; i < 20; i++) { r = await jget("/api/models"); if (!r.body.refreshing && r.body.total_all) break; await sleep(150); }
+    ok(r.body.total_all === 4, "four 3MFs indexed: three in designer folders, one loose; the _stage copy and the STL are not", r.body.items.map(i => i.rel));
+    ok(r.body.creators.length === 3 && r.body.creators.some(c => c.name === "Cinderwing3D" && c.count === 2), "designers on the left with counts", r.body.creators);
+    r = await jget("/api/models?creator=" + encodeURIComponent("3D Tinys Prints"));
+    ok(r.body.total === 1 && r.body.items[0].name === "Tinys_Sheep_Colored", "filter by designer", r.body.items);
+    r = await jget("/api/models?q=" + encodeURIComponent("horse*"));
+    ok(r.body.total === 0, "wildcards anchor on the whole designer/model/file path (horse* matches nothing here)");
+    r = await jget("/api/models?q=" + encodeURIComponent("*horse*"));
+    ok(r.body.total === 1 && r.body.items[0].model === "Tiny Horse", "…*horse* finds the horse", r.body.items);
+    r = await jget("/api/models?q=" + encodeURIComponent("cinderwing -horse"));
+    ok(r.body.total === 1 && r.body.items[0].model === "Baby Dragon", "words and exclusions combine", r.body.items);
+    r = await jget("/api/models?limit=2&offset=0");
+    ok(r.body.items.length === 2 && r.body.total === 4, "pages: limit 2 of 4");
+    r = await jget("/api/models?limit=2&offset=2");
+    ok(r.body.items.length === 2, "…offset 2 gives the other two");
+
+    let t = await fetch(HUB + "/api/models/thumb?file=" + encodeURIComponent("Cinderwing3D/Baby Dragon/Baby_Dragon_Color.3mf"));
+    ok(t.status === 200 && (t.headers.get("content-type") || "").includes("png"), "thumbnail comes out of the zip as a PNG", t.status);
+    ok(fs.existsSync(path.join(hubDir, "thumbs", "models")) && fs.readdirSync(path.join(hubDir, "thumbs", "models")).length >= 1, "…and is cached on local disk");
+    t = await fetch(HUB + "/api/models/thumb?file=loose.3mf");
+    ok(t.status === 404, "a file with no preview answers 404, the card shows a placeholder");
+    t = await fetch(HUB + "/api/models/thumb?file=" + encodeURIComponent("../config.json"));
+    ok(t.status === 404, "a path outside the folder is refused");
+    r = await jget("/api/models/info?file=" + encodeURIComponent("3D Tinys Prints/Baby Sheep/Tinys_Sheep_Colored.3mf"));
+    ok(r.status === 200 && r.body.colors_used.length === 1 && r.body.colors_used[0] === "#0000FF" && r.body.objects[0].name === "Sheep", "info route: the sheep is painted with its third filament only", r.body);
+
+    // Never launch the real Orca from the harness (it is installed on the dev
+    // box and would pop a window mid-run): point the exe at nothing first.
+    r = await jpost("/api/models/settings", { orcaExe: path.join(tmp, "no-such-orca.exe") });
+    ok(r.status === 200 && r.body.orca_found === false, "the Orca path is set from the tab and reported missing", r.body);
+    r = await jpost("/api/models/open", { file: "Cinderwing3D/Baby Dragon/Baby_Dragon_Color.3mf", type: "u1" });
+    ok(r.status === 503 && /Snapmaker Orca not found at/.test(r.body.error), "open: refused, naming the exe path to fix, when Orca is not where the setting says", r.body);
+    r = await jpost("/api/models/open", { file: "../config.json" });
+    ok(r.status === 404, "open: a path outside the folder is refused");
+    r = await jget("/api/models/sessions");
+    ok(r.status === 200 && Array.isArray(r.body.sessions), "sessions list answers");
+
+    // Feature flag off removes the surface, same contract as every module.
+    ok(/\/modules\/models-ui\.js/.test(await (await fetch(HUB + "/")).text()), "models client script injected when on");
+    const mui = fs.readFileSync(path.join(REPO, "public", "modules", "models-ui.js"), "utf8");
+    ok(/max-width: 899px\), \(pointer: coarse\)/.test(mui) && /display: none !important/.test(mui), "the Models tab hides itself on phones (narrow or touch)");
+    ok(/HubModules\.register\("models"/.test(mui), "…and registers as a tab through HubModules");
+    await jpost("/api/models/settings", { folder: "" });
+  }
+
   console.log("\n== UI: gold.css discipline layer (v2.17) ==");
   {
     // Restart with default features so this exercises the stylesheet the way

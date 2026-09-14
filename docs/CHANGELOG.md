@@ -77,6 +77,28 @@ printers, and nothing leaves your network unless you turn remote access on.
 
 ---
 
+## New in 2.26 - the shelf behind the library
+
+- **A Models tab for the 3MF files you have not sliced yet.** Point it at a
+  folder organized the way designers ship things - `Designer\Model\file.3mf`,
+  which is also how a MyMiniFactory archive lands on disk - and the tab lists
+  every project file with the plate render the designer saved inside it, the
+  filament colors the project is painted with (a four-color dragon shows four
+  chips before you open anything), the objects on the plate, and which printer
+  it was set up for. Designers down the left with counts, the same wildcard
+  filter as the library, paged so a 30,000-file archive does not choke the
+  browser, folders starting with `_` skipped so a downloader's staging area
+  stays out of the list.
+- **Open in Orca, then the Hub watches for the gcode.** One button launches
+  Snapmaker Orca on the Hub computer with that file on the plate. Slice it,
+  save into the library folder, and a strip at the top of the tab names the
+  new file with *Select in library* and *Send to Dispatch*. Nothing on this
+  tab prints or slices by itself; Orca does the slicing, in front of you.
+- **Desktop only, on purpose.** The tab hides itself on a phone (narrow
+  screen or touch pointer). Its one action opens a program on a computer you
+  are not sitting at, so on a phone it would only be a button that does
+  something somewhere else. Harness: 725 checks.
+
 ## New in 2.25 - a second pair of eyes before you press print
 
 - **AI pre-flight, with your own key.** A thread on r/SnapmakerU1 had people

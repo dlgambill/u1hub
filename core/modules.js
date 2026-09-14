@@ -35,6 +35,8 @@ const MODULE_TABLE = {
   notify: require("../modules/notify.js"),
   // v2.25: AI pre-flight with the person's own Anthropic key. Inert without one.
   advisor: require("../modules/advisor.js"),
+  // v2.26: the 3MF model library (Models tab). Reads a folder, opens Orca.
+  models: require("../modules/models.js"),
   // Last on purpose: it owns no data anyone else reads, and its only side
   // effect is one outbound HTTPS GET that must never delay a registration
   // above it.

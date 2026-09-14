@@ -82,7 +82,8 @@ const CLIENT_TABLE = {
   updates: "/modules/updates-ui.js",     // v2.18 version chip in the topbar (no tab)
   spoolman: "/modules/spoolman-ui.js",   // v2.24 import card on the Spools tab (no tab)
   notify: "/modules/notify-ui.js",       // v2.24 ntfy card in Settings (no tab)
-  advisor: "/modules/advisor-ui.js"      // v2.25 AI pre-flight: Settings block + job-card button (no tab)
+  advisor: "/modules/advisor-ui.js",     // v2.25 AI pre-flight: Settings block + job-card button (no tab)
+  models: "/modules/models-ui.js"        // v2.26 Models tab (3MF library; desktop only)
   // (named -ui deliberately: the server module is modules/dispatch.js, and two
   //  same-named files in different folders is a foot-gun during deploys)
 };

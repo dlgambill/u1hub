@@ -37,6 +37,14 @@ choose which head prints which color, and push it to any idle machine. Files
 live in one merged list: the Hub's library plus whatever is stored on each
 printer, with thumbnails.
 
+**Browse the models you have not sliced yet.** The Models tab reads a folder
+of 3MF project files (Designer\Model\file.3mf, the way designers ship them)
+and shows each one with the plate render saved inside it, the colors it was
+painted with, and the objects on the plate. One button opens it in Snapmaker
+Orca on the Hub computer; when you save the gcode, the Hub notices and offers
+to select it or send it to Dispatch. Desktop only, because the button opens a
+program on that computer.
+
 **Plan your whole printing day.** The Dispatch tab schedules your queue across
 every printer, inside the hours you are actually home to swap plates. It flags
 jobs that want the same spool at the same time, lets you push a job back a
