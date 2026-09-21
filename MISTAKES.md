@@ -874,143 +874,30 @@ Python one-liner per patch. Never `>` and never `&&`.
 
 ---
 
-## 2026-09-07 — Told Danny his production code was not in git, from a stale ref
+## Moved to `MISTAKES-shared.md` - six entries, 2026-09-21
 
-**What happened:** I compared the working tree against `origin/master` and
-reported that 14 commits of production code existed only on the machine. The
-claim was alarming and wrong.
+Six entries dated 2026-09-07 used to sit here. They are **not u1-print-hub
+mistakes** - they happened in conduit-os, Scout and the machine's MCP config -
+and CLAUDE.md is explicit that a mistake made in another project belongs in
+that project's log or in `C:\Users\Danny\code\MISTAKES-shared.md`, not here.
 
-**Root cause:** `origin/master` is a local cache of where the remote was the
-last time anything fetched. `.git/FETCH_HEAD` was dated the same day as the
-commit I was quoting as "the latest on the remote". One `git fetch` showed
-origin was 14 commits *ahead* of my cached ref, not behind.
+Nothing was deleted. The full write-ups live in
+`C:\Users\Danny\code\MISTAKES-shared.md`:
 
-**Consequence:** A false alarm about lost work, and the time spent
-hash-comparing blobs afterwards to prove nothing had actually been lost.
+| Entry | In the shared log as |
+|---|---|
+| Told Danny his production code was not in git, from a stale ref | 2026-09-05 - "Led an evaluation with 'your production code is not in git', from a three-month-stale ref" |
+| Quoted "$79 and up to 200 runs" for a tick that cost $1.48 | 2026-09-05 - "Quoted a '200-item backlog' and a $79 saving from a count whose filter I had already read" |
+| Repeated a Supabase security advisory three times without testing it | 2026-09-05 - "Repeated a security advisory as a finding, three times, without ever testing it" |
+| Reported a moving number as if it were settled | moved 2026-09-21, same title |
+| A handoff summary claimed MISTAKES.md entries that were never written | moved 2026-09-21, same title |
+| `npx @latest` in the MCP config, and three orphaned servers | moved 2026-09-21, same title |
 
-**Rule:** `git fetch` before any statement about what the remote contains.
-A ref you did not fetch this session is a memory, not an observation. This is
-also a rule-3 repeat: staging, clone and remote drift, and the one you did not
-refresh is always the one you quote.
+The first three were **already** in the shared log, under earlier and fuller
+write-ups, before this move - the copies here were thinner duplicates carrying
+a different date. Trust the shared log's dates: those entries describe the
+session they actually happened in.
 
----
-
-## 2026-09-07 — Quoted "$79 and up to 200 runs" for a tick that cost $1.48
-
-**What happened:** I estimated the cost of a Scout tick at roughly $79 across
-up to 200 runs. It cost $1.48 across 3.
-
-**Root cause:** I sized the work queue from a `status='scored'` survey count of
-202 rows. The loop does not iterate that set — it filters on
-`viability_verdict IS NULL`, and all 202 already had verdicts. I had read that
-filter and quoted it in the same session before building an estimate that
-ignored it.
-
-**Consequence:** An estimate wrong by more than 50x, offered to someone who had
-explicitly said estimates in this stack have been wrong by 2-5x before and to
-verify before asserting.
-
-**Rule:** An estimate of "how much work will this do" must be built from the
-loop's own filter, executed as a query, not from a nearby count that looks like
-the same population. Run the count the code would run.
-
----
-
-## 2026-09-07 — Repeated a Supabase security advisory three times without testing it
-
-**What happened:** I reported that five `sf3d_*` tables were exposed to the
-public anon key with RLS disabled, and repeated it across three messages as an
-open vulnerability.
-
-**Root cause:** I was reading the Supabase advisor output and never issued a
-single request with the anon key. Postgres has two independent layers: the
-table GRANT, then RLS. The advisor reports only the second. Four of the five
-tables were unreachable by any public key — `42501 permission denied` — because
-the GRANT was never made. No vulnerability existed.
-
-**Consequence:** Three same-shaped errors in one session, all of them
-"asserted without checking", on a topic where the assertion was frightening.
-
-**Rule:** A security claim gets tested with a live request before it is spoken,
-not after. A tool that reports on one layer of a two-layer system is evidence
-about that layer only.
-
----
-
-## 2026-09-07 — Reported a moving number as if it were settled
-
-**What happened:** I told Danny the new scoring formula "tops out around 64",
-based on a query run at 13:20 UTC. The Scout pipeline ran at 15:00 UTC, the
-ViabilityCheck pass re-scored the same rows, and the real ceiling is 75.
-
-**Root cause:** I read a table that a scheduled pipeline writes to, on a day
-that pipeline was due to run, and quoted the value with no timestamp and no
-acknowledgement that it was a snapshot of live state mid-flight.
-
-**Consequence:** A number in Danny's hands that was already stale when he read
-it. The conclusion it supported (legacy scores outrank current ones) survived;
-the figure did not.
-
-**Rule:** When quoting a value from a table an automated job writes, say when
-it was read, and check the job's schedule before treating it as settled. Same
-family as the stale git ref above: a snapshot presented as a fact.
-
----
-
-## 2026-09-07 — A handoff summary claimed MISTAKES.md entries that were never written
-
-**What happened:** A session summary stated that three entries had been appended
-to this file and two promoted-cluster counters bumped. None of it was here. The
-file was clean in git with no uncommitted changes.
-
-**Root cause:** Unknown — either the writes never happened and the summary
-recorded intent as completion, or they happened somewhere that is not this file.
-Either way nothing verified them at the time.
-
-**Consequence:** Four incidents nearly lost, and a handoff that would have had
-the next session believe this file was current when it was two days behind.
-
-**Rule:** Work is not done because a summary says it is. When a handoff claims a
-file was changed, open the file. And when appending to this file, confirm the
-append landed before saying so — the same standard every other check here gets.
-
----
-
-## 2026-09-07 — `npx @latest` in the MCP config, and three orphaned servers
-
-**What happened:** desktop-commander disconnected and respawned repeatedly
-through a working session, surfacing in the UI as "Failed / Server
-disconnected". Six `node.exe` processes were alive; three were orphaned
-desktop-commander instances from 9/5 and 9/6, holding ~215 MB between them.
-
-**Root cause:** partly unknown, and worth saying so. Claude's own MCP logs
-(`%APPDATA%\Claude\logs\mcp*.log`) stopped being written on 2026-08-29, so
-there is no record of why the server exited. What IS established: the process
-start time proves the server genuinely restarted rather than the client
-dropping a live connection, and the config was
-
-    "command": "npx", "args": ["-y", "@wonderwhy-er/desktop-commander@latest"]
-
-which puts an npm registry round-trip (measured: 1.6 s) and an extra wrapper
-process (`npx-cli.js`) in the startup and pipe chain of every single launch.
-`@latest` also means an upstream publish can change the running version
-mid-session with no warning.
-
-**Consequence:** a working session interrupted four times; every interruption
-costs a tool-schema reload and a retry.
-
-**Rule:** MCP servers get a **pinned global install invoked directly** —
-`node.exe` plus an absolute path to `dist/index.js` — never `npx`, never
-`@latest`. Trade-off accepted deliberately: no auto-update, in exchange for a
-startup path with no network in it.
-
-Two operating notes from doing it:
-
-1. **Verify the new command speaks MCP before writing the config.** "The file
-   exists" is not "the server works", and if the config is wrong there is no
-   shell left on the machine to fix it with. Send a JSON-RPC `initialize` down
-   stdin and require a `result` back. Back up the config first.
-2. **Kill orphans by PID, after reading each command line** — `Get-CimInstance
-   Win32_Process`. Never by image name: `node server.js` was also running and
-   is something else entirely, and rule "taskkill /IM node.exe /F kills the
-   bridge" is already in this file for the same reason.
+The promoted-cluster table at the top of this file still counts all six, and
+that is deliberate - the lesson families (rule 8 above all) are machine-wide,
+not per-repo.
