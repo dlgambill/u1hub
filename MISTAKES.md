@@ -30,6 +30,40 @@ Bridge quirks are operating facts, not judgment failures; a rule that says
 
 ---
 
+## 2026-09-21 - process.exit() right after fetch() crashes Node on Windows
+
+**What happened:** Building the live-hardware gate for the new timelapse
+module (`scripts/gate-timelapse.js`), the script printed "4 passed, 0
+failed" against a real printer, then crashed: `Assertion failed:
+!(handle->flags & UV_HANDLE_CLOSING), file src\win\async.c, line 76`, and
+the process exited with code -1073740791 - a native crash, not a clean
+`process.exit(1)`. Every check had actually passed; a caller that only
+checked the exit code would have been told the opposite.
+
+**Root cause:** The script used the global `fetch()` (undici) and called
+`process.exit(fail ? 1 : 0)` immediately after its last `await`. Undici
+keeps a keep-alive socket/timer handle open after a request resolves;
+forcing the process to exit while that handle is still mid-teardown hits a
+libuv assertion on Windows. `scripts/gate-klipper.js` never hit this
+because it uses raw `http`/`net` sockets, not `fetch`, so its own
+`process.exit()` at the end was never at risk - but `fetch()` is the newer,
+more obvious choice for anything hitting a printer's REST API, and nothing
+about the crash pointed at the real cause (the script LOOKED like it
+worked, then Node itself fell over).
+
+**Consequence:** Caught before it shipped only because the gate was run by
+hand (rule #2) rather than trusted on the strength of the code. Would
+otherwise have shipped a gate script whose exit code lied about its own
+result.
+
+**Rule:** Any new script that mixes `fetch()` with an explicit
+`process.exit()` needs that exit to happen via `process.exitCode = ...`
+(no forced exit - let the event loop drain) instead, on Windows
+specifically. One incident so far - watch for a repeat before promoting
+this further.
+
+---
+
 ## 2026-09-14 - Three synchronous reads the speed release missed, found by a slow share
 
 **What happened:** Danny's phone showed an empty dashboard and "server has

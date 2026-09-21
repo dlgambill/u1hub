@@ -2,5 +2,9 @@
   "gcodeFolder": "./gcode",
   "port": 4545,
   "printers": [],
-  "tip": { "label": "Buy me a beer 🍺", "url": "https://venmo.com/u/dgambill" }
+  "tip": { "label": "Buy me a beer 🍺", "url": "https://venmo.com/u/dgambill" },
+  "sf3dTimelapse": {
+    "passcode": "",
+    "uploadUrl": "https://pcbltjgwnuyaixiealbk.supabase.co/functions/v1/sf3d-timelapse-upload"
+  }
 }

@@ -4,6 +4,51 @@ Written 2026-09-01. Read this first, then `CLAUDE.md`, then `MISTAKES.md`.
 
 ---
 
+## Addendum, 2026-09-21 — v2.27.0, SF3D timelapse rebuild
+
+The Pi + Tapo-camera timelapse rig (SF3D's product-page "how it's made"
+videos) is retired; `modules/timelapse.js` replaces it using each U1's own
+built-in firmware timelapse feature (not a Moonraker plugin - confirmed via
+`/server/info`'s component list, which has no `timelapse` entry; the file
+just appears in that printer's own `/server/files/camera/` folder). See
+`TIMELAPSE-PLAN.md` for the full archaeology and design tradeoffs.
+
+**What's done and verified:**
+- `modules/timelapse.js` registered in `core/modules.js` (`features.timelapse`,
+  on by default). Listens for `hub.events` `print.done`, matches the
+  printer's own rendered file, uploads it to the new Supabase edge function
+  `sf3d-timelapse-upload` (project `pcbltjgwnuyaixiealbk`, deployed v1,
+  2026-09-21).
+- `test/timelapse-standalone.js` - 12 checks, all pure logic (r2_key
+  slugify, matching), verified against real production rows and shown to
+  fail before the fix (rule #6).
+- `scripts/gate-timelapse.js <printer-ip>` - live gate; run clean against
+  192.168.12.175 (2026-09-21): camera folder reachable, real .mp4s listed,
+  `pickCameraFile` logic sound. Caught and fixed a real bug in the process
+  (MISTAKES.md 2026-09-21: `fetch()` + `process.exit()` crashes Node on
+  Windows).
+- Full harness: 726 passed, 0 failed, after this change (also fixed
+  `update.json`, which the harness pins to package.json's version - a
+  fourth file beyond the three CLAUDE.md rule 4 names, missed once here
+  before the harness caught it).
+
+**What's NOT yet verified - the real gap:**
+- No real print has yet completed with `sf3dTimelapse.passcode` set in
+  `config.json` (left blank on purpose - only Danny should paste the shop
+  passcode in, on this machine). The upload path itself - `print.done` ->
+  camera-file fetch -> edge function -> R2 + `sf3d_timelapses` insert - has
+  never fired end to end. Deliberately not faked with dummy data: that would
+  write a real row and a real R2 object from test data into production.
+  **Before trusting this fleet-wide:** set the passcode, let one print
+  finish on one printer, and check the Hub's log for `timelapse: uploaded`
+  (or a `timelapse: ...` warning explaining why not).
+- The Snapmaker-app-vs-cam-grab.js quality question TIMELAPSE-PLAN.md flags
+  ("check first") was answered by Danny directly, not by that check: he
+  reviewed two real clips off .175 (one short, one 10h41m/34MB) and approved
+  both, so building the custom API check was skipped as redundant.
+
+---
+
 ## 0. First actions for the next session
 
 **Check the link before anything else.** This work needs Danny's desktop, **ichabod**

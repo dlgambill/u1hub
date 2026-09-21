@@ -37,6 +37,11 @@ const MODULE_TABLE = {
   advisor: require("../modules/advisor.js"),
   // v2.26: the 3MF model library (Models tab). Reads a folder, opens Orca.
   models: require("../modules/models.js"),
+  // v2.27: SF3D timelapse upload. Listens on hub.events ("print.done"),
+  // pulls the printer's own rendered clip and hands it to the SF3D edge
+  // function. No route, no UI - it only reacts to events dispatch already
+  // publishes, so ordering relative to the others here doesn't matter.
+  timelapse: require("../modules/timelapse.js"),
   // Last on purpose: it owns no data anyone else reads, and its only side
   // effect is one outbound HTTPS GET that must never delay a registration
   // above it.
