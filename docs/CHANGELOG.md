@@ -77,6 +77,23 @@ printers, and nothing leaves your network unless you turn remote access on.
 
 ---
 
+### 2.28.1 - easier on the eyes
+
+Danny, after 2.28.0: "the UI is really dark and sometimes difficult to
+read ... it just feels murky." Same industrial identity, same amber, same
+layout; what changed is the spread. The three surfaces (page, panel, raised
+panel) were within a few steps of black, so cards did not lift off the page;
+borders sat one step above the panel, so edges dissolved; and most of the
+information - the mono meta under every file, spool and card - was set in
+the faintest gray at 9.5 to 11px. Now: the page and panels are pulled apart,
+borders are two steps up, every text level is brighter (the faint level is
+5.9:1 on a panel, the dim level 9.3:1), and there is a type floor: mono meta
+at 11.5px, small text at 12.5 to 13px, file names at 14px, nothing under
+10.5px anywhere. The primary meta line moved from faint to dim; faint is now
+only for hints and footers. Library rows have a resting edge, chips and
+swatches a visible outline. All of it lives in gold.css (the override layer),
+so the inline styles and every module are untouched.
+
 ## New in 2.28 - slicer settings from the file, and what a plate is worth
 
 **✦ Settings on every Models card.** The 2.25 pre-flight checked a gcode

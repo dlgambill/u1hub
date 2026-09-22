@@ -292,3 +292,90 @@ body{
 
    Spacing rhythm on the dense panels: wants live screenshots at three
    viewports, not a blind token sweep. */
+
+/* ============================================================================
+   v2.28 readability pass — appended, same rules as the layers above.
+   Danny, 2026-09-22: "The UI is really dark and sometimes difficult to read
+   ... it just feels murky." Same industrial identity, same tokens, same
+   markup; what changes is the VALUES and a type floor.
+
+   Design read (the extraction this pass was built to, per DESIGN.md):
+     ground   chassis #0D0F14, panel #1D2027, panel-2 #282C36 - three steps of
+              near-black, panels lifted only by a 3% sheen and shadow
+     lines    #3C4250 / #313641 at 1px - one step above the panel, so card
+              edges dissolve on a dim screen
+     ink      #F4F6FA / #AEB6C4 / #828B9A - the faint level is 4.0:1 on a
+              panel, and it carries most of the mono meta layer
+     type     9 to 15px; the mono microlabels (file meta, chips, pills, counts,
+              source filters) sit at 9.5 to 11px, and there are ~40 of them
+     accent   amber --signal, swapped per printer type at runtime (untouched)
+   Why it reads as murk: three surfaces within 12 L* of each other, borders one
+   step off the panel, and most of the information set in the faintest ink at
+   the smallest sizes. Not the palette's hue - its spread.
+
+   The move: pull the chassis up and the panels further up so the three
+   surfaces separate; borders two steps above the panel; every ink level
+   brighter (faint 5.9:1 on a panel, dim 9.3:1); a type floor of 11.5px for
+   mono meta and 12.5px for small sans, applied by selector because the
+   inline CSS sets sizes in px per class. Nothing below touches a semantic
+   color token (--signal/--ok/--bad/--busy/--idle) - applyAccent() still owns
+   --signal - and nothing changes a layout rule.
+   ========================================================================== */
+:root{
+  --chassis:#161920;
+  --panel:#262A33;
+  --panel-2:#31363F;
+  --line:#505869;
+  --line-soft:#404655;
+  --ink:#F8F9FC;
+  --ink-dim:#C7CDD8;
+  --ink-faint:#9AA3B2;
+  --sheen:linear-gradient(180deg, rgba(255,255,255,.045), transparent 34%);
+  --elev:0 1px 2px rgba(0,0,0,.45), 0 8px 22px rgba(0,0,0,.32);
+}
+body{font-size:14px;}
+/* The inline CSS hardcodes the old chassis behind thumbnails and tabs. */
+.job .jthumb, .qthumb, .pcard .cthumb, .ttab, .vtab{background:var(--panel-2);}
+#jthumb, .mdthumbwrap{background:var(--chassis);}
+.vtab{color:var(--ink-dim); border-color:var(--line);}
+.vtab.on{background:color-mix(in srgb, var(--signal) 14%, var(--panel-2)); color:var(--ink);}
+
+/* ---- Type floor: mono meta 11.5px, small sans 12.5px. ---------------------
+   Every selector here was at 9 to 11px in the inline CSS or a module block.
+   Letter-spacing on the uppercase microlabels is kept; only the size moves. ---- */
+.job .jm, .spoolsub, .fcitem .fim, .folderline, .qhead, .cpop .cpophdr,
+.sechead .count, .typerow .tslug, .fmembar .fmwas, .need .nx, .mchip .mcx,
+.mdmeta, .mpct, .h .hm, .pcard .fname, .pcard .errline, .pcard .statsbtn,
+.statspanel .sname, .statspanel .lifeline, .statspanel .jcap, .invf, .invbuy,
+.pcard .camtile::before, .attrib, .qpos, .fsmeta b, .fshead,
+.mdl-sub, .mdl-chips .k, .mdl-sess .k, .mdl-foot, .mdl-adv .facts, .mdl-adv .foot, .mdl-adv td.k, .mdl-adv td.f, .mdl-adv th,
+.mgline, .advpanel .advfoot{font-size:11.5px;}
+.chip, .srcbar label, .pill, .fsrec, .h .ht, .h .hid, .msw.empty{font-size:10.5px;}
+.betachip{font-size:9.5px;}
+.jobcard .jmeta, .scanstate, .mcount, .mempty, .mmore, .cammodal .camname, .empty-list code{font-size:12.5px;}
+.subnote, .nohint, .mdhint, .empty-list, .jobloading .jlname, .fmembar .fmtitle, .fmembar .fmnote,
+.actstrip, .mchip, .need, .qname, .bedrow, .powerrow, .pcard .matchline, .pcard .maintline,
+.fcitem .fin, .mname, .camopen, .pushlabel, .typewarnline{font-size:13px;}
+.job .jn, .spoolname{font-size:14px;}
+.job .jn{word-break:normal; overflow-wrap:anywhere;}   /* 'gcod|e' breaks came from break-all */
+.jobcard .jt, .pcard .pn, .matchhead .mpn{font-size:16px;}
+.sechead h2{font-size:12.5px;}
+
+/* ---- Ink: the primary meta line under every file, spool and card is
+   information, not decoration. It moves from faint to dim; faint stays for
+   the tertiary layer (hints, footers, chevrons). ---- */
+.job .jm, .spoolsub, .sechead .count, .qhead, .mdl-sub, .mgline, .mdmeta,
+.pcard .fname, .statspanel .sname, .h .ht, .fcitem .fim{color:var(--ink-dim);}
+.job .jm .jprinted{color:var(--ok);}
+.nohint, .mdhint, .attrib{color:var(--ink-dim);}
+
+/* ---- Edges: chips and swatches were outlined in 15-18% white, which on the
+   old panel read as nothing. One step up, and the list rows get a resting
+   border so the library reads as rows, not a column of floating text. ---- */
+.msw, .mchip .sw, .need .sw, .fcitem .sw, .spoolsw, .mdl-chip{border-color:rgba(255,255,255,.28);}
+.job{border-color:var(--line-soft);}
+.job:hover{border-color:var(--line);}
+.mrow:not(:last-child), .mmorewrap, .mdetail{border-color:var(--line-soft);}
+.chip, .srcbar label{color:var(--ink-dim); border-color:var(--line);}
+.srcbar label.off{opacity:.55;}
+.pcard.offline{opacity:.62;}
