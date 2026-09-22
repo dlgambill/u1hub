@@ -76,3 +76,4 @@ models-index.json
 
 # v2.28: real 3MFs copied from the library for local parser checks (never committed)
 scripts/_samples/
+advisor.json
