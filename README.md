@@ -7,8 +7,9 @@ can join in too (that part is in beta).
 
 You run the Hub on a computer that stays on. Your phone, or any browser, opens
 it like a web page. From there you can see every machine at once, send prints,
-watch cameras, plan your printing week, and know what filament to buy before
-you run out.
+watch cameras, plan your printing week, know what filament to buy before you
+run out, and - new in 2.28 - ask what settings a model wants before you slice
+it, and whether a plate is worth printing at all.
 
 Nothing gets installed on the printers. The Hub talks to the software they
 already run, and nothing leaves your network unless you turn remote access on,
@@ -25,25 +26,47 @@ paused or failed says why, in the firmware's own words, so you know whether to
 walk over. A printer that is down for maintenance says so right on the card,
 and the scheduler routes work around it until you bring it back.
 
-**Open any printer's own control page in one click.** Click a printer's name
-and its full Klipper interface (Fluidd) opens, no typing IP addresses. On your
-network it opens the printer directly, so its live data and controls work
-exactly as they do when you visit the printer on its own.
-
-![A printer's own Fluidd page, one click from the dashboard](docs/klipper-proxy.png)
-
 **Send prints without walking over.** Pick a file, see the colors it needs,
 choose which head prints which color, and push it to any idle machine. Files
 live in one merged list: the Hub's library plus whatever is stored on each
 printer, with thumbnails.
 
+**Know whether it is worth printing.** Under every file you select, one line
+says what its filament costs, the least it has to sell for (per piece when the
+file name carries the plate count, like `Penguin x20.gcode`), and what that
+comes to per printer hour. The two rates behind it - your sell floor per gram
+and what filament costs you per gram - are in Settings. The Hub never decides
+anything from this; it is the number to look at before you queue a plate.
+
+**Get a second pair of eyes before you press print.** With your own Anthropic
+API key in Settings, the AI pre-flight button on the job card has Claude read
+the settings baked into the sliced file and compare them with what is actually
+loaded in the printer you picked: wrong material or temperature for a head, an
+empty head a color needs, a missing prime tower, bed temperature wrong for the
+plate. You get GO, CHECK or STOP and the reasons, most important first.
+
+![The job card: what the plate is worth, and a pre-flight against the printer's loadout](docs/worth-printing.png)
+
 **Browse the models you have not sliced yet.** The Models tab reads a folder
 of 3MF project files (Designer\Model\file.3mf, the way designers ship them)
 and shows each one with the plate render saved inside it, the colors it was
-painted with, and the objects on the plate. One button opens it in Snapmaker
-Orca on the Hub computer; when you save the gcode, the Hub notices and offers
-to select it or send it to Dispatch. Desktop only, because the button opens a
-program on that computer.
+painted with, and the objects on the plate. Open in Orca launches it in
+Snapmaker Orca on the Hub computer; when you save the gcode, the Hub notices
+and offers to select it or send it to Dispatch.
+
+![Models: the shelf behind the library, with the designer's own plate renders](docs/models.png)
+
+**Ask what settings a model wants.** The Settings button on any Models card
+has Claude suggest the slicer settings for that file on the printer you pick,
+before you slice - a table of setting, the value to use, what the designer's
+profile had, and why. It is specific to the model because of what goes with
+the question: the plate picture from inside the file, numbers the Hub measures
+from the actual meshes (size, how much of the surface overhangs, undersides
+that float, how much touches the bed, painted faces, volume), the designer's
+own project settings, and what is loaded in your printer. It maps the
+project's colors to your loaded heads when it can, and lists what to watch.
+
+![Settings for a 3MF: what to set in Orca, what the file had, and why](docs/models-settings.png)
 
 **Plan your whole printing day.** The Dispatch tab schedules your queue across
 every printer, inside the hours you are actually home to swap plates. It flags
@@ -70,38 +93,28 @@ Hub reads Spoolman and never writes to it.
 
 ![Spools: every roll you own, where it is, and what is left on it](docs/spools-inventory.png)
 
-**A second pair of eyes before you print.** With your own Anthropic API key
-in Settings, two buttons light up. On a Models card, ✦ Settings has Claude
-look at the plate render inside the 3MF, numbers the Hub measures from the
-meshes (size, overhangs, floating undersides, bed contact, painted faces,
-volume) and the designer's own profile, then suggest the slicer settings for
-the printer you pick - a table you set in Orca before slicing. On the job
-card, AI pre-flight reads the settings baked into an already-sliced file and
-compares them with what is loaded in the printer: wrong material or
-temperature for a head, an empty head a color needs, a missing prime tower.
-GO, CHECK or STOP, and why. Nothing is sent until you press a button, never
-the gcode or the meshes themselves; a review costs about a cent, a settings
-suggestion a few.
-
-**Worth printing?** Under the selected file, one line says what its filament
-costs, the least it has to sell for (per piece when the file name carries
-the plate count, like `Penguin x20.gcode`) and what that is per printer
-hour, from two rates you set in Settings. The number to look at before you
-queue a plate.
-
-**Let your phone tell you.** Settings can send push notifications through
-[ntfy](https://ntfy.sh) (free, no account) when a print finishes, a printer
-pauses (with the reason), errors, or stops answering. Pick the events you want;
-one box turns it all off.
-
 **Ask "what can I print right now?"** The Match tab reads the colors loaded
 on each printer and lists the library files those colors can already produce,
 best match first, one tap from printing.
 
 ![Match: jobs your loaded colors can print right now](docs/spool-match.png)
 
+**Let your phone tell you.** Settings can send push notifications through
+[ntfy](https://ntfy.sh) (free, no account) when a print finishes, a printer
+pauses (with the reason), errors, or stops answering. Pick the events you want;
+one box turns it all off.
+
+**Open any printer's own control page in one click.** Click a printer's name
+and its full Klipper interface (Fluidd) opens, no typing IP addresses. On your
+network it opens the printer directly, so its live data and controls work
+exactly as they do when you visit the printer on its own.
+
+![A printer's own Fluidd page, one click from the dashboard](docs/klipper-proxy.png)
+
 **Use it from your phone.** The whole thing is built for a phone screen. Add
-it to your home screen and it behaves like an app.
+it to your home screen and it behaves like an app. (The Models tab and its
+Open in Orca button are desktop only, because they open a program on the Hub
+computer.)
 
 <img src="docs/remote-phone.png" width="300" alt="The dashboard on a phone">
 
@@ -154,6 +167,12 @@ into `./data`, and copy your old container's `spools.json`, `slots.json`,
 **From source:** install Node.js 22 or newer, then run `start-windows.bat` or
 `./start-mac-linux.sh`. First launch installs what it needs and opens the page.
 
+**To turn on the AI buttons:** make a key at
+[platform.claude.com](https://platform.claude.com/) (API keys, Create key; it
+starts with `sk-ant-`), add a few dollars of credit there, and paste it into
+Settings under AI pre-flight. The key stays in `config.json` on the Hub
+computer and is never shown again. Both buttons are off until a key is in.
+
 ---
 
 ## Using it away from home
@@ -172,6 +191,18 @@ network setup.
 ---
 
 ## The honest fine print
+
+**The AI buttons send data out, and only when you press them.** For a gcode:
+a text brief of a few thousand characters - the file name, the slicer
+settings Orca wrote into it, the filaments it was sliced for, the object
+count, and what the Hub has recorded in that printer's heads. For a 3MF: the
+measured numbers, the designer's settings, the loadout, and the small plate
+picture from inside the file. Never the gcode or the meshes themselves, never
+your printers' addresses. Settings has a link that shows you the exact brief
+for any file before you trust it with a key. A pre-flight costs about a cent
+on Claude Sonnet, a settings suggestion a few cents (the model thinks first),
+and the same file against the same loadout is answered from a local cache for
+free.
 
 **Amazon links.** The Replenish on Amazon buttons carry an affiliate tag, so
 the creator of this software earns a small commission if you buy through one,

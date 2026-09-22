@@ -50,7 +50,24 @@ const SHOTS = [
   { name: "match",     file: "spool-match.png",      w: 1440, h: 1000, url: "/#dash",      ready: ".pcard .pill", thenView: "match", thenReady: ".matchcard" },
   { name: "settings",  file: "features-panel.png",   w: 1440, h: 1300, url: "/#settings",  ready: "#setFeatures [data-feat]" },
   { name: "klipper",   file: "klipper-proxy.png",    w: 1440, h: 1000, url: "/p/0/",       readyText: /Home|Console|Extruder/i, extraMs: 3000 },
-  { name: "phone",     file: "remote-phone.png",     w: 390,  h: 844,  url: "/#dash",      ready: ".pcard .pill" }
+  { name: "phone",     file: "remote-phone.png",     w: 390,  h: 844,  url: "/#dash",      ready: ".pcard .pill" },
+  // v2.28. The Models tab needs its index (seed-4546 copies models-index.json)
+  // and the settings panel needs a cached answer (seed copies advisor.json), so
+  // neither shot walks the share or spends a cent. thenEval runs in the page
+  // after `ready`, before `thenReady` - the clicks a person would make.
+  { name: "models",    file: "models.png",           w: 1440, h: 1000, url: "/#models",    ready: ".mdl-card .mdl-chip", extraMs: 2500 },
+  { name: "suggest",   file: "models-settings.png",  w: 1440, h: 1000, url: "/#models",    ready: ".mdl-card",
+    // One glob token: the filter splits on spaces and ANDs the words, so
+    // "*mini frog*" is "ends with mini" AND "starts with frog" (nothing). The
+    // grid is emptied first so thenReady waits for the FILTERED render, not
+    // the cards already on screen.
+    thenEval: "document.getElementById('mdl-grid').innerHTML=''; const q=document.getElementById('mdl-q'); q.value='*mini*frog*'; q.dispatchEvent(new Event('input'));",
+    thenReady: ".mdl-card [data-suggest]",
+    thenEval2: "document.querySelector('.mdl-card [data-suggest]').click();",
+    thenReady2: "#mdl-advbody tr", thenTimeout: 90000, extraMs: 2500 },
+  { name: "jobcard",   file: "worth-printing.png",   w: 1440, h: 900,  url: "/#dash",      ready: ".pcard .pill",
+    thenEval: "document.querySelector('.job').click();", thenReady: "#mgline.show",
+    thenEval2: "document.getElementById('advgo').click();", thenReady2: "#advbody .advverdict", thenTimeout: 90000, extraMs: 1500 }
 ];
 
 (async () => {
@@ -77,6 +94,14 @@ const SHOTS = [
         if (s.thenView) {
           await page.evaluate(v => setView(v), s.thenView);
           await page.waitForSelector(s.thenReady, { timeout: 30000 });
+        }
+        if (s.thenEval) {
+          await page.evaluate(s.thenEval);
+          if (s.thenReady) await page.waitForSelector(s.thenReady, { timeout: s.thenTimeout || 30000 });
+        }
+        if (s.thenEval2) {
+          await page.evaluate(s.thenEval2);
+          if (s.thenReady2) await page.waitForSelector(s.thenReady2, { timeout: s.thenTimeout || 30000 });
         }
         if (s.thenClick) { await page.click(s.thenClick); await new Promise(r => setTimeout(r, 600)); }
         // Let live tiles (progress bars, sparklines, thumbnails) finish a tick.

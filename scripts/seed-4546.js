@@ -22,7 +22,10 @@ if (!DST) { console.error("usage: node scripts/seed-4546.js <state-dir>"); proce
 fs.mkdirSync(DST, { recursive: true });
 
 // A snapshot of the farm as it really is, so the throwaway is worth looking at.
-for (const f of ["config.json", "dispatch.json", "spools.json", "slots.json", "resources.json"]) {
+// v2.28: models-index.json so the Models tab draws at once instead of walking
+// the share for minutes; advisor.json so cached AI answers show without a
+// paid call (the key itself rides in config.json, as it always has).
+for (const f of ["config.json", "dispatch.json", "spools.json", "slots.json", "resources.json", "models-index.json", "advisor.json"]) {
   const from = path.join(SRC, f);
   if (fs.existsSync(from)) fs.copyFileSync(from, path.join(DST, f));
 }
