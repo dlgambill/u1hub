@@ -3473,9 +3473,16 @@ async function stopHub() {
     // Feature flag off removes the surface, same contract as every module.
     ok(/\/modules\/models-ui\.js/.test(await (await fetch(HUB + "/")).text()), "models client script injected when on");
     const mui = fs.readFileSync(path.join(REPO, "public", "modules", "models-ui.js"), "utf8");
-    ok(/max-width: 899px\), \(pointer: coarse\)/.test(mui) && /display: none !important/.test(mui), "the Models tab hides itself on phones (narrow or touch)");
+    ok(/@media \(max-width: 899px\) \{ \.vtab\[data-view=\\"models\\"\] \{ display: none !important/.test(mui), "the Models tab hides itself below 900px (the two-column layout needs the room)");
+    ok(/@media \(pointer: coarse\) \{ \.mdl-act, #mdl-sess, #mdl-cfgbtn \{ display: none !important/.test(mui), "…and on touch the Orca actions and the folder settings go, leaving a read-only library (v2.27)");
     ok(/HubModules\.register\("models"/.test(mui), "…and registers as a tab through HubModules");
-    await jpost("/api/models/settings", { folder: "" });
+    // v2.27.1: a blank folder in a Save keeps the setting (the form once
+    // showed blanks while loading, and a Save then wiped the folder).
+    r = await jpost("/api/models/settings", { folder: "" });
+    ok(r.status === 200 && r.body.folder === mroot, "saving a blank folder keeps the one that was set", r.body && r.body.folder);
+    ok(fs.existsSync(path.join(hubDir, "models-index.json")) && JSON.parse(fs.readFileSync(path.join(hubDir, "models-index.json"), "utf8")).items.length === 4, "the index is kept on disk for the next boot");
+    r = await jpost("/api/models/settings", { folder: "", clear: true });
+    ok(r.status === 200 && r.body.folder !== mroot, "clear:true is the way to reset it", r.body && r.body.folder);
   }
 
   console.log("\n== UI: gold.css discipline layer (v2.17) ==");

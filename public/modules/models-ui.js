@@ -1,8 +1,11 @@
 // public/modules/models-ui.js — the Models tab (v2.26): the 3MF library.
 // Injected only when features.models is on; mounted through HubModules like
-// the Dispatch and Resources tabs. Desktop only: the tab is hidden below 900px
-// and on coarse pointers, because its one action opens Orca on the Hub
-// computer, which is no use from a phone on the couch.
+// the Dispatch and Resources tabs. The tab itself is hidden only below 900px
+// (the two-column layout needs the room) - it's no longer gated on pointer
+// type, so browsing works from a phone (typically landscape, where width
+// clears 900px). The actions that only make sense at the Hub console - Open
+// in Orca, the Orca session strip, the Folder settings button - stay hidden
+// on coarse pointers, so touch visitors get a read-only view of the library.
 //
 // Layout: creators down the left, a searchable grid of cards on the right.
 // Each card is the designer's own plate thumbnail (from inside the 3MF), the
@@ -29,7 +32,10 @@
     const s = document.createElement("style");
     s.id = "mdlcss";
     s.textContent = [
-      "@media (max-width: 899px), (pointer: coarse) { .vtab[data-view=\"models\"] { display: none !important; } }",
+      "@media (max-width: 899px) { .vtab[data-view=\"models\"] { display: none !important; } }",
+      // v2.27: coarse pointers (phones/tablets) keep the tab, lose the actions
+      // that only do something at the Hub console itself.
+      "@media (pointer: coarse) { .mdl-act, #mdl-sess, #mdl-cfgbtn { display: none !important; } }",
       ".mdl-wrap{display:grid; grid-template-columns: 220px minmax(0,1fr); gap:14px; margin-top:12px;}",
       ".mdl-rail{background:var(--panel); border:1px solid var(--line); border-radius:var(--r-lg,12px); padding:10px; align-self:start; position:sticky; top:12px; max-height:calc(100vh - 40px); overflow:auto;}",
       ".mdl-rail button{display:flex; width:100%; justify-content:space-between; gap:8px; background:transparent; border:none; color:var(--ink-dim); font:inherit; font-size:12.5px; text-align:left; padding:6px 8px; border-radius:var(--r-sm,6px); cursor:pointer;}",
@@ -86,16 +92,24 @@
     renderCfg();
   }
 
+  // v2.27.1: the fields are filled from the server's answer, and re-filled
+  // when it arrives, so the form never shows blanks for values that are set.
+  // (It did, and a Save pressed on the blanks wiped the folder - 2026-09-22.)
   function renderCfg() {
     const box = EL.querySelector("#mdl-cfg");
+    if (box.querySelector("#mdl-folder") && (document.activeElement === box.querySelector("#mdl-folder") || document.activeElement === box.querySelector("#mdl-orca"))) return;
+    const folder = DATA && DATA.folder ? DATA.folder : "";
+    const orca = DATA && DATA.orcaExe ? DATA.orcaExe : (SETTINGS && SETTINGS.orcaExe ? SETTINGS.orcaExe : "");
     box.innerHTML =
       '<label>3MF folder <span class="hint">designer folders inside it become the list on the left; up to four levels deep; folders starting with _ are skipped</span></label>' +
-      '<input class="field" id="mdl-folder" placeholder="X:\\_MMF" value="' + esc(DATA ? DATA.folder : "") + '">' +
+      '<input class="field" id="mdl-folder" placeholder="' + (folder ? "" : "loading…") + '" value="' + esc(folder) + '">' +
       '<label>Snapmaker Orca <span class="hint">the program the Open button launches, on this computer</span></label>' +
-      '<input class="field" id="mdl-orca" placeholder="C:\\Program Files\\Snapmaker_Orca\\snapmaker-orca.exe" value="' + esc(SETTINGS && SETTINGS.orcaExe ? SETTINGS.orcaExe : "") + '">' +
+      '<input class="field" id="mdl-orca" placeholder="C:\\Program Files\\Snapmaker_Orca\\snapmaker-orca.exe" value="' + esc(orca) + '">' +
       '<div class="row" style="margin-top:8px; gap:8px"><button class="btn primary" id="mdl-save" style="font-size:12px; padding:5px 12px">Save</button><span class="pstatus" id="mdl-cfgmsg"></span></div>';
     box.querySelector("#mdl-save").addEventListener("click", async () => {
-      const r = await jpost("/api/models/settings", { folder: box.querySelector("#mdl-folder").value, orcaExe: box.querySelector("#mdl-orca").value });
+      const fv = box.querySelector("#mdl-folder").value.trim();
+      if (!fv) { const m = box.querySelector("#mdl-cfgmsg"); m.className = "pstatus err"; m.textContent = "Enter the folder path (it was left blank)."; return; }
+      const r = await jpost("/api/models/settings", { folder: fv, orcaExe: box.querySelector("#mdl-orca").value });
       const m = box.querySelector("#mdl-cfgmsg");
       if (!r.ok) { m.className = "pstatus err"; m.textContent = r.d.error || "Could not save"; return; }
       SETTINGS = r.d;
@@ -113,15 +127,19 @@
       const d = await jget(u);
       if (!d) return;
       const prev = DATA; DATA = d;
-      if (!SETTINGS) SETTINGS = { orcaExe: null, orca_found: d.orca_found };
+      SETTINGS = { ...(SETTINGS || {}), orcaExe: d.orcaExe || (SETTINGS && SETTINGS.orcaExe) || null, orca_found: d.orca_found };
       render(append && prev ? prev.items : null);
-      if (d.refreshing) setTimeout(() => { if (!BUSY) load(); }, 2500);
+      if (!prev || prev.folder !== d.folder) renderCfg();
+      // While a scan is running and there is nothing to show yet, poll.
+      if ((d.refreshing || d.scanning) && !d.items.length) setTimeout(() => { if (!BUSY) load(); }, 2500);
     } finally { BUSY = false; }
   }
 
   function render(prependItems) {
     const d = DATA;
-    EL.querySelector("#mdl-count").textContent = d.missing ? "folder not found" : (d.total_all + " file" + (d.total_all === 1 ? "" : "s") + (d.refreshing ? " · scanning…" : ""));
+    EL.querySelector("#mdl-count").textContent = d.missing ? "folder not found"
+      : (d.scanning && !d.total_all) ? "scanning the folder…"
+      : (d.total_all + " file" + (d.total_all === 1 ? "" : "s") + (d.refreshing ? " · rescanning…" : "") + (d.unreachable ? " · folder not reachable right now, showing the last scan" : ""));
     const rail = EL.querySelector("#mdl-rail");
     rail.innerHTML = '<button class="' + (CREATOR ? "" : "on") + '" data-c=""><span>All designers</span><span class="n">' + d.total_all + "</span></button>" +
       d.creators.map(c => '<button class="' + (CREATOR === c.name ? "on" : "") + '" data-c="' + esc(c.name) + '"><span>' + esc(c.name || "(no folder)") + '</span><span class="n">' + c.count + "</span></button>").join("");

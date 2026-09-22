@@ -77,6 +77,34 @@ printers, and nothing leaves your network unless you turn remote access on.
 
 ---
 
+### 2.27.1 - the Models tab on a slow share
+
+- **Previews by byte ranges.** The first cut read each whole project file
+  (typically 5 to 25 MB) to pull out a 7 KB plate preview, so a screen of
+  sixty cards was over a gigabyte off the share. A zip keeps its directory at
+  the end, so the Hub now reads the last 64 KB, then just the one preview
+  entry - about 100 KB per file - and opens at most two files at a time.
+  Same for the color and object info under each card.
+- **The index lives on disk.** The last good scan is served the moment the
+  Hub starts and refreshed in the background; a share that is slow or off for
+  a minute no longer empties the tab, it shows the last scan with a note.
+  The Rescan button still walks the folder now.
+- **The Folder panel cannot wipe the folder.** It drew blank fields while the
+  list was still loading, and a Save pressed on the blanks cleared the
+  setting (2026-09-22, and the list went with it). The fields now fill from
+  the server, and a blank Save keeps what was set.
+- **The last two synchronous share reads are gone.** The Resources rollup
+  (and the Dispatch badge that shares it) parsed unknown files on the request;
+  now the files a rollup needs are read off the event loop first, one at a
+  time, and the rollup only ever hits the cache. The 2026-09-14 rule in
+  MISTAKES.md is met.
+
+### 2.27 - SF3D timelapse uploads
+
+Each U1 renders its own finished timelapse in firmware; the Hub listens for
+a print finishing, takes the file the printer already made, and hands it to
+the SF3D storefront. Shipped by the SF3D lane (commit 9d3e5fe).
+
 ### 2.26.2 - a slow share no longer freezes the whole Hub
 
 Tonight a 198 MB gcode landed in X:\gcode while the share was having a slow

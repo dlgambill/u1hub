@@ -372,34 +372,55 @@ function spoolLabs(sp) {
 // mtime, so the entry self-invalidates. Head+tail read only.
 function makeParseCache(hublog) {
   const CACHE = new Map();
-  function readEnds(fp, size) {
-    if (size <= HEAD_BYTES + TAIL_BYTES) return fs.readFileSync(fp, "utf8");
-    const fd = fs.openSync(fp, "r");
-    try {
-      const h = Buffer.alloc(HEAD_BYTES);
-      fs.readSync(fd, h, 0, HEAD_BYTES, 0);
-      const t = Buffer.alloc(TAIL_BYTES);
-      fs.readSync(fd, t, 0, TAIL_BYTES, size - TAIL_BYTES);
-      return h.toString("utf8") + "\n" + t.toString("utf8");
-    } finally { fs.closeSync(fd); }
-  }
   // Returns { ok:true, slots } or { ok:false, reason } — never throws, because a
   // single unreadable file must not take out the whole rollup.
   // `known` ({ size, mtime }) is the library snapshot's view of the file when
   // the caller has one: it settles the cache check without a stat against the
   // gcode share (v2.23 PERF — each of those was ~30 ms of blocked event loop
   // on a networked folder, per job, per badge poll).
-  function slotsFor(slug, name, fp, known) {
+  // v2.27.1: the sync path is cache-only. A miss no longer reads the share on
+  // the request (the badge poll did, and on a slow share that held the whole
+  // process - MISTAKES.md 2026-09-14); it answers "not read yet", kicks an
+  // async read, and the next poll finds the entry. slotsForAsync is the same
+  // parse with the read off the loop, for callers that can wait (deduction).
+  async function readEndsAsync(fp, size) {
+    if (size <= HEAD_BYTES + TAIL_BYTES) return fs.promises.readFile(fp, "utf8");
+    const fh = await fs.promises.open(fp, "r");
+    try {
+      const h = Buffer.alloc(HEAD_BYTES); await fh.read(h, 0, HEAD_BYTES, 0);
+      const t = Buffer.alloc(TAIL_BYTES); await fh.read(t, 0, TAIL_BYTES, size - TAIL_BYTES);
+      return h.toString("utf8") + "\n" + t.toString("utf8");
+    } finally { await fh.close(); }
+  }
+  const INFLIGHT = new Map();
+  async function slotsForAsync(slug, name, fp, known) {
     const key = slug + ":" + name;
     const hit = CACHE.get(key);
     if (known && hit && hit.size === known.size && hit.mtime === known.mtime) return { ok: true, slots: hit.slots, cached: true };
     let st;
-    try { st = fs.statSync(fp); }
+    try { st = await fs.promises.stat(fp); }
     catch (e) { return { ok: false, reason: e.code === "ENOENT" ? "file not found" : ("stat failed: " + e.message) }; }
     if (hit && hit.size === st.size && hit.mtime === st.mtimeMs) return { ok: true, slots: hit.slots, cached: true };
-    let r;
-    try { r = parseGcodeMap(readEnds(fp, st.size), { scanBody: false }); }
-    catch (e) { return { ok: false, reason: "parse failed: " + e.message }; }
+    if (INFLIGHT.has(key)) return INFLIGHT.get(key);
+    const p = (async () => {
+      let r;
+      try { r = parseGcodeMap(await readEndsAsync(fp, st.size), { scanBody: false }); }
+      catch (e) { return { ok: false, reason: "parse failed: " + e.message }; }
+      return finish(key, name, st, r);
+    })().finally(() => INFLIGHT.delete(key));
+    INFLIGHT.set(key, p);
+    return p;
+  }
+  function slotsFor(slug, name, fp, known) {
+    const key = slug + ":" + name;
+    const hit = CACHE.get(key);
+    if (hit && known && hit.size === known.size && hit.mtime === known.mtime) return { ok: true, slots: hit.slots, cached: true };
+    if (hit && !known) return { ok: true, slots: hit.slots, cached: true };   // no snapshot to compare: trust the cache
+    if (known === null) return { ok: false, reason: "file not found" };
+    slotsForAsync(slug, name, fp, known).catch(() => {});
+    return { ok: false, reason: "not read yet", pending: true };
+  }
+  function finish(key, name, st, r) {
     const a = r.amounts || { slots: [] };
     if (!a.have_grams) return { ok: false, reason: "no filament amounts in file" };
     const slots = [];
@@ -424,7 +445,25 @@ function makeParseCache(hublog) {
              a.unaccounted_g + " g — unexpected for Orca, check the slicer");
     return { ok: true, slots, cached: false };
   }
-  return { slotsFor, size: () => CACHE.size, clear: () => CACHE.clear(), CACHE };
+  // Fill the cache for every file a rollup is about to ask for, off the loop,
+  // so the sync rollup that follows is all hits. Sequential on purpose: one
+  // read at a time against the share.
+  async function prime(jobs, folderFor, statFor) {
+    const seen = new Set();
+    for (const job of (jobs || [])) {
+      if (!job || !COUNTED_STATES.has(String(job.state))) continue;
+      const slug = String(job.type || "u1"), name = path.basename(String(job.file || ""));
+      const key = slug + ":" + name;
+      if (!name || seen.has(key)) continue;
+      seen.add(key);
+      let dir = null; try { dir = folderFor(slug); } catch {}
+      if (!dir) continue;
+      const known = statFor ? statFor(name, slug) : null;
+      if (known === null) continue;                                   // snapshot says the file is gone
+      try { await slotsForAsync(slug, name, path.join(dir, name), known || undefined); } catch {}
+    }
+  }
+  return { slotsFor, slotsForAsync, prime, size: () => CACHE.size, clear: () => CACHE.clear(), CACHE };
 }
 
 // ---- spool matching ------------------------------------------------------------
@@ -612,9 +651,12 @@ function register(ctx) {
     return typeof get === "function" ? (get() || []) : null;
   };
 
-  function compute(q) {
+  // v2.27.1: async - primes the parse cache off the loop first, so the
+  // synchronous rollup below never touches the share itself.
+  async function compute(q) {
     const jobs = jobsNow();
     if (jobs === null) return { error: "Dispatch is off — there is no schedule to price." };
+    await cache.prime(jobs, slug => ctx.gcodeFolderFor(slug), ctx.fileStat ? (name, slug) => ctx.fileStat(name, slug) : null);
     const meta = {};
     const shelf = readShelf(ctx.baseDir, store, meta);
     // Inventory rows whose spool no longer exists. Unreferenced ones are simply
@@ -654,9 +696,9 @@ function register(ctx) {
   // GET /api/resources — the whole rollup.
   //   ?deadline_only=1   only jobs that carry a deadline
   //   ?from=&to=         epoch ms bounds, applied to deadline when one is set
-  app.get("/api/resources", (req, res) => {
+  app.get("/api/resources", async (req, res) => {
     try {
-      const out = compute(req.query || {});
+      const out = await compute(req.query || {});
       if (out.error) return res.status(409).json(out);
       res.json(out);
     } catch (e) {
@@ -848,7 +890,7 @@ function register(ctx) {
     const fp = path.join(folder, name);
     const known = ctx.fileStat ? ctx.fileStat(name, slug) : undefined;
     if (known === null || !fs.existsSync(fp)) return { skipped: "file not in the Hub library (" + name + ")" };
-    const parsed = cache.slotsFor(slug, name, fp, known || undefined);
+    const parsed = await cache.slotsForAsync(slug, name, fp, known || undefined);
     if (!parsed.ok) return { skipped: parsed.reason };
     let mapTable = null;
     try {
@@ -918,9 +960,9 @@ function register(ctx) {
   // Badge for the Schedule page: "N colors short". Deliberately the same code
   // path as the table — a badge that disagrees with the tab it links to is
   // worse than no badge.
-  app.get("/api/resources/badge", (req, res) => {
+  app.get("/api/resources/badge", async (req, res) => {
     try {
-      const out = compute({});
+      const out = await compute({});
       if (out.error) return res.json({ short: 0, off: true });
       res.json({
         short: out.totals.short_colors,
