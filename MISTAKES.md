@@ -16,7 +16,7 @@ Running log of things that broke, why, and the rule that stops a repeat.
 | Cluster | Entries | Law |
 |---|---|---|
 | Test depends on when it runs / what else runs | 4 incidents, 5 checks | rule 7 |
-| Asserted or acted without checking first | 11 incidents | rule 8 |
+| Asserted or acted without checking first | 12 incidents | rule 8 |
 | Harness green while the feature was broken | 3 incidents | rule 2 — "green" is not "verified" |
 | Unverified shape trusted as complete | 3 incidents | rule 6 |
 | Shipped onto one surface, not every surface that draws the thing | 3 incidents | *approaching a law* — check every tab that renders it before calling it done |
@@ -27,6 +27,51 @@ Running log of things that broke, why, and the rule that stops a repeat.
 
 Bridge quirks are operating facts, not judgment failures; a rule that says
 "remember these four things" is a lookup table wearing a rule's clothes.
+
+---
+
+## 2026-09-22 - Reasoned for two weeks about a two-tree split retired two weeks ago
+
+**What happened:** Asked to analyze this file, I read it and `CLAUDE.md` on
+2026-09-08 and reported that six entries sat only on the `C:` clone and would
+be destroyed by "the next stage" from `X:`. Over the next two weeks I
+re-measured three times, each time found `C:` ahead of `X:`, each time called
+it drift, and each time "fixed" it by copying `C:` over `X:`. I then offered to
+build a guard for the staging step.
+
+There is no staging step. Danny retired the `X:\u1-print-hub` copy on
+2026-09-09 - commit `6036813`, "One tree: the Hub is edited, run and committed
+from this clone; X: staging retired" - one day after I read `CLAUDE.md`.
+`scripts/sync-to-clone.js` and `scripts/drift-scan.js` have been stubs saying
+so ever since, and the rewritten `CLAUDE.md` states plainly that a surviving
+`X:\u1-print-hub` "is dead weight waiting for Danny to delete it - never read
+from it." I found this only when I went to write the guard and opened the
+script that was supposed to need it.
+
+**Root cause:** I read `CLAUDE.md` once, on day one, then treated my own
+summary of it as the state of the machine for two more weeks and two more
+sessions. Every later turn re-measured the *files* scrupulously - line counts,
+`Compare-Object`, mtimes, subset proofs - and never re-read the document that
+told me what those files meant. Precision about the data made the wrong frame
+feel verified. The "drift" was never drift: `C:` was ahead because `C:` is
+where the work happens, which is the normal and only state.
+
+**Consequence:** Three sessions writing into a directory Danny had abandoned,
+and two confident reports describing a live data-loss risk that did not exist.
+No damage to the live tree - every copy ran `C:` to `X:`, never the reverse, so
+the clone was never fed stale content - and the one piece of real work (moving
+six misfiled entries to `MISTAKES-shared.md`) stands on its own. But he was
+told a false story twice, in detail, with measurements attached.
+
+**Rule:** Re-read `CLAUDE.md` at the start of every session and after any
+break, not once per thread. An instruction file is state, and state that is
+days old must be re-read exactly like a git ref or a live table - this is rule
+8 applied to the document that defines the rules. Specifically: **before
+building or guarding a mechanism, open the thing that implements it.** One
+read of `scripts/sync-to-clone.js` would have ended this on day one; what
+finally ended it was going to write code and looking first. And when a "drift"
+recurs three times while nothing else on the machine reacts to it, suspect the
+frame before the facts.
 
 ---
 
