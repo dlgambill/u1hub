@@ -71,3 +71,5 @@ scripts/_*.log
 scripts/harness.log
 hub-console.log
 claude/
+
+models-index.json
