@@ -36,7 +36,13 @@ const MODULE_TABLE = {
   // v2.25: AI pre-flight with the person's own Anthropic key. Inert without one.
   advisor: require("../modules/advisor.js"),
   // v2.26: the 3MF model library (Models tab). Reads a folder, opens Orca.
+  // v2.28: also provides models.open/models.info, which advisor's 3MF
+  // suggester uses at call time (provide/use resolves late, so advisor
+  // registering first is fine).
   models: require("../modules/models.js"),
+  // v2.28: "worth printing?" - three numbers on the job card from the file's
+  // own grams and time. Pure arithmetic and two settings; provides margin.quote.
+  margin: require("../modules/margin.js"),
   // v2.27: SF3D timelapse upload. Listens on hub.events ("print.done"),
   // pulls the printer's own rendered clip and hands it to the SF3D edge
   // function. No route, no UI - it only reacts to events dispatch already
@@ -58,15 +64,9 @@ const CAPS_PROVIDED = new Map();
 const UPGRADE_HANDLERS = [];   // v2.21: see ctx.onUpgrade below
 
 // Parse "estimated printing time (normal mode) = 1d 2h 3m" from gcode text.
-function parseEstMinutes(text) {
-  const m = /estimated printing time[^=]*=\s*([^\n;]+)/i.exec(text || "");
-  if (!m) return null;
-  const s = m[1]; let mins = 0, hit = false;
-  const take = (re, mult) => { const x = re.exec(s); if (x) { mins += (+x[1]) * mult; hit = true; } };
-  take(/(\d+)\s*d/, 1440); take(/(\d+)\s*h/, 60); take(/(\d+)\s*m/, 1);
-  const ss = /(\d+)\s*s/.exec(s); if (ss) { mins += Math.ceil((+ss[1]) / 60); hit = true; }
-  return hit ? mins : null;
-}
+// v2.28: the reading moved to parser.js (estMinutes) so modules/margin.js
+// reads the same string the same way; this stays as the name callers know.
+const parseEstMinutes = text => (/estimated printing time/i.test(text || "") ? require("../parser.js").estMinutes(text) : null);
 
 // One-call file facts for modules (dispatch): colors + class + time estimate.
 // Reads the same cached palette as /api/print; the estimate comes from a

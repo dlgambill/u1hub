@@ -77,6 +77,55 @@ printers, and nothing leaves your network unless you turn remote access on.
 
 ---
 
+## New in 2.28 - slicer settings from the file, and what a plate is worth
+
+**✦ Settings on every Models card.** The 2.25 pre-flight checked a gcode
+after it was sliced. This is the step before: pick a 3MF on the Models tab,
+pick the printer it would go to, and Claude suggests the slicer settings to
+set in Orca before you slice - a table of setting, value to use, what the
+designer's profile had, and why. What makes the answer specific to the file
+rather than boilerplate is what the Hub sends with it: the plate render the
+designer saved inside the 3MF (as a picture), numbers the Hub measures from
+the meshes themselves (plate size, how tall the tallest part is against its
+base, what share of the surface overhangs past Orca's 30 degree default,
+undersides that float, how much of the footprint touches the bed, painted
+faces, solid volume), the designer's own project settings, and what is
+loaded in the printer you picked. It also maps the project's colors to your
+loaded heads when it can, and lists what to watch. Same key as the
+pre-flight, same rule that nothing is sent until you press the button, same
+cache (the same file for the same loadout is free the second time). A
+suggestion costs a few cents because the model thinks before it answers.
+A "what was sent" link under every answer shows the text brief.
+
+- Measuring a painted mini (200,000 triangles, 16 MB of mesh XML inside the
+  zip) takes about 400 ms and yields to the event loop as it goes, so the
+  farm keeps polling. Multi-plate projects are measured for plate 1, the one
+  the render shows. Files are read by byte range through the same
+  two-at-a-time gate as the thumbnails.
+
+**Worth printing?** One line under the selected file: what its filament
+costs, the least it has to sell for (per piece when the file name carries
+the plate count, like `Penguin x20.gcode`), and what that comes to per
+printer hour. Grams and hours come from the file, the count from its name,
+so there is no price to type. The two rates behind it (sell floor per gram,
+filament cost per gram) are in Settings; the defaults are the rule of thumb
+this was built for (under $0.02/g in, at least $0.12/g out). Nothing is
+decided from it - Dispatch does not consult it - it is the number to look at
+before you queue a plate.
+
+**Fixed: the 2.25 AI pre-flight button did nothing.** It read the selected
+file as `window.SELECTED`, and a top-level `let` in app.js is not a window
+property, so the click returned before opening the panel. The core now
+exposes the selected file, its map, the fleet and the chosen mapping as
+read-only window getters. Found while wiring the Models button to the same
+state; a harness check now guards it, and both buttons were clicked on a
+live Hub before this shipped.
+
+- Also: the pre-flight's gcode reads are async now (the last sync share read
+  in a request handler), and its answer budget is large enough for the model
+  to think first - the first live 3MF call came back as an empty thinking
+  block at the old limit.
+
 ### 2.27.1 - the Models tab on a slow share
 
 - **Previews by byte ranges.** The first cut read each whole project file

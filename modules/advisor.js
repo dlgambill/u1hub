@@ -28,6 +28,20 @@
 //   5. Anthropic only, for now. The request is a plain fetch to the Messages
 //      API — no SDK, nothing to install. Adding a second provider is one more
 //      request shape, not a redesign.
+//
+// v2.28 adds the other half, one step earlier: POST /api/advisor/model takes a
+// 3MF from the Models tab and asks for the slicer settings it should be sliced
+// with. Danny: the 2.25 shape "doesn't exactly match what I wanted - I want it
+// to evaluate a 3MF and suggest the best slicer settings for it." What makes
+// that answerable rather than boilerplate is what goes in: the plate render
+// the designer saved inside the file (sent as an image - the model can look at
+// a picture), geometry measured from the meshes themselves (modules/mesh3mf.js:
+// size, tallest part against its base, share of surface that overhangs,
+// undersides that float, bed contact, painted faces, solid volume), the
+// designer's own profile from project_settings.config, and what is loaded in
+// the printer it would go to. The answer is JSON - a settings sheet the tab
+// renders as a table - never free text pasted into the page. Same key, same
+// model menu, same cache rules, same "nothing leaves until you press it".
 
 "use strict";
 
@@ -35,6 +49,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { parseGcodeMap, parseConfig } = require("../parser.js");
+const { facts3mf, platesFromModelSettings } = require("./mesh3mf.js");
 
 const API_DEFAULT = "https://api.anthropic.com";
 const API_VERSION = "2023-06-01";
@@ -87,16 +102,117 @@ const SYSTEM = [
   "Settings you are not given were not in the file; do not invent them."
 ].join("\n");
 
+// ---- the 3MF settings suggester (v2.28) --------------------------------------
+const MODEL_SYSTEM = [
+  "You choose slicer settings for a 3MF that is about to be sliced in Snapmaker Orca (an OrcaSlicer fork) for a Snapmaker U1: four tool heads on one carriage, one filament per head, automatic tool changes, heated bed, 270 x 270 x 270 mm, 0.4 mm nozzle unless told otherwise.",
+  "You are given: the plate render saved inside the file (an image, when there is one); geometry MEASURED from the meshes (sizes in mm, the tallest part against its narrowest base, what share of the surface faces down steeply enough to need support at Orca's 30 degree default, undersides that float, bed contact, painted faces, solid volume); the designer's own profile from the project (the settings the file already carries, often for a different printer); and what filament is loaded in the printer it would go to.",
+  "Recommend the settings a careful operator would set before slicing this specific model for this specific machine and material. Anchor on the designer's profile: keep what is right, change only what the geometry, the material, or the U1 calls for, and say why in a few words. Use Orca's setting keys so a person can find them. Temperatures follow the LOADED material (and the roll's recommended temps when given), not the designer's file.",
+  "Do not guess at geometry you were not given; the numbers are the truth, the image is for context (shape, detail, how parts sit). If the file already carries a support or brim choice that the numbers agree with, keep it and say so.",
+  "Answer with ONE JSON object and nothing else, no code fence, this shape:",
+  '{"summary":"one sentence on what this model needs","settings":[{"key":"layer_height","label":"Layer height","value":"0.12 mm","from":"0.2 mm","why":"small painted details"}],"heads":[{"color":"#FF0000","head":"T2","note":"red PLA loaded there"}],"watch":["short warnings, most important first"],"orientation":"one sentence, or null if the plate is fine as is"}',
+  "settings: at most 14 entries, most consequential first; \"from\" is the designer's value when yours differs, else null; \"why\" under 20 words. heads: only when the project's filament colors and the loaded rolls let you map them (else an empty array). watch: at most 5. Keep values in the units Orca shows."
+].join("\n");
+
+// Keys worth carrying from the project's own settings, and their answer.
+const PROJECT_KEYS = [
+  "printer_model", "printer_settings_id", "print_settings_id", "nozzle_diameter",
+  "layer_height", "initial_layer_print_height", "wall_loops", "top_shell_layers", "bottom_shell_layers",
+  "sparse_infill_density", "sparse_infill_pattern",
+  "enable_support", "support_type", "support_style", "support_threshold_angle", "support_on_build_plate_only", "support_interface_top_layers",
+  "enable_prime_tower", "prime_tower_width", "flush_multiplier",
+  "brim_type", "brim_width", "skirt_loops", "curr_bed_type",
+  "nozzle_temperature", "nozzle_temperature_initial_layer", "hot_plate_temp", "textured_plate_temp", "cool_plate_temp",
+  "fan_min_speed", "fan_max_speed", "slow_down_layer_time", "overhang_fan_speed",
+  "outer_wall_speed", "inner_wall_speed", "sparse_infill_speed", "initial_layer_speed",
+  "seam_position", "ironing_type", "detect_thin_wall", "only_one_wall_top", "xy_hole_compensation", "elefant_foot_compensation",
+  "filament_type", "filament_settings_id", "filament_vendor"
+];
+
+// project_settings.config (JSON) -> the whitelisted lines. Values are strings
+// or per-filament arrays; arrays are joined so "220;220;220;220" reads as one.
+function projectLines(ps) {
+  const lines = [];
+  let j = null;
+  try { j = JSON.parse(ps.toString("utf8")); } catch { return lines; }
+  for (const k of PROJECT_KEYS) {
+    if (!(k in j)) continue;
+    let v = Array.isArray(j[k]) ? j[k].map(x => String(x)).join(";") : String(j[k]);
+    if (v.length > 120) v = v.slice(0, 117) + "…";
+    lines.push("  " + k + " = " + v);
+  }
+  return lines;
+}
+
+// Pure: everything about the file -> the text half of the brief.
+// facts: mesh3mf facts (or { ok:false, reason }); info: colors/objects from
+// models.js infoFromParts; project: projectLines(); plate: { n, of }.
+function modelBriefLines(name, facts, info, project, plate) {
+  const L = [];
+  L.push("FILE: " + name);
+  const md = (facts && facts.metadata) || {};
+  const tit = [md.Title ? "title \"" + md.Title + "\"" : null, md.Designer ? "by " + md.Designer : null, md.ProfileTitle ? "designer's profile \"" + md.ProfileTitle + "\"" : null, md.Application ? "saved by " + md.Application : null].filter(Boolean);
+  if (tit.length) L.push("PROJECT: " + tit.join(", "));
+  if (plate && plate.of > 1) L.push("PLATE: " + plate.n + " of " + plate.of + " in this project (only this plate is measured below)");
+  if (facts && facts.ok) {
+    const f = facts;
+    L.push("GEOMETRY (measured from the meshes, mm): plate footprint " + f.size_mm[0] + " x " + f.size_mm[1] + ", tallest point " + f.height_mm + "; "
+      + f.instances + " part" + (f.instances === 1 ? "" : "s") + " on the plate (" + f.meshes + " distinct mesh" + (f.meshes === 1 ? "" : "es") + "), " + f.triangles.toLocaleString("en-US") + " triangles; solid volume " + f.volume_cm3 + " cm3 (" + f.solid_g_pla + " g if printed solid in PLA); surface " + f.area_cm2 + " cm2" + (f.truncated ? "; NOTE: mesh data past the size budget, numbers are partial" : ""));
+    const o = f.overhang;
+    L.push("OVERHANGS: " + o.steep_pct + "% of the surface faces down steeper than 30 degrees from vertical (needs support at Orca's default threshold); " + o.flat_unsupported_pct + "% is flat underside not on the bed (bridges or floating)" + (o.floating_instances ? "; " + o.floating_instances + " part" + (o.floating_instances === 1 ? " sits" : "s sit") + " above the plate with nothing under it" : "") + "; bed contact " + o.bed_contact_cm2 + " cm2 = " + o.bed_contact_pct_of_footprint + "% of the footprint");
+    if (f.tallest) L.push("STABILITY: tallest part is " + f.tallest.height_mm + " mm on a " + f.tallest.base_mm[0] + " x " + f.tallest.base_mm[1] + " mm base (height " + f.tallest.aspect + "x its narrowest base dimension)");
+    if (f.paint && f.paint.colors) L.push("PAINT: faces are painted with " + f.paint.colors + " color" + (f.paint.colors === 1 ? "" : "s") + " (" + f.paint.painted_pct + "% of faces) - multi-color by painting, not by separate objects");
+    if (f.parts && f.parts.length) L.push("PARTS (largest first): " + f.parts.map(p => (p.name || "part") + (p.copies > 1 ? " x" + p.copies : "") + " " + p.size_mm.join("x") + " mm " + p.volume_cm3 + " cm3").join("; "));
+  } else L.push("GEOMETRY: not measured (" + ((facts && facts.reason) || "no mesh") + ")");
+  if (info) {
+    if (info.colors && info.colors.length) L.push("FILAMENTS DEFINED IN THE PROJECT (slot: color): " + info.colors.map((c, i) => (i + 1) + ": " + c).join(", "));
+    if (info.objects && info.objects.length) L.push("OBJECTS (name, extruder slot): " + info.objects.slice(0, 16).map(x => x.name + (x.extruder ? " (" + x.extruder + ")" : "")).join("; ") + (info.objects.length > 16 ? "; …" : ""));
+  }
+  L.push("DESIGNER'S PROJECT SETTINGS (from the 3MF; the target printer may differ):");
+  if (project && project.length) L.push(...project); else L.push("  (no project_settings.config in this file)");
+  return L;
+}
+
+// The model's JSON, tolerant of a stray sentence or fence around it.
+function parseSuggestion(text) {
+  const s = String(text || "");
+  const a = s.indexOf("{"), b = s.lastIndexOf("}");
+  if (a < 0 || b <= a) return null;
+  let j = null;
+  try { j = JSON.parse(s.slice(a, b + 1)); } catch { return null; }
+  if (!j || typeof j !== "object") return null;
+  const str = v => v == null ? null : String(v);
+  const out = {
+    summary: str(j.summary) || "",
+    settings: (Array.isArray(j.settings) ? j.settings : []).slice(0, 14).map(x => ({ key: str(x.key) || "", label: str(x.label) || str(x.key) || "", value: str(x.value) || "", from: str(x.from), why: str(x.why) || "" })).filter(x => x.key || x.label),
+    heads: (Array.isArray(j.heads) ? j.heads : []).slice(0, 8).map(x => ({ color: str(x.color) || "", head: str(x.head) || "", note: str(x.note) || "" })),
+    watch: (Array.isArray(j.watch) ? j.watch : []).slice(0, 5).map(str).filter(Boolean),
+    orientation: str(j.orientation)
+  };
+  return out.settings.length || out.summary ? out : null;
+}
+
+// The plate image for the model: the mid-size render first (512 px is plenty
+// and a few hundred tokens), the small one if that is all there is. Never a
+// photo from Auxiliaries/ - those are the designer's listing pictures.
+function pickVisionThumb(entries) {
+  const order = [/^Metadata\/plate_1\.png$/i, /^Metadata\/plate_\d+\.png$/i, /^Metadata\/plate_1_small\.png$/i, /^Metadata\/plate_\d+_small\.png$/i, /^Metadata\/thumbnail.*\.png$/i, /^Thumbnails\/.*\.png$/i];
+  for (const re of order) { const e = entries.find(x => re.test(x.name) && (x.usize || 0) <= 900 * 1024); if (e) return e; }
+  return null;
+}
+
 // ---- file brief -------------------------------------------------------------
-function readEnds(fp) {
-  const st = fs.statSync(fp);
-  if (st.size <= HEAD_BYTES + TAIL_BYTES) return { text: fs.readFileSync(fp, "utf8"), size: st.size, mtime: st.mtimeMs };
-  const fd = fs.openSync(fp, "r");
+// v2.28: async. The sync version stalled the loop for the length of two reads
+// on the share (MISTAKES.md 2026-09-14 rule: nothing synchronous touches the
+// share from a request handler).
+async function readEnds(fp) {
+  const st = await fs.promises.stat(fp);
+  if (st.size <= HEAD_BYTES + TAIL_BYTES) return { text: await fs.promises.readFile(fp, "utf8"), size: st.size, mtime: st.mtimeMs };
+  const fh = await fs.promises.open(fp, "r");
   try {
-    const h = Buffer.alloc(HEAD_BYTES); fs.readSync(fd, h, 0, HEAD_BYTES, 0);
-    const t = Buffer.alloc(TAIL_BYTES); fs.readSync(fd, t, 0, TAIL_BYTES, st.size - TAIL_BYTES);
+    const h = Buffer.alloc(HEAD_BYTES); await fh.read(h, 0, HEAD_BYTES, 0);
+    const t = Buffer.alloc(TAIL_BYTES); await fh.read(t, 0, TAIL_BYTES, st.size - TAIL_BYTES);
     return { text: h.toString("utf8") + "\n" + t.toString("utf8"), size: st.size, mtime: st.mtimeMs };
-  } finally { fs.closeSync(fd); }
+  } finally { await fh.close(); }
 }
 
 // Pure: text -> { lines[], meta }. Exported for the harness.
@@ -176,9 +292,9 @@ function estimateCost(model, usage) {
 
 function register(ctx) {
   const FILE = path.join(ctx.baseDir, "advisor.json");
-  let CACHE = [];
-  try { CACHE = JSON.parse(fs.readFileSync(FILE, "utf8")).reviews || []; } catch {}
-  const save = () => { try { fs.writeFileSync(FILE, JSON.stringify({ reviews: CACHE }, null, 2)); } catch {} };
+  let CACHE = [], MCACHE = [];   // gcode reviews; 3MF settings suggestions (v2.28)
+  try { const j = JSON.parse(fs.readFileSync(FILE, "utf8")); CACHE = j.reviews || []; MCACHE = j.models || []; } catch {}
+  const save = () => { try { fs.writeFileSync(FILE, JSON.stringify({ reviews: CACHE, models: MCACHE }, null, 2)); } catch {} };
 
   const conf = () => {
     const c = (ctx.cfg && typeof ctx.cfg.advisor === "object" && ctx.cfg.advisor) || {};
@@ -196,19 +312,21 @@ function register(ctx) {
       key_set: !!c.key, key_tail: c.key ? c.key.slice(-4) : null,
       model: c.model, models: Object.entries(MODELS).map(([id, m]) => ({ id, label: m.label, in: m.in, out: m.out })),
       reviews: CACHE.length,
+      suggestions: MCACHE.length,
       last: CACHE.length ? { at: CACHE[CACHE.length - 1].at, file: CACHE[CACHE.length - 1].file, verdict: CACHE[CACHE.length - 1].verdict } : null,
-      spent_usd: Math.round(CACHE.reduce((a, r) => a + (r.cost || 0), 0) * 100) / 100
+      spent_usd: Math.round((CACHE.reduce((a, r) => a + (r.cost || 0), 0) + MCACHE.reduce((a, r) => a + (r.cost || 0), 0)) * 100) / 100
     };
   }
 
-  async function ask(c, userText, maxTokens) {
+  // content: a string, or Messages-API content blocks (text + image).
+  async function ask(c, content, maxTokens, system) {
     const ac = new AbortController();
     const t = setTimeout(() => ac.abort(), TIMEOUT_MS);
     try {
       const r = await fetch(c.url + "/v1/messages", {
         method: "POST", signal: ac.signal,
         headers: { "content-type": "application/json", "x-api-key": c.key, "anthropic-version": API_VERSION },
-        body: JSON.stringify({ model: c.model, max_tokens: maxTokens || 700, system: SYSTEM, messages: [{ role: "user", content: userText }] })
+        body: JSON.stringify({ model: c.model, max_tokens: maxTokens || 700, system: system || SYSTEM, messages: [{ role: "user", content }] })
       });
       const body = await r.json().catch(() => ({}));
       if (!r.ok) {
@@ -219,6 +337,7 @@ function register(ctx) {
         throw new Error("Anthropic answered " + r.status + ": " + msg);
       }
       const text = Array.isArray(body.content) ? body.content.filter(x => x.type === "text").map(x => x.text).join("\n").trim() : "";
+      if (!text) throw new Error("Anthropic answered with no text (stop_reason " + (body.stop_reason || "?") + ", content " + JSON.stringify(body.content || null).slice(0, 200) + ")");
       return { text, usage: body.usage || null, model: body.model || c.model };
     } catch (e) {
       if (e && e.name === "AbortError") throw new Error("Anthropic did not answer within " + (TIMEOUT_MS / 1000) + " s");
@@ -274,14 +393,15 @@ function register(ctx) {
     if (!name) return res.status(400).json({ error: "Body needs { file }" });
     const slug = String(b.type || "u1");
     const fp = path.join(ctx.gcodeFolderFor(slug), name);
-    if (!fs.existsSync(fp)) return res.status(404).json({ error: "That file is not in the Hub library: " + name });
     const idx = Number(b.printer);
     const p = Number.isInteger(idx) ? (ctx.printers || [])[idx] : null;
     if (!p) return res.status(400).json({ error: "Pick the printer you are about to send this to" });
     if (BUSY) return res.status(409).json({ error: "A review is already running" });
     BUSY = true;
     try {
-      const ends = readEnds(fp);
+      let ends;
+      try { ends = await readEnds(fp); }
+      catch (e) { if (e && e.code === "ENOENT") return res.status(404).json({ error: "That file is not in the Hub library: " + name }); throw e; }
       const fb = briefFromText(ends.text, name);
       let fe = null;
       try { fe = ((await ctx.fleet()) || []).find(x => x.id === idx) || null; } catch {}
@@ -296,7 +416,7 @@ function register(ctx) {
       const ckey = crypto.createHash("sha1").update(keyText).digest("hex");
       const hit = !b.force && CACHE.find(r => r.key === ckey);
       if (hit) return res.json({ ...hit, cached: true, brief_chars: userText.length });
-      const r = await ask(c, userText, 700);
+      const r = await ask(c, userText, 4000);   // v2.28: room for the model to think first (see /model below)
       const rec = { key: ckey, at: Date.now(), file: name, type: slug, printer: p.name, printer_id: idx, model: r.model,
                     verdict: parseVerdict(r.text), text: r.text, usage: r.usage, cost: estimateCost(c.model, r.usage), brief: fb.meta };
       CACHE = CACHE.filter(x => x.key !== ckey); CACHE.push(rec);
@@ -311,21 +431,116 @@ function register(ctx) {
 
   // What WOULD be sent, without sending it. Settings links here so a person
   // can read the brief for any file before trusting the feature with a key.
-  ctx.app.get("/api/advisor/brief", (req, res) => {
+  ctx.app.get("/api/advisor/brief", async (req, res) => {
     const name = path.basename(String(req.query.file || ""));
     const slug = String(req.query.type || "u1");
     const fp = path.join(ctx.gcodeFolderFor(slug), name);
-    if (!name || !fs.existsSync(fp)) return res.status(404).json({ error: "file not in the library" });
+    if (!name) return res.status(404).json({ error: "file not in the library" });
     try {
-      const fb = briefFromText(readEnds(fp).text, name);
+      const fb = briefFromText((await readEnds(fp)).text, name);
       const idx = Number(req.query.printer);
       const p = Number.isInteger(idx) ? (ctx.printers || [])[idx] : null;
       const pb = p ? printerBrief(p, idx, ctx.loadout ? ctx.loadout(idx) : [], null, null) : [];
       res.type("text/plain").send(fb.lines.concat([""], pb).join("\n"));
-    } catch (e) { res.status(500).json({ error: e.message }); }
+    } catch (e) {
+      if (e && e.code === "ENOENT") return res.status(404).json({ error: "file not in the library" });
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // ---- 3MF settings suggester (v2.28) ------------------------------------------
+  // Facts are measured once per file version and kept in memory: a rescan or
+  // "Ask again" must not re-parse 16 MB of XML.
+  const FACTS = new Map();   // "<path>:<mtime>" -> { facts, info, project, plate, thumb: { data, media_type } | null }
+  async function gather(rel) {
+    const open = ctx.use("models.open");
+    if (!open) throw Object.assign(new Error("The Models module is off; turn it on to suggest settings for a 3MF"), { status: 503 });
+    return open(rel, async (z, meta) => {
+      const key = meta.path + ":" + meta.mtime;
+      if (FACTS.has(key)) return FACTS.get(key);
+      const ent = n => z.entries.find(e => e.name === n);
+      const ps = ent("Metadata/project_settings.config"), ms = ent("Metadata/model_settings.config");
+      const psBuf = ps ? await z.content(ps) : null, msBuf = ms ? await z.content(ms) : null;
+      const info = ctx.use("models.info") ? ctx.use("models.info")(psBuf, msBuf) : null;
+      const pl = platesFromModelSettings(msBuf ? msBuf.toString("utf8") : "");
+      const only = pl.plates.length > 1 && pl.plates[0].objects.length ? new Set(pl.plates[0].objects) : null;
+      let facts;
+      try { facts = await facts3mf(z, { only, names: pl.names }); }
+      catch (e) { facts = { ok: false, reason: e.message }; }
+      const te = pickVisionThumb(z.entries);
+      let thumb = null;
+      if (te) { try { thumb = { data: (await z.content(te)).toString("base64"), media_type: "image/png", name: te.name }; } catch {} }
+      const rec = { facts, info, project: psBuf ? projectLines(psBuf) : [], plate: { n: pl.plates.length ? pl.plates[0].id : 1, of: pl.plates.length || 1 }, thumb, path: meta.path, mtime: meta.mtime };
+      FACTS.set(key, rec); if (FACTS.size > 120) FACTS.delete(FACTS.keys().next().value);
+      return rec;
+    });
+  }
+  function modelLoadoutLines(idx) {
+    const p = Number.isInteger(idx) ? (ctx.printers || [])[idx] : null;
+    if (!p) return ["TARGET PRINTER: not chosen; assume a Snapmaker U1 with PLA loaded and say which settings depend on the material."];
+    return printerBrief(p, idx, ctx.loadout ? (ctx.loadout(idx) || []) : [], null, null).filter(l => !/^COLOR MAPPING/.test(l));
+  }
+
+  let MBUSY = false;
+  // POST /api/advisor/model { file (rel in the models folder), printer?, force? }
+  ctx.app.post("/api/advisor/model", async (req, res) => {
+    const c = conf();
+    if (!c.key) return res.status(409).json({ error: "Add an Anthropic API key in Settings first (Settings → AI pre-flight)." });
+    const b = req.body || {};
+    const rel = String(b.file || "");
+    if (!rel) return res.status(400).json({ error: "Body needs { file }" });
+    const idx = b.printer == null || b.printer === "" ? null : Number(b.printer);
+    if (MBUSY) return res.status(409).json({ error: "A suggestion is already running" });
+    MBUSY = true;
+    try {
+      let g;
+      try { g = await gather(rel); }
+      catch (e) { return res.status(e.status || (e && e.code === "ENOENT" ? 404 : 422)).json({ error: e.status ? e.message : "Could not read that 3MF: " + e.message }); }
+      const name = rel.split("/").pop();
+      const lines = modelBriefLines(name, g.facts, g.info, g.project, g.plate);
+      const pb = modelLoadoutLines(idx);
+      const text = lines.concat([""], pb, ["", "Return the JSON object now."]).join("\n");
+      const keyText = lines.join("\n") + "\n" + pb.filter(l => !/^  bed now|^TARGET PRINTER/.test(l)).join("\n") + "\n" + c.model + (g.thumb ? "\n" + g.thumb.name : "");
+      const ckey = crypto.createHash("sha1").update(keyText).digest("hex");
+      const hit = !b.force && MCACHE.find(r => r.key === ckey);
+      if (hit) return res.json({ ...hit, cached: true, facts: g.facts, thumb: !!g.thumb });
+      const content = [];
+      if (g.thumb) content.push({ type: "image", source: { type: "base64", media_type: g.thumb.media_type, data: g.thumb.data } });
+      content.push({ type: "text", text: (g.thumb ? "Above: the plate render saved in the file.\n" : "(The file carries no plate render; go by the numbers.)\n") + text });
+      // 8000, not the ~700 the answer needs: Sonnet 5 thinks before it answers
+      // when the brief is long, and thinking tokens count against max_tokens.
+      // At 1600 the first live call came back as one empty thinking block and
+      // stop_reason max_tokens (2026-09-22, the donut keyring).
+      const r = await ask(c, content, 8000, MODEL_SYSTEM);
+      const sug = parseSuggestion(r.text);
+      if (!sug) return res.status(502).json({ error: "The model did not answer with a settings sheet; try again", raw: r.text.slice(0, 400) });
+      const p = Number.isInteger(idx) ? (ctx.printers || [])[idx] : null;
+      const rec = { key: ckey, at: Date.now(), file: rel, printer: p ? p.name : null, printer_id: p ? idx : null, model: r.model,
+                    suggestion: sug, usage: r.usage, cost: estimateCost(c.model, r.usage) };
+      MCACHE = MCACHE.filter(x => x.key !== ckey); MCACHE.push(rec);
+      if (MCACHE.length > CACHE_MAX) MCACHE.splice(0, MCACHE.length - CACHE_MAX);
+      save();
+      ctx.hublog("info", "advisor: settings for " + rel + (p ? " on " + p.name : "") + (rec.cost != null ? " ($" + rec.cost.toFixed(4) + ")" : ""));
+      res.json({ ...rec, cached: false, facts: g.facts, thumb: !!g.thumb });
+    } catch (e) {
+      res.status(502).json({ error: String((e && e.message) || e) });
+    } finally { MBUSY = false; }
+  });
+
+  // What would be sent for a 3MF (text half; the image is noted, not dumped).
+  ctx.app.get("/api/advisor/model/brief", async (req, res) => {
+    const rel = String(req.query.file || "");
+    if (!rel) return res.status(404).json({ error: "file not in the models folder" });
+    try {
+      const g = await gather(rel);
+      const idx = req.query.printer == null || req.query.printer === "" ? null : Number(req.query.printer);
+      const lines = modelBriefLines(rel.split("/").pop(), g.facts, g.info, g.project, g.plate);
+      res.type("text/plain").send((g.thumb ? "[image: " + g.thumb.name + " is sent alongside this text]\n\n" : "[no plate render in the file]\n\n") + lines.concat([""], modelLoadoutLines(idx)).join("\n"));
+    } catch (e) { res.status(e.status || (e && e.code === "ENOENT" ? 404 : 422)).json({ error: e.message }); }
   });
 
   ctx.provide("advisor.state", () => view());
 }
 
-module.exports = { register, briefFromText, printerBrief, parseVerdict, estimateCost, MODELS, MODEL_DEFAULT, SETTING_KEYS, SYSTEM };
+module.exports = { register, briefFromText, printerBrief, parseVerdict, estimateCost, MODELS, MODEL_DEFAULT, SETTING_KEYS, SYSTEM,
+                   modelBriefLines, projectLines, parseSuggestion, pickVisionThumb, MODEL_SYSTEM, PROJECT_KEYS };

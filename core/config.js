@@ -97,7 +97,7 @@ function saveConfigFile() {
 // fork). Default is everything ON: an untouched config behaves exactly like
 // 2.10. U1HUB_PROFILE=lite (the Lite binary's baked-in default) flips the
 // Lite set off unless config.json explicitly says otherwise.
-const MODULE_DEFAULTS = { power: true, camera: true, spools: true, match: true, mixer: true, "types-beta": true, dispatch: true, slicing: false, resources: true, updates: true, klipper: true, spoolman: true, notify: true, advisor: true, models: true };
+const MODULE_DEFAULTS = { power: true, camera: true, spools: true, match: true, mixer: true, "types-beta": true, dispatch: true, slicing: false, resources: true, updates: true, klipper: true, spoolman: true, notify: true, advisor: true, models: true, margin: true };
 
 // resources (v2.16) needs dispatch for the schedule; with dispatch off it mounts
 // but every endpoint answers "nothing is scheduled" rather than erroring. It
@@ -105,7 +105,7 @@ const MODULE_DEFAULTS = { power: true, camera: true, spools: true, match: true, 
 // which is why it stays on in Lite, where spools is off.
 // slicing ships OFF in 2.12: the engine is built and harness-green, but the CLI
 // path has no live hardware gate yet (Rule #1). Code stays; the tab does not.
-const LITE_OFF = ["spools", "match", "mixer", "types-beta", "slicing", "spoolman", "models"];  // Lite = core + camera + power + dispatch
+const LITE_OFF = ["spools", "match", "mixer", "types-beta", "slicing", "spoolman", "models", "margin"];  // Lite = core + camera + power + dispatch
 
 hub.FEATURES = { ...MODULE_DEFAULTS };
 

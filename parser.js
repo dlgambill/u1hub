@@ -321,5 +321,20 @@ function parseGcodeMap(text, opts = {}) {
   };
 }
 
+// "1d 2h 3m 4s" (the slicer's estimate line, or just its value) -> minutes.
+// Lived in core/modules.js as parseEstMinutes until v2.28; the margin module
+// needs the same reading of the same string, so it belongs with the parser.
+function estMinutes(s) {
+  if (s == null) return null;
+  const str = String(s);
+  const m = /estimated printing time[^=]*=\s*([^\n;]+)/i.exec(str);
+  const v = m ? m[1] : str;
+  let mins = 0, hit = false;
+  const take = (re, mult) => { const x = re.exec(v); if (x) { mins += (+x[1]) * mult; hit = true; } };
+  take(/(\d+)\s*d/, 1440); take(/(\d+)\s*h/, 60); take(/(\d+)\s*m/, 1);
+  const ss = /(\d+)\s*s/.exec(v); if (ss) { mins += Math.ceil((+ss[1]) / 60); hit = true; }
+  return hit ? mins : null;
+}
+
 module.exports = { parseGcodeMap, decodeMixedDefs, decodeMixedDefEntry, blendHex,
-                   parseAmounts, parseConfig, gramsFromLength, normHex, splitAligned };
+                   parseAmounts, parseConfig, gramsFromLength, normHex, splitAligned, estMinutes };

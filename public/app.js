@@ -26,6 +26,14 @@ function lazyImg(cls, url){
 }
 function armLazy(root){ if(THUMB_IO && root) root.querySelectorAll("img[data-src]").forEach(i => THUMB_IO.observe(i)); }
 let FILES = [], SELECTED = null, MAP = null, FLEET = [], MAPSEL = {};
+// v2.28: client modules (advisor-ui, margin-ui) read the selected file, its
+// map, the fleet and the chosen mapping as window.SELECTED etc. A top-level
+// `let` is NOT a window property, so those reads were undefined and the
+// 2.25 job-card pre-flight button silently did nothing (MISTAKES.md
+// 2026-09-22). Read-only getters over the live bindings; nothing else changes.
+Object.defineProperties(window, {
+  SELECTED: { get: () => SELECTED }, MAP: { get: () => MAP }, FLEET: { get: () => FLEET }, MAPSEL: { get: () => MAPSEL }, FILES: { get: () => FILES }
+});
 let ONBOARD = [], ACT = null; // onboard = /api/printer-files cache; ACT = open per-printer action strip {name,pid}
 let SRCSEL = { hub:true, p:{} }; // source-filter checkboxes; p[pid]=false hides that printer (default: everything on)
 let QUEUE = [], QOPEN = true;   // shared "up next" list (state lives in JS, not DOM)

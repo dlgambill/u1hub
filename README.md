@@ -12,8 +12,8 @@ you run out.
 
 Nothing gets installed on the printers. The Hub talks to the software they
 already run, and nothing leaves your network unless you turn remote access on,
-ask for a phone notification, or press the AI pre-flight button with your own
-key in place.
+ask for a phone notification, or press one of the two AI buttons with your
+own key in place.
 
 ---
 
@@ -71,12 +71,23 @@ Hub reads Spoolman and never writes to it.
 ![Spools: every roll you own, where it is, and what is left on it](docs/spools-inventory.png)
 
 **A second pair of eyes before you print.** With your own Anthropic API key
-in Settings, an AI pre-flight button on the job card has Claude read the
-slicer settings baked into the file and compare them with what is loaded in
-the printer you picked: wrong material or temperature for a head, an empty
-head a color needs, a missing prime tower. GO, CHECK or STOP, and why. Nothing
-is sent until you press the button, never the gcode itself, and a review costs
-about a cent.
+in Settings, two buttons light up. On a Models card, ✦ Settings has Claude
+look at the plate render inside the 3MF, numbers the Hub measures from the
+meshes (size, overhangs, floating undersides, bed contact, painted faces,
+volume) and the designer's own profile, then suggest the slicer settings for
+the printer you pick - a table you set in Orca before slicing. On the job
+card, AI pre-flight reads the settings baked into an already-sliced file and
+compares them with what is loaded in the printer: wrong material or
+temperature for a head, an empty head a color needs, a missing prime tower.
+GO, CHECK or STOP, and why. Nothing is sent until you press a button, never
+the gcode or the meshes themselves; a review costs about a cent, a settings
+suggestion a few.
+
+**Worth printing?** Under the selected file, one line says what its filament
+costs, the least it has to sell for (per piece when the file name carries
+the plate count, like `Penguin x20.gcode`) and what that is per printer
+hour, from two rates you set in Settings. The number to look at before you
+queue a plate.
 
 **Let your phone tell you.** Settings can send push notifications through
 [ntfy](https://ntfy.sh) (free, no account) when a print finishes, a printer

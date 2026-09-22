@@ -1045,9 +1045,19 @@ async function stopHub() {
       ok(d.status === 200, "…and deletes it once the job is gone", d.body);
       const mp = path.join(gcodeDir, "multi.gcode"), hidden = mp + ".hidden";
       fs.renameSync(mp, hidden);                      // gone behind the Hub's back (a share, an Explorer window)
-      await jget("/api/files?type=u1");               // folder mtime changed -> the snapshot re-walks on this request
-      d = await jget("/api/dispatch");
-      let jj = (d.body.jobs || []).find(x => x.file === "multi.gcode" && x.state !== "done");
+      // The delete two lines up changed the folder's mtime too, so a walk can
+      // already be in flight when the rename lands; that walk is coalesced
+      // and answers with the pre-rename membership once (the same race the
+      // "back" side below allows for; it bit here on 2026-09-22, 794/1).
+      // Wait for the observable state: the library list without the file.
+      let jj = null;
+      for (let i = 0; i < 6; i++) {
+        const fl = await jget("/api/files?type=u1");   // folder mtime changed -> the snapshot re-walks
+        d = await jget("/api/dispatch");
+        jj = (d.body.jobs || []).find(x => x.file === "multi.gcode" && x.state !== "done");
+        if (jj && jj.file_missing && !(fl.body.files || []).some(f => f.name === "multi.gcode")) break;
+        await sleep(400);
+      }
       ok(jj && jj.file_missing === true, "the job list flags a job whose file has left the library", jj && jj.file_missing);
       d = await jpost("/api/dispatch/clear-bed", { printer: 0 });
       ok(d.status === 200 && d.body.next && d.body.next.in_library === false,
@@ -3483,6 +3493,208 @@ async function stopHub() {
     ok(fs.existsSync(path.join(hubDir, "models-index.json")) && JSON.parse(fs.readFileSync(path.join(hubDir, "models-index.json"), "utf8")).items.length === 4, "the index is kept on disk for the next boot");
     r = await jpost("/api/models/settings", { folder: "", clear: true });
     ok(r.status === 200 && r.body.folder !== mroot, "clear:true is the way to reset it", r.body && r.body.folder);
+  }
+
+  console.log("\n== SUG: the 3MF settings suggester (v2.28) ==");
+  {
+    // Danny (2026-09-22): the 2.25 pre-flight "doesn't exactly match the
+    // shape I wanted - I want it to evaluate a 3MF and suggest the best
+    // slicer settings for it, part of the Models cards." Three layers here:
+    // the pure mesh measurements, the brief they become, and the route that
+    // sends brief + plate render to a mock Anthropic and returns JSON.
+    const mesh = require(path.join(REPO, "modules", "mesh3mf.js"));
+    const amod = require(path.join(REPO, "modules", "advisor.js"));
+    const I = [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0];
+    // A 10 mm cube with outward (CCW) winding, as the 3MF spec requires.
+    const CUBE_V = [[0, 0, 0], [10, 0, 0], [10, 10, 0], [0, 10, 0], [0, 0, 10], [10, 0, 10], [10, 10, 10], [0, 10, 10]];
+    const CUBE_T = [[0, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7], [0, 1, 5], [0, 5, 4], [1, 2, 6], [1, 6, 5], [2, 3, 7], [2, 7, 6], [3, 0, 4], [3, 4, 7]];
+    const cubeMesh = () => ({ verts: Float64Array.from(CUBE_V.flat()), tris: Uint32Array.from(CUBE_T.flat()), paint: new Map(), painted: 0 });
+    {
+      const c = await mesh.measure(cubeMesh(), I);
+      ok(Math.abs(c.area - 600) < 1e-6 && Math.abs(c.volume - 1000) < 1e-6, "measure: a 10 mm cube has 600 mm2 of surface and 1000 mm3 of volume", { area: c.area, volume: c.volume });
+      ok(c.flatBed === 100 && c.flat === 0 && c.steep === 0 && c.mild === 0 && c.upFlat === 100, "measure: its underside is bed contact, its top faces up, nothing overhangs", c);
+      const up = await mesh.measure(cubeMesh(), [1, 0, 0, 0, 1, 0, 0, 0, 1, 30, 0, 20]);
+      ok(up.minx === 30 && up.minz === 20 && up.maxz === 30, "measure: a build-item transform moves the mesh (row-major 3x4, translation last)", { minx: up.minx, minz: up.minz });
+      // A 45-degree wedge whose underside slopes: that face is a steep overhang.
+      const w = [[0, 0, 10], [10, 0, 10], [10, 0, 0], [0, 10, 10], [10, 10, 10], [10, 10, 0]];
+      const wt = [[0, 2, 1], [3, 4, 5], [0, 1, 4], [0, 4, 3], [1, 2, 5], [1, 5, 4], [0, 3, 5], [0, 5, 2]];
+      const s = await mesh.measure({ verts: Float64Array.from(w.flat()), tris: Uint32Array.from(wt.flat()), paint: new Map(), painted: 0 }, I);
+      ok(Math.abs(s.steep - 141.4) < 0.1 && s.flatBed === 0 && s.upFlat === 100, "measure: a 45-degree underside counts as steep overhang (more than 30 degrees past vertical)", { steep: s.steep, bed: s.flatBed });
+      const M = mesh.compose([1, 0, 0, 0, 1, 0, 0, 0, 1, 100, 0, 0], [2, 0, 0, 0, 2, 0, 0, 0, 2, 5, 0, 0]);
+      ok(M[0] === 2 && M[9] === 105, "compose: child scale then parent translation (5*1 + 100)", M);
+      ok(mesh.parseTransform("1 0 0 0 1 0 0 0 1 1 2 3")[11] === 3 && mesh.parseTransform("bad") === null, "parseTransform: twelve numbers or null");
+    }
+    // A Bambu/Orca-style project: the root holds components pointing at
+    // 3D/Objects/*.model by p:path, two placements of one cube (one floating
+    // 20 mm up), the second one's faces painted; plus the plate/name config.
+    const rootXml = '<?xml version="1.0"?><model><metadata name="Title">Test Cubes</metadata><metadata name="Designer">Harness</metadata><metadata name="ProfileTitle">0.2mm, 2 walls</metadata><metadata name="Description">long html</metadata><resources>' +
+      '<object id="2" type="model"><components><component p:path="/3D/Objects/o.model" objectid="1" transform="1 0 0 0 1 0 0 0 1 0 0 0"/></components></object>' +
+      '<object id="3" type="model"><components><component p:path="/3D/Objects/o.model" objectid="1" transform="1 0 0 0 1 0 0 0 1 0 0 20"/></components></object>' +
+      '<object id="4" type="model"><components><component p:path="/3D/Objects/o.model" objectid="1" transform="1 0 0 0 1 0 0 0 1 0 0 0"/></components></object>' +
+      '</resources><build><item objectid="2" transform="1 0 0 0 1 0 0 0 1 100 100 0"/><item objectid="3" transform="1 0 0 0 1 0 0 0 1 130 100 0"/><item objectid="4" transform="1 0 0 0 1 0 0 0 1 200 200 0"/></build></model>';
+    const objXml = '<?xml version="1.0"?><model><resources><object id="1" type="model"><mesh><vertices>' + CUBE_V.map(p => '<vertex x="' + p[0] + '" y="' + p[1] + '" z="' + p[2] + '"/>').join("") +
+      "</vertices><triangles>" + CUBE_T.map((t, i) => '<triangle v1="' + t[0] + '" v2="' + t[1] + '" v3="' + t[2] + '"' + (i < 4 ? ' paint_color="4"' : i < 6 ? ' paint_color="8"' : "") + "/>").join("") + "</triangles></mesh></object></resources><build/></model>";
+    const msXml = '<?xml version="1.0"?><config><object id="2"><metadata key="name" value="cube A"/><metadata key="extruder" value="1"/></object><object id="3"><metadata key="name" value="cube B (floating)"/><metadata key="extruder" value="2"/></object><object id="4"><metadata key="name" value="cube C"/><metadata key="extruder" value="1"/></object>' +
+      '<plate><metadata key="plater_id" value="1"/><model_instance><metadata key="object_id" value="2"/></model_instance><model_instance><metadata key="object_id" value="3"/></model_instance></plate>' +
+      '<plate><metadata key="plater_id" value="2"/><model_instance><metadata key="object_id" value="4"/></model_instance></plate></config>';
+    const psJson = JSON.stringify({ printer_model: "Bambu Lab A1", layer_height: "0.2", wall_loops: "2", sparse_infill_density: "15%", enable_support: "0", brim_type: "auto_brim", nozzle_temperature: ["220", "220"], filament_colour: ["#FF0000", "#00FF00"], filament_type: ["PLA", "PLA"], some_other_key: "ignored" });
+    const PNG1 = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64");
+    const files = [
+      { name: "3D/3dmodel.model", data: Buffer.from(rootXml) }, { name: "3D/Objects/o.model", data: Buffer.from(objXml) },
+      { name: "Metadata/model_settings.config", data: Buffer.from(msXml) }, { name: "Metadata/project_settings.config", data: Buffer.from(psJson) },
+      { name: "Metadata/plate_1.png", data: PNG1 }, { name: "Metadata/plate_1_small.png", data: PNG1 }, { name: "Auxiliaries/Model Pictures/photo.png", data: PNG1 }
+    ];
+    {
+      const { zipRead, zipEntryContent } = require(path.join(REPO, "modules", "slicing.js"));
+      const entries = zipRead(buildZip(files));
+      const z = { entries, content: async e => zipEntryContent(e) };
+      const pl = mesh.platesFromModelSettings(msXml);
+      ok(pl.plates.length === 2 && pl.plates[0].objects.join(",") === "2,3" && pl.names.get("3") === "cube B (floating)", "platesFromModelSettings: which objects sit on which plate, and their names", pl);
+      const f = await mesh.facts3mf(z, { only: new Set(pl.plates[0].objects), names: pl.names });
+      ok(f.ok && f.instances === 2 && f.meshes === 1 && f.triangles === 24, "facts3mf: plate 1 has two placements of one mesh (the p:path component chain resolves)", f);
+      ok(f.size_mm.join("x") === "40x10x30" && f.height_mm === 30 && f.volume_cm3 === 2, "facts3mf: footprint spans both cubes, height reaches the floating one, volume is two cubes", f.size_mm);
+      ok(f.overhang.bed_contact_cm2 === 1 && f.overhang.floating_instances === 1 && f.overhang.flat_unsupported_pct === 8.3, "facts3mf: one cube touches the bed, the other floats and its whole underside is unsupported (100 of 1200 mm2)", f.overhang);
+      ok(f.paint.colors === 2 && f.paint.painted_tris === 12 && f.paint.painted_pct === 50, "facts3mf: painted faces are counted per placement, two paint colors", f.paint);
+      ok(f.parts.length === 1 && f.parts[0].copies === 2 && f.parts[0].name === "cube A", "facts3mf: parts group by mesh with a copy count and the first placement's name", f.parts);
+      ok(f.metadata.Title === "Test Cubes" && f.metadata.ProfileTitle === "0.2mm, 2 walls" && !("Description" in f.metadata), "facts3mf: title and profile ride along, the designer's HTML listing does not", f.metadata);
+      const all = await mesh.facts3mf(z, {});
+      ok(all.instances === 3 && all.size_mm[0] === 110, "facts3mf: without a plate filter every build item is measured", all.size_mm);
+      const cap = await mesh.facts3mf(z, { maxBytes: 10 });
+      ok(cap.ok === false && /size budget|3dmodel/.test(cap.reason), "facts3mf: past the byte budget it says so instead of eating memory", cap);
+      const lines = amod.modelBriefLines("t.3mf", f, { colors: ["#FF0000", "#00FF00"], objects: [{ name: "cube A", extruder: 1 }] }, amod.projectLines(Buffer.from(psJson)), { n: 1, of: 2 });
+      const s = lines.join("\n");
+      ok(/^FILE: t\.3mf/.test(s) && /PLATE: 1 of 2/.test(s) && /GEOMETRY .*40 x 10, tallest point 30/.test(s), "brief: file, plate-of, measured geometry", s.split("\n").slice(0, 3));
+      ok(/OVERHANGS: 0% of the surface faces down steeper/.test(s) && /1 part sits above the plate/.test(s) && /bed contact 1 cm2/.test(s), "brief: overhang, floating and bed-contact sentences", s.split("\n").find(l => /^OVERHANGS/.test(l)));
+      ok(/PAINT: faces are painted with 2 colors/.test(s) && /FILAMENTS DEFINED .*1: #FF0000, 2: #00FF00/.test(s), "brief: paint and the project's filament slots");
+      ok(/  layer_height = 0\.2/.test(s) && /  nozzle_temperature = 220;220/.test(s) && !/some_other_key/.test(s), "brief: whitelisted designer settings, arrays joined, the rest left out");
+      ok(amod.pickVisionThumb(entries).name === "Metadata/plate_1.png", "vision thumb: the mid-size plate render, never the designer's photos");
+      const sug = amod.parseSuggestion('Sure:\n```json\n{"summary":"s","settings":[{"key":"layer_height","value":"0.12 mm","from":"0.2 mm","why":"w"},{"key":"enable_support","label":"Supports","value":"1"}],"heads":[{"color":"#FF0000","head":"T2"}],"watch":["a","b"],"orientation":null}\n```');
+      ok(sug && sug.settings.length === 2 && sug.settings[0].label === "layer_height" && sug.settings[1].from === null && sug.heads[0].head === "T2" && sug.watch.length === 2 && sug.orientation === null, "parseSuggestion: JSON out of a fenced reply, labels defaulting to keys, nulls kept", sug);
+      ok(amod.parseSuggestion("I cannot help with that.") === null && amod.parseSuggestion('{"x":1}') === null, "parseSuggestion: no sheet, no result");
+      ok(amod.MODEL_SYSTEM.length < 4000 && /ONE JSON object/.test(amod.MODEL_SYSTEM) && /Snapmaker U1/.test(amod.MODEL_SYSTEM), "the suggester's system prompt asks for one JSON object and sets the U1 context");
+    }
+
+    // The route, against a mock Messages endpoint that understands content blocks.
+    const calls = [];
+    let reply = { status: 200, text: '{"summary":"Two small cubes; the floating one needs support.","settings":[{"key":"enable_support","label":"Supports","value":"1","from":"0","why":"one part floats 20 mm above the plate"},{"key":"layer_height","label":"Layer height","value":"0.2 mm","from":null,"why":"fine for cubes"}],"heads":[],"watch":["cube B has nothing under it"],"orientation":null}' };
+    const anth = http.createServer((rq, rs) => {
+      let body = "";
+      rq.on("data", c => body += c);
+      rq.on("end", () => {
+        let j = null; try { j = JSON.parse(body); } catch {}
+        calls.push({ url: rq.url, key: rq.headers["x-api-key"] || null, body: j });
+        rs.writeHead(reply.status, { "Content-Type": "application/json" });
+        if (reply.status !== 200) return rs.end(JSON.stringify({ error: { type: "api_error", message: "boom" } }));
+        if (reply.thinkingOnly) return rs.end(JSON.stringify({ id: "msg_t", model: j && j.model, stop_reason: "max_tokens", content: [{ type: "thinking", thinking: "", signature: "x" }], usage: { input_tokens: 2000, output_tokens: 1600 } }));
+        rs.end(JSON.stringify({ id: "msg_2", model: j && j.model, stop_reason: "end_turn", content: [{ type: "text", text: reply.text }], usage: { input_tokens: 2100, output_tokens: 400 } }));
+      });
+    });
+    await new Promise(r => anth.listen(45995, "127.0.0.1", r));
+    const KEY = "sk-ant-api03-" + "y".repeat(40);
+    const mroot = path.join(tmp, "models");
+    const relA = "Harness/Test Cubes/cubes.3mf";
+    fs.mkdirSync(path.dirname(path.join(mroot, relA)), { recursive: true });
+    fs.writeFileSync(path.join(mroot, relA), buildZip(files));
+    let r = await jpost("/api/models/settings", { folder: mroot });
+    ok(r.status === 200 && r.body.folder_found === true, "models folder set for the suggester checks");
+    r = await jpost("/api/advisor/model", { file: relA, printer: 0 });
+    ok(r.status === 409 && /API key/.test(r.body.error), "no key: the suggester is refused with a pointer to Settings", r.body);
+    await jpost("/api/advisor/settings", { key: KEY, model: "claude-sonnet-5", url: "http://127.0.0.1:45995" });
+    r = await jpost("/api/advisor/model", { file: "../config.json", printer: 0 });
+    ok(r.status === 404, "a path outside the models folder is refused", r.status);
+    r = await jpost("/api/advisor/model", { file: "Harness/Test Cubes/missing.3mf", printer: 0 });
+    ok(r.status === 404, "a file that is not there is 404, not a crash", r.status);
+    ok(calls.length === 0, "…and none of that sent anything");
+    const U1ID = (((await jget("/api/fleet")).body || []).find(p => String(p.url || "").endsWith(":" + portU1)) || {}).id;
+    await jpost("/api/slots/assign", { printer: U1ID, slot: 0, spool_id: "spoolman_1" });
+    r = await jpost("/api/advisor/model", { file: relA, printer: U1ID });
+    ok(r.status === 200 && r.body.cached === false && r.body.suggestion && r.body.suggestion.settings.length === 2 && r.body.suggestion.settings[0].key === "enable_support", "a suggestion comes back as a settings sheet", r.body && (r.body.error || r.body.suggestion));
+    ok(r.body.facts && r.body.facts.ok && r.body.facts.instances === 2 && r.body.thumb === true, "…with the measured facts and a note that the plate render went along", r.body && r.body.facts);
+    ok(r.body.cost === 0.0082 && r.body.usage.input_tokens === 2100, "…and the estimated cost (2100 in + 400 out on Sonnet 5)", r.body && r.body.cost);
+    ok(calls.length === 1 && calls[0].url === "/v1/messages" && calls[0].key === KEY, "one POST to /v1/messages with the key", calls.length);
+    const content = calls[0].body.messages[0].content;
+    ok(Array.isArray(content) && content[0].type === "image" && content[0].source.media_type === "image/png" && content[0].source.data === PNG1.toString("base64"), "the plate render is the first content block, base64 PNG", content && content[0] && content[0].type);
+    const sent = content[1].text;
+    ok(/GEOMETRY \(measured/.test(sent) && /1 part sits above the plate/.test(sent) && /DESIGNER'S PROJECT SETTINGS/.test(sent) && /layer_height = 0\.2/.test(sent), "the text block carries the measured geometry and the designer's settings", sent.slice(0, 400));
+    ok(/LOADED IN ITS HEADS/.test(sent) && /T1: Prusament PLA Galaxy Black/.test(sent) && /T2: empty/.test(sent), "…and the chosen printer's loadout", sent.split("LOADED IN ITS HEADS")[1]);
+    ok(!/<vertex|<triangle/.test(sent) && sent.length < 6000, "…never the mesh itself", sent.length);
+    ok(/ONE JSON object/.test(calls[0].body.system) && calls[0].body.max_tokens >= 4000, "the suggester's own system prompt, with room for the model to think before it answers", calls[0].body.max_tokens);
+    r = await jpost("/api/advisor/model", { file: relA, printer: U1ID });
+    ok(r.status === 200 && r.body.cached === true && calls.length === 1, "same file, same loadout: answered from the cache", { cached: r.body.cached, calls: calls.length });
+    r = await jpost("/api/advisor/model", { file: relA, printer: U1ID, force: true });
+    ok(r.status === 200 && r.body.cached === false && calls.length === 2, "force asks again", calls.length);
+    r = await jpost("/api/advisor/model", { file: relA, printer: "" });
+    ok(r.status === 200 && calls.length === 3 && /TARGET PRINTER: not chosen/.test(calls[2].body.messages[0].content[1].text), "no printer picked: the brief says so and asks for material-dependent settings to be flagged", calls.length);
+    ok(JSON.parse(fs.readFileSync(path.join(hubDir, "advisor.json"), "utf8")).models.length >= 2, "suggestions persist in advisor.json beside the gcode reviews");
+    r = await jget("/api/advisor");
+    ok(r.body.suggestions >= 2 && r.body.spent_usd >= 0.02, "GET /api/advisor counts suggestions in the spend", r.body);
+    // The failure the first live call hit (2026-09-22): the model spent the
+    // whole budget thinking and answered with no text. That is an error with
+    // the reason in it, not an empty sheet.
+    reply.thinkingOnly = true;
+    r = await jpost("/api/advisor/model", { file: relA, printer: U1ID, force: true });
+    ok(r.status === 502 && /no text/.test(r.body.error) && /max_tokens/.test(r.body.error), "an answer with no text block is a 502 naming the stop reason", r.body);
+    reply.thinkingOnly = false;
+    reply.text = "I would rather not.";
+    r = await jpost("/api/advisor/model", { file: relA, printer: U1ID, force: true });
+    ok(r.status === 502 && /settings sheet/.test(r.body.error), "prose instead of JSON is a 502 with the raw answer for the log", r.body);
+    reply.status = 500;
+    r = await jpost("/api/advisor/model", { file: relA, printer: U1ID, force: true });
+    ok(r.status === 502 && /answered 500/.test(r.body.error), "an API error is relayed as a sentence", r.body);
+    reply.status = 200;
+    const bt = await fetch(HUB + "/api/advisor/model/brief?file=" + encodeURIComponent(relA) + "&printer=" + U1ID);
+    const btxt = await bt.text();
+    ok(bt.status === 200 && /\[image: Metadata\/plate_1\.png/.test(btxt) && /GEOMETRY/.test(btxt) && /LOADED IN ITS HEADS/.test(btxt) && calls.length === 6, "the brief preview shows what would be sent, without sending it", bt.status);
+    await jpost("/api/slots/clear", { spool_id: "spoolman_1" });
+    await jpost("/api/advisor/settings", { key: "" });
+    await jpost("/api/models/settings", { folder: "", clear: true });
+    if (anth.closeAllConnections) anth.closeAllConnections();
+    await new Promise(r2 => anth.close(r2));
+
+    // The client side, and the bug that hid the 2.25 button.
+    const mui = fs.readFileSync(path.join(REPO, "public", "modules", "models-ui.js"), "utf8");
+    ok(/data-suggest=/.test(mui) && /id="mdl-adv"/.test(mui) && /\/api\/advisor\/model/.test(mui), "the Models card has a ✦ Settings button and the panel that calls the suggester");
+    ok(/HUB_FEATURES\.advisor === false \? ""/.test(mui), "…which is left off when the advisor module is off");
+    const appSrc = fs.readFileSync(path.join(REPO, "public", "app.js"), "utf8");
+    ok(/Object\.defineProperties\(window,\s*\{\s*SELECTED: \{ get/.test(appSrc) && /FLEET: \{ get/.test(appSrc) && /MAPSEL: \{ get/.test(appSrc),
+      "app.js exposes SELECTED, MAP, FLEET and MAPSEL on window (a top-level let is not a window property; the 2.25 job-card button read undefined and did nothing)");
+    const aui = fs.readFileSync(path.join(REPO, "public", "modules", "advisor-ui.js"), "utf8");
+    ok(/Models/.test(aui) && /✦ Settings/.test(aui), "the Settings block explains both buttons");
+  }
+
+  console.log("\n== MGN: worth printing? (v2.28) ==");
+  {
+    // Danny's rule: filament under $0.02/g, sell for at least $0.12/g, and
+    // watch the hours. No price to type: grams and time come from the file,
+    // the plate count from its name.
+    const mg = require(path.join(REPO, "modules", "margin.js"));
+    const q = mg.qtyFromName;
+    ok(q("GuineaPigs x24.gcode") === 24 && q("Baby Elephant x20.gcode") === 20 && q("baby-elephant-x1.gcode") === 1, "quantity: 'x24' at a word boundary", [q("GuineaPigs x24.gcode"), q("baby-elephant-x1.gcode")]);
+    ok(q("24x penguin.gcode") === 24 && q("Dragon (x6).gcode") === 6 && q("Cat_x12_0.2mm.gcode") === 12 && q("Pocket Pals X 4.gcode") === 4, "quantity: '24x', '(x6)', '_x12_', 'X 4' all read", [q("24x penguin.gcode"), q("Dragon (x6).gcode"), q("Cat_x12_0.2mm.gcode"), q("Pocket Pals X 4.gcode")]);
+    ok(q("box20.gcode") === null && q("Onyx 3.gcode") === null && q("test cube.gcode") === null, "quantity: 'box20' and 'Onyx 3' are not counts", [q("box20.gcode"), q("Onyx 3.gcode")]);
+    const a = mg.quote({ grams: 75.4, minutes: 1380, name: "GuineaPigs x24.gcode" });
+    ok(a.cost === 1.51 && a.min_plate === 9.05 && a.min_unit === 0.38 && a.per_hour === 0.39 && a.hours === 23 && a.qty === 24, "quote: 75.4 g x24 over 23 h at the defaults = $1.51 to print, $0.38 each, $0.39 per printer hour", a);
+    const b = mg.quote({ grams: 10, minutes: null, name: "thing.gcode", sell_per_g: 0.2, cost_per_g: 0.03 });
+    ok(b.cost === 0.3 && b.min_plate === 2 && b.min_unit === null && b.per_hour === null, "quote: no count and no time leave those two blank, custom rates apply", b);
+    ok(mg.quote({ grams: null, minutes: 100, name: "x" }).cost === null, "quote: no grams, no numbers");
+    const { estMinutes } = require(path.join(REPO, "parser.js"));
+    ok(estMinutes("1d 2h 3m") === 1563 && estMinutes("; estimated printing time (normal mode) = 23h 59m 30s") === 1440 && estMinutes("nope") === null, "estMinutes: the slicer's time string, whole line or bare value", [estMinutes("1d 2h 3m"), estMinutes("nope")]);
+
+    let r = await jget("/api/margin");
+    ok(r.status === 200 && r.body.sell_per_g === 0.12 && r.body.cost_per_g === 0.02, "GET /api/margin: Danny's rates are the defaults", r.body);
+    r = await jpost("/api/margin/settings", { sell_per_g: "abc" });
+    ok(r.status === 400, "a rate that is not a number is refused", r.status);
+    r = await jpost("/api/margin/settings", { sell_per_g: 0.15, cost_per_g: 0.025 });
+    ok(r.status === 200 && r.body.sell_per_g === 0.15 && JSON.parse(fs.readFileSync(path.join(hubDir, "config.json"), "utf8")).margin.cost_per_g === 0.025, "rates save to config.json", r.body);
+    r = await jget("/api/margin/quote?grams=100&est=" + encodeURIComponent("2h 30m") + "&name=" + encodeURIComponent("Frog x10.gcode"));
+    ok(r.status === 200 && r.body.cost === 2.5 && r.body.min_unit === 1.5 && r.body.per_hour === 6 && r.body.hours === 2.5, "quote route: grams + the slicer's time string + name -> the three numbers at the saved rates", r.body);
+    r = await jget("/api/margin/quote?grams=100&est=150&name=Frog.gcode");
+    ok(r.body.hours === 2.5 && r.body.min_unit === null, "…minutes as a bare number work too; no count, no per-unit", r.body);
+    r = await jpost("/api/margin/settings", { sell_per_g: "", cost_per_g: "" });
+    ok(r.status === 200 && r.body.sell_per_g === 0.12, "blank rates go back to the defaults", r.body);
+    ok(/\/modules\/margin-ui\.js/.test(await (await fetch(HUB + "/")).text()), "margin client script injected when on");
+    const mui = fs.readFileSync(path.join(REPO, "public", "modules", "margin-ui.js"), "utf8");
+    ok(/id = "mgline"/.test(mui) && /jmeta/.test(mui) && /setMargin/.test(mui) && /\/api\/margin\/quote/.test(mui), "the client draws one line under the job card's meta and a Settings block with the two rates");
   }
 
   console.log("\n== UI: gold.css discipline layer (v2.17) ==");

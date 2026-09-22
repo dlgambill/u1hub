@@ -9,12 +9,16 @@
 //
 // Layout: creators down the left, a searchable grid of cards on the right.
 // Each card is the designer's own plate thumbnail (from inside the 3MF), the
-// colors the project is painted with, the object count, and "Open in Orca".
-// After Orca saves, a strip at the top names the new gcode with "Select in
-// library" and "Send to Dispatch".
+// colors the project is painted with, the object count, "Open in Orca" and
+// (v2.28, when the advisor module is on) "✦ Settings", which opens one panel
+// above the grid with Claude's suggested slicer settings for that file on the
+// printer you pick - a table of setting, value, what the designer's profile
+// had, and why. After Orca saves, a strip at the top names the new gcode with
+// "Select in library" and "Send to Dispatch".
 "use strict";
 (function () {
   let EL = null, DATA = null, CREATOR = "", Q = "", OFFSET = 0, BUSY = false, SESS = [], SESS_TIMER = 0, SETTINGS = null;
+  let ADV = null, ADVFILE = null;   // v2.28: /api/advisor state (key_set), the file the suggestion panel is open for
   const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   async function jget(p) { try { const r = await fetch(p); return r.ok ? r.json() : null; } catch { return null; } }
   async function jpost(p, b) {
@@ -64,6 +68,32 @@
       ".mdl-cfg{display:none; background:var(--panel); border:1px solid var(--line); border-radius:var(--r-lg,12px); padding:12px 14px; margin-bottom:10px;}",
       ".mdl-cfg.show{display:block;}",
       ".mdl-cfg label{display:block; font-size:12px; color:var(--ink-dim); margin:6px 0 3px;}",
+      // v2.28: the settings suggestion panel (✦ Settings on a card).
+      ".mdl-adv{display:none; background:var(--panel); border:1px solid color-mix(in srgb, var(--signal) 45%, var(--line)); border-radius:var(--r-lg,12px); padding:12px 14px; margin-bottom:10px; font-size:13px; line-height:1.5;}",
+      ".mdl-adv.show{display:block;}",
+      ".mdl-adv .ah{display:flex; gap:10px; align-items:center; flex-wrap:wrap;}",
+      ".mdl-adv .ah img{width:56px; height:56px; object-fit:contain; border-radius:var(--r-sm,6px); background:var(--panel-2,#15171c); flex:none;}",
+      ".mdl-adv .ah .t{font-weight:600; color:var(--ink); min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1 1 200px;}",
+      ".mdl-adv .ah select.field{width:auto; flex:0 0 auto; font-size:12px; padding:4px 8px;}",
+      ".mdl-adv .ah .x{margin-left:auto; background:transparent; border:none; color:var(--ink-faint); font:inherit; font-size:16px; cursor:pointer; padding:2px 6px;}",
+      ".mdl-adv .st{color:var(--ink-dim); font-size:12.5px; margin-top:6px;}",
+      ".mdl-adv .st.err{color:var(--bad,#e5484d);}",
+      ".mdl-adv .sum{margin:8px 0 6px; color:var(--ink);}",
+      ".mdl-adv table{width:100%; border-collapse:collapse; font-size:12.5px; margin-top:4px;}",
+      ".mdl-adv th{text-align:left; font-family:var(--mono); font-size:10.5px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-faint); padding:4px 8px 6px 0; border-bottom:1px solid var(--line);}",
+      ".mdl-adv td{padding:5px 8px 5px 0; border-bottom:1px solid color-mix(in srgb, var(--line) 55%, transparent); vertical-align:top;}",
+      ".mdl-adv td.k{font-family:var(--mono); font-size:11px; color:var(--ink-dim); white-space:nowrap;}",
+      ".mdl-adv td.v{font-weight:600; color:var(--ink); white-space:nowrap;}",
+      ".mdl-adv td.f{font-family:var(--mono); font-size:11px; color:var(--ink-faint); white-space:nowrap; text-decoration:line-through;}",
+      ".mdl-adv td.w{color:var(--ink-dim);}",
+      ".mdl-adv .heads{display:flex; gap:8px; flex-wrap:wrap; margin-top:8px;}",
+      ".mdl-adv .heads span{display:inline-flex; align-items:center; gap:5px; font-family:var(--mono); font-size:11px; color:var(--ink-dim); border:1px solid var(--line); border-radius:var(--r-pill,999px); padding:2px 8px;}",
+      ".mdl-adv .heads i{width:10px; height:10px; border-radius:3px; border:1px solid rgba(255,255,255,.18); display:inline-block;}",
+      ".mdl-adv ul.watch{margin:8px 0 0 18px; padding:0;}",
+      ".mdl-adv ul.watch li{margin:3px 0; color:var(--ink);}",
+      ".mdl-adv .facts{font-family:var(--mono); font-size:10.5px; color:var(--ink-faint); margin-top:8px; line-height:1.6;}",
+      ".mdl-adv .foot{margin-top:8px; font-family:var(--mono); font-size:10.5px; color:var(--ink-faint); display:flex; gap:10px; flex-wrap:wrap; align-items:center;}",
+      "@media (max-width: 700px){ .mdl-adv td.v, .mdl-adv td.k{white-space:normal;} }",
       "@media (max-width: 1100px){ .mdl-wrap{grid-template-columns: 1fr;} .mdl-rail{position:static; max-height:none; display:flex; flex-wrap:wrap; gap:4px;} .mdl-rail button{width:auto;} }"
     ].join("\n");
     document.head.appendChild(s);
@@ -75,6 +105,7 @@
       '<div class="sechead"><h2>Models</h2><span class="count" id="mdl-count"></span></div>' +
       '<p class="subnote">Project files (3MF) you have not sliced yet, organized by designer. Open one in Snapmaker Orca on this computer, slice it, save the gcode into the library, and it shows up here to select or send to Dispatch. Nothing on this tab prints anything.</p>' +
       '<div id="mdl-sess"></div>' +
+      '<div class="mdl-adv" id="mdl-adv"></div>' +
       '<div class="mdl-cfg" id="mdl-cfg"></div>' +
       '<div class="mdl-bar">' +
       '<input class="field" id="mdl-q" placeholder="Filter models… (* ? -word)" title="Plain text matches anywhere in designer/model/file. * and ? are wildcards. -word excludes.">' +
@@ -89,7 +120,9 @@
     el.querySelector("#mdl-grid").addEventListener("click", onGridClick);
     el.querySelector("#mdl-foot").addEventListener("click", e => { if (e.target.id === "mdl-more") { OFFSET += (DATA && DATA.limit) || 60; load(false, true); } });
     el.querySelector("#mdl-sess").addEventListener("click", onSessClick);
+    el.querySelector("#mdl-adv").addEventListener("click", onAdvClick);
     renderCfg();
+    jget("/api/advisor").then(s => { ADV = s; });
   }
 
   // v2.27.1: the fields are filled from the server's answer, and re-filled
@@ -168,8 +201,87 @@
       '<div class="mdl-name" title="' + esc(it.rel) + '">' + esc(it.name) + "</div>" +
       '<div class="mdl-sub">' + esc(it.creator || "") + (it.model && it.model !== it.name ? " · " + esc(it.model) : "") + " · " + mb(it.size) + "</div>" +
       '<div class="mdl-chips" data-info="' + esc(it.rel) + '"><span class="k">…</span></div>' +
-      '<div class="mdl-act"><button class="btn primary" data-open="' + esc(it.rel) + '"' + (DATA && DATA.orca_found === false ? ' title="Snapmaker Orca not found - set its path under ⚙ Folder"' : "") + '>Open in Orca</button></div>' +
+      '<div class="mdl-act"><button class="btn primary" data-open="' + esc(it.rel) + '"' + (DATA && DATA.orca_found === false ? ' title="Snapmaker Orca not found - set its path under ⚙ Folder"' : "") + '>Open in Orca</button>' +
+      (window.HUB_FEATURES && window.HUB_FEATURES.advisor === false ? "" : '<button class="btn ghost" data-suggest="' + esc(it.rel) + '" title="Have Claude read this file\'s geometry and the designer\'s profile and suggest the slicer settings for your printer">✦ Settings</button>') +
+      '</div>' +
       "</div></div>";
+  }
+
+  // ---- ✦ Settings: the 3MF suggester (v2.28) ----------------------------------
+  // One panel above the grid, for one file at a time. Nothing is sent until
+  // Ask is pressed (opening the panel with a key set presses it for you, the
+  // same as the job-card pre-flight); the answer is a settings table.
+  const money = v => v == null ? "" : (v < 0.01 ? "under a cent" : "$" + v.toFixed(2));
+  function printers() {
+    const slug = typeSlug();
+    return (window.FLEET || []).filter(p => (p.ptype || "u1") === slug);
+  }
+  function pickPrinter() {
+    const sel = EL.querySelector("#mdl-advprinter");
+    if (sel && sel.value !== "") return Number(sel.value);
+    if (sel && sel.value === "") return null;
+    const ps = printers();
+    const idle = ps.find(p => p.online && /standby|complete|cancelled|idle/i.test(p.state || "")) || ps.find(p => p.online) || ps[0];
+    return idle ? idle.id : null;
+  }
+  function openSuggest(rel) {
+    const box = EL.querySelector("#mdl-adv");
+    ADVFILE = rel;
+    const name = String(rel).split("/").pop();
+    const thumb = "/api/models/thumb?file=" + encodeURIComponent(rel);
+    if (!(ADV && ADV.key_set)) {
+      box.className = "mdl-adv show";
+      box.innerHTML = '<div class="ah"><img src="' + thumb + '" alt="" onerror="this.style.visibility=\'hidden\'"><span class="t" title="' + esc(rel) + '">' + esc(name) + '</span><button class="x" data-close="1" title="Close">×</button></div>' +
+        '<div class="st">Suggesting settings needs your Anthropic API key. Open <b>Settings → AI pre-flight</b>, paste the key, press Save, then press ✦ Settings again. Nothing is sent until then.</div>';
+      box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      return;
+    }
+    const ps = printers();
+    const def = pickPrinter();
+    box.className = "mdl-adv show";
+    box.innerHTML =
+      '<div class="ah"><img src="' + thumb + '" alt="" onerror="this.style.visibility=\'hidden\'"><span class="t" title="' + esc(rel) + '">' + esc(name) + '</span>' +
+      '<span class="st" style="margin:0">for</span><select class="field" id="mdl-advprinter"><option value="">any U1 (no loadout)</option>' + ps.map(p => '<option value="' + p.id + '"' + (p.id === def ? " selected" : "") + ">" + esc(p.name) + (p.online ? "" : " (offline)") + "</option>").join("") + "</select>" +
+      '<button class="btn primary" id="mdl-advask" style="font-size:12px; padding:5px 12px">Ask</button>' +
+      '<button class="x" data-close="1" title="Close">×</button></div>' +
+      '<div class="st" id="mdl-advst"></div><div id="mdl-advbody"></div><div class="foot" id="mdl-advfoot"></div>';
+    box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    runSuggest(false);
+  }
+  async function runSuggest(force) {
+    const box = EL.querySelector("#mdl-adv"), st = box.querySelector("#mdl-advst"), body = box.querySelector("#mdl-advbody"), foot = box.querySelector("#mdl-advfoot");
+    if (!st) return;
+    const rel = ADVFILE, pid = pickPrinter();
+    st.className = "st"; st.textContent = force ? "Asking again… (measuring the meshes and reading the plate render, then Claude)" : "Measuring the meshes, then asking Claude…";
+    const btn = box.querySelector("#mdl-advask"); if (btn) btn.disabled = true;
+    const r = await jpost("/api/advisor/model", { file: rel, printer: pid == null ? "" : pid, force: !!force });
+    if (btn) btn.disabled = false;
+    if (ADVFILE !== rel) return;   // they opened another file meanwhile
+    if (!r.ok) { st.className = "st err"; st.textContent = r.d.error || "The suggestion failed."; return; }
+    st.textContent = "";
+    const s = r.d.suggestion || {};
+    let h = s.summary ? '<div class="sum">' + esc(s.summary) + "</div>" : "";
+    if (s.settings && s.settings.length) {
+      h += '<table><thead><tr><th>Setting</th><th>Use</th><th>File had</th><th>Why</th></tr></thead><tbody>' +
+        s.settings.map(x => '<tr><td class="k" title="' + esc(x.key) + '">' + esc(x.label || x.key) + (x.label && x.key && x.label !== x.key ? '<br><span style="opacity:.7">' + esc(x.key) + "</span>" : "") + '</td><td class="v">' + esc(x.value) + '</td><td class="f">' + esc(x.from || "") + '</td><td class="w">' + esc(x.why) + "</td></tr>").join("") + "</tbody></table>";
+    }
+    if (s.heads && s.heads.length) h += '<div class="heads">' + s.heads.map(x => '<span title="' + esc(x.note) + '"><i style="background:' + esc(x.color) + '"></i>' + esc(x.color) + " → " + esc(x.head) + (x.note ? " · " + esc(x.note) : "") + "</span>").join("") + "</div>";
+    if (s.orientation) h += '<div class="st" style="margin-top:8px"><b>Orientation:</b> ' + esc(s.orientation) + "</div>";
+    if (s.watch && s.watch.length) h += '<ul class="watch">' + s.watch.map(w => "<li>" + esc(w) + "</li>").join("") + "</ul>";
+    const f = r.d.facts;
+    if (f && f.ok) h += '<div class="facts">measured: ' + f.size_mm.join(" × ") + " mm · " + f.instances + " part" + (f.instances === 1 ? "" : "s") + " · " + f.overhang.steep_pct + "% steep overhang · " + f.overhang.flat_unsupported_pct + "% floating underside · bed contact " + f.overhang.bed_contact_pct_of_footprint + "% of footprint · " + f.solid_g_pla + " g solid" + (f.paint && f.paint.colors ? " · painted " + f.paint.colors + " colors" : "") + (r.d.thumb ? " · plate render sent" : " · no plate render in the file") + "</div>";
+    body.innerHTML = h || '<div class="st">No settings came back.</div>';
+    const when = new Date(r.d.at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+    foot.innerHTML = esc(r.d.model || "") + (r.d.cost != null ? " · " + money(r.d.cost) : "") + " · " + (r.d.cached ? "from cache, " + when : when) +
+      ' · <a href="#" data-again="1" style="color:var(--signal)">Ask again</a>' +
+      ' · <a href="/api/advisor/model/brief?file=' + encodeURIComponent(rel) + (pid != null ? "&printer=" + pid : "") + '" target="_blank" rel="noopener" style="color:var(--signal)">what was sent</a>' +
+      ' · <span title="Claude reads measured numbers, the plate render and the designer\'s profile; it does not slice the file.">advice, not a guarantee</span>';
+  }
+  function onAdvClick(e) {
+    const t = e.target.closest("button, a"); if (!t) return;
+    if (t.dataset.close) { const box = EL.querySelector("#mdl-adv"); box.className = "mdl-adv"; box.innerHTML = ""; ADVFILE = null; return; }
+    if (t.id === "mdl-advask") { runSuggest(false); return; }
+    if (t.dataset.again) { e.preventDefault(); runSuggest(true); }
   }
 
   // Colors and object counts come from inside each zip; fetch them only for
@@ -202,6 +314,8 @@
   }
 
   async function onGridClick(e) {
+    const sg = e.target.closest("[data-suggest]");
+    if (sg) { openSuggest(sg.dataset.suggest); return; }
     const b = e.target.closest("[data-open]");
     if (!b) return;
     b.disabled = true; const was = b.textContent; b.textContent = "Opening…";
@@ -250,7 +364,7 @@
     }
   }
 
-  function onShow() { load(); pollSessions(true); }
+  function onShow() { load(); pollSessions(true); jget("/api/advisor").then(s => { if (s) ADV = s; }); }
 
   window.HubModules.register("models", { tab: "Models", mount, onShow });
 })();

@@ -17,7 +17,7 @@ Running log of things that broke, why, and the rule that stops a repeat.
 |---|---|---|
 | Test depends on when it runs / what else runs | 4 incidents, 5 checks | rule 7 |
 | Asserted or acted without checking first | 12 incidents | rule 8 |
-| Harness green while the feature was broken | 3 incidents | rule 2 — "green" is not "verified" |
+| Harness green while the feature was broken | 4 incidents | rule 2 — "green" is not "verified"; the live gate for a button is the click |
 | Unverified shape trusted as complete | 3 incidents | rule 6 |
 | Shipped onto one surface, not every surface that draws the thing | 3 incidents | *approaching a law* — check every tab that renders it before calling it done |
 | Version drift across the three files | 1 | rule 4 |
@@ -27,6 +27,36 @@ Running log of things that broke, why, and the rule that stops a repeat.
 
 Bridge quirks are operating facts, not judgment failures; a rule that says
 "remember these four things" is a lookup table wearing a rule's clothes.
+
+---
+
+## 2026-09-22 - The 2.25 AI pre-flight button shipped dead, behind a green harness
+
+**What happened:** `public/modules/advisor-ui.js` read the selected file as
+`window.SELECTED` and the fleet as `window.FLEET`. Both are declared with a
+top-level `let` in `app.js`, and a `let` binding is not a window property,
+so both reads were `undefined`. `openPanel()` began with
+`if (!window.SELECTED) return;` - the click did nothing, silently, from
+2.25.0 through 2.27.1. Found on 2026-09-22 while wiring the Models tab's
+✦ Settings button to the same state.
+
+**Root cause:** the harness "verified" the client with a regex over the
+source (`/advgo/.test(source)`), and the live gate for 2.25 exercised the
+Settings block and the server routes, not a click on the job card. Rule 2
+says a feature is done when its live gate has passed; the gate I ran did
+not include the one interaction the feature exists for.
+
+**Consequence:** three releases whose headline feature could not be
+started from the page. The routes worked (the harness proved that), so
+anyone poking the API got answers; anyone pressing the button got nothing.
+
+**Rule:** a client feature's live gate is the click. For every button a
+release adds, the gate is: click it on 4546 in a real browser and see the
+panel change, not `grep` for its id. And a client module that reads core
+state gets it through an explicit surface (`app.js` now defines read-only
+getters for SELECTED, MAP, FLEET, MAPSEL, FILES on `window`), never by
+assuming a global exists - `typeof window.X === "undefined"` is a check
+that costs one line.
 
 ---
 

@@ -435,6 +435,16 @@ function register(ctx) {
   if (t.unref) t.unref();
 
   ctx.provide("models.index", () => INDEX);
+  // v2.28: the advisor's 3MF suggester reads through the same range reader
+  // and the same two-at-a-time gate, so it never opens a path outside the
+  // folder and never floods the share. fn(z, { path, mtime, size }).
+  ctx.provide("models.open", async (rel, fn) => {
+    const p = safePath(rel);
+    if (!p) throw Object.assign(new Error("not in the models folder: " + String(rel || "")), { code: "ENOENT" });
+    const st = await fs.promises.stat(p);   // ENOENT propagates
+    return withZip(p, z => fn(z, { path: p, mtime: st.mtimeMs, size: st.size }));
+  });
+  ctx.provide("models.info", (ps, ms) => infoFromParts(ps, ms));
 }
 
-module.exports = { register, infoFromEntries, pickThumb, nameMatcher, split };
+module.exports = { register, infoFromEntries, infoFromParts, pickThumb, nameMatcher, split, zipOpen, withZip };
