@@ -12,7 +12,7 @@
 // r2_key the storefront's existing 169 videos don't use, silently.
 
 "use strict";
-const { slugify, buildR2Key, fmtPrintedAt, pickCameraFile } = require("../modules/timelapse.js");
+const { slugify, buildR2Key, fmtPrintedAt, pickCameraFile, escapeDrawtext, ctaFilter } = require("../modules/timelapse.js");
 
 let pass = 0, fail = 0;
 const ok = (cond, name, detail) => {
@@ -78,6 +78,45 @@ for (const [input, want] of SLUG_TABLE) {
     "pickCameraFile excludes stale and too-early files, picks the real render", { match });
 
   ok(pickCameraFile([], eventAt, startAt) === null, "pickCameraFile returns null with no candidates");
+}
+
+// ---- escapeDrawtext / ctaFilter (2026-09-23, TikTok CTA overlay) ----
+{
+  ok(escapeDrawtext("Order now: TikTok Shop") === "Order now\\: TikTok Shop",
+    "escapeDrawtext escapes a literal colon");
+  ok(escapeDrawtext("Danny's Shop") === "Danny’s Shop",
+    "escapeDrawtext swaps a straight apostrophe for a curly one");
+  ok(escapeDrawtext("a\\b") === "a\\\\b",
+    "escapeDrawtext doubles a literal backslash");
+  ok(escapeDrawtext("50% off") === "50\\% off",
+    "escapeDrawtext escapes a literal percent sign");
+}
+
+// Falsification (rule #6): an unescaped colon in the CTA text adds an extra
+// top-level ':' to the filter string, indistinguishable to ffmpeg's parser
+// from the ':' that separates drawtext's own fontfile/text/fontcolor/...
+// options - it has no way to tell "a colon inside my text" from "the next
+// option starts here". Prove escaping actually removes that ambiguity by
+// counting unescaped colons in a naive (unescaped) filter string against the
+// real, escaped one.
+{
+  const raw = "Order now: TikTok Shop";
+  const countUnescapedColons = (s) => (s.match(/(^|[^\\]):/g) || []).length;
+  const naiveFilter = "drawtext=fontfile='X':text='" + raw + "':fontcolor=white";
+  const realFilter = "drawtext=fontfile='X':text='" + escapeDrawtext(raw) + "':fontcolor=white";
+  ok(countUnescapedColons(naiveFilter) > countUnescapedColons(realFilter),
+    "escaping removes the extra unescaped colon a naive filter string would carry into drawtext's option parser",
+    { naive: countUnescapedColons(naiveFilter), real: countUnescapedColons(realFilter) });
+}
+
+// ctaFilter - exact reproduction, including the fixed font path this module
+// actually ships. Pins CTA_FONT_FILE from drifting silently, since it isn't
+// itself exported.
+{
+  const filt = ctaFilter("Shop link in bio");
+  const want = "drawtext=fontfile='C\\:/Windows/Fonts/arialbd.ttf':text='Shop link in bio':" +
+    "fontcolor=white:fontsize=h/16:box=1:boxcolor=black@0.55:boxborderw=16:x=(w-text_w)/2:y=h*0.80";
+  ok(filt === want, "ctaFilter builds the exact drawtext filter string", { filt });
 }
 
 console.log("\n" + pass + " passed, " + fail + " failed\n");

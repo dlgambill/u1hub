@@ -5,6 +5,7 @@
   "tip": { "label": "Buy me a beer 🍺", "url": "https://venmo.com/u/dgambill" },
   "sf3dTimelapse": {
     "passcode": "",
-    "uploadUrl": "https://pcbltjgwnuyaixiealbk.supabase.co/functions/v1/sf3d-timelapse-upload"
+    "uploadUrl": "https://pcbltjgwnuyaixiealbk.supabase.co/functions/v1/sf3d-timelapse-upload",
+    "ctaText": "Shop link in bio"
   }
 }

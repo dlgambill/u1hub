@@ -37,7 +37,7 @@
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const { spawnSync } = require("child_process");
+const { spawnSync, spawn } = require("child_process");
 
 const CAMERA_LIST_RETRIES = 6;          // the printer needs a few seconds
 const CAMERA_LIST_RETRY_MS = 5000;      // after "complete" to finish writing
@@ -50,6 +50,17 @@ const MIN_DURATION_SEC = 5;             // guards against a 0-byte/corrupt
                                          // makes that call itself
 const QUEUE_FILE = "timelapse-queue.json"; // survives a Hub restart mid-upload
 const DEFAULT_UPLOAD_URL = "https://pcbltjgwnuyaixiealbk.supabase.co/functions/v1/sf3d-timelapse-upload";
+
+// 2026-09-23: Danny wants a burned-in CTA graphic on these videos ("order
+// now in the TikTok Shop"). That's not accurate yet - there is no TikTok
+// Shop today (SF3D just started registering as a seller, which is a manual
+// process on tiktokshop.com only Danny can complete: business docs + a
+// payout bank account). Shipping "Shop link in bio" now, which IS true
+// today, matching the caption footer sf3d-timelapse-upload already appends.
+// Flip this one string in config.json's sf3dTimelapse.ctaText once the Shop
+// is approved and live - no code change needed for that switch.
+const DEFAULT_CTA_TEXT = "Shop link in bio";
+const CTA_TIMEOUT_MS = 120000; // a slow re-encode is not worth losing the video over, but must not hang forever
 
 // Reverse-engineered 2026-09-21 from all 169 existing sf3d_timelapses rows
 // and regex-verified against every one of them (see test/timelapse-standalone.js):
@@ -95,6 +106,37 @@ function pickCameraFile(files, eventAtMs, startAtMs) {
     })
     .sort((a, b) => Number(b.modified) - Number(a.modified));
   return candidates[0] || null;
+}
+
+// ffmpeg's drawtext filter treats : \ ' and % as syntax inside its own
+// option-value string (this is on top of, not instead of, normal argv
+// handling - spawn() in burnCta below never goes through a shell, so no
+// shell quoting is needed, only drawtext's own). ctaText is a short,
+// Claude/Danny-controlled config string, not arbitrary user input, but
+// escaping it properly costs nothing and a stray colon must not silently
+// break the filtergraph.
+function escapeDrawtext(text) {
+  return String(text == null ? "" : text)
+    .replace(/\\/g, "\\\\")
+    .replace(/:/g, "\\:")
+    .replace(/'/g, "’") // a curly quote reads identically and sidesteps drawtext's own quoting rules entirely
+    .replace(/%/g, "\\%");
+}
+
+// Bold system font, referenced by absolute path rather than a fontconfig
+// family name lookup (font=Arial) - fontconfig family matching depends on a
+// font cache that may or may not be warm on a given Windows box, while every
+// Windows install ships this file at this path. Positioned at 80% of frame
+// height so it clears TikTok's own username/caption overlay (bottom-left)
+// and action-button rail (right edge) regardless of whether the source
+// video is landscape or square - these camera renders are not shot in 9:16,
+// which is a separate, larger question (crop/pad to vertical for better
+// TikTok reach) worth raising with Danny separately; not addressed here.
+const CTA_FONT_FILE = "C\\:/Windows/Fonts/arialbd.ttf";
+function ctaFilter(text) {
+  return "drawtext=fontfile='" + CTA_FONT_FILE + "':text='" + escapeDrawtext(text) +
+    "':fontcolor=white:fontsize=h/16:box=1:boxcolor=black@0.55:boxborderw=16:" +
+    "x=(w-text_w)/2:y=h*0.80";
 }
 
 function register(ctx) {
@@ -160,6 +202,66 @@ function register(ctx) {
     }
   }
 
+  // Burns ctaText into the video and returns the new bytes. Fails open to
+  // the ORIGINAL bytes on any problem (missing ffmpeg, missing font, a
+  // corrupt render, a timeout) - a video without the graphic beats no video
+  // at all, and this must never be the reason a real print's timelapse gets
+  // dropped. Runs ffmpeg via spawn() (async), not spawnSync like probe()
+  // above: probe() is a sub-second metadata read, but a real re-encode can
+  // run tens of seconds, and this Hub is also live-dispatching nine
+  // printers on the same event loop - spawnSync here would freeze all of
+  // that for the duration.
+  function burnCta(bytes, ctaText) {
+    return new Promise((resolve) => {
+      if (!ctaText || !String(ctaText).trim()) return resolve(bytes);
+
+      const stamp = Date.now() + "_" + Math.random().toString(36).slice(2);
+      const inPath = path.join(os.tmpdir(), "tlcta_in_" + stamp + ".mp4");
+      const outPath = path.join(os.tmpdir(), "tlcta_out_" + stamp + ".mp4");
+      let settled = false;
+      const finish = (result) => {
+        if (settled) return;
+        settled = true;
+        try { fs.unlinkSync(inPath); } catch {}
+        try { fs.unlinkSync(outPath); } catch {}
+        resolve(result);
+      };
+
+      try { fs.writeFileSync(inPath, bytes); }
+      catch (e) { ctx.hublog("warn", "timelapse: could not stage temp file for CTA overlay - " + (e && e.message || e)); return finish(bytes); }
+
+      const args = ["-y", "-i", inPath, "-vf", ctaFilter(ctaText),
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-c:a", "copy", outPath];
+      let child;
+      try { child = spawn("ffmpeg", args, { windowsHide: true }); }
+      catch (e) { ctx.hublog("warn", "timelapse: could not start ffmpeg for CTA overlay - " + (e && e.message || e)); return finish(bytes); }
+
+      const killTimer = setTimeout(() => { try { child.kill(); } catch {} }, CTA_TIMEOUT_MS);
+      let stderr = "";
+      if (child.stderr) child.stderr.on("data", (d) => { stderr += d; });
+      child.on("error", (e) => {
+        clearTimeout(killTimer);
+        ctx.hublog("warn", "timelapse: ffmpeg CTA overlay failed to start - " + (e && e.message || e));
+        finish(bytes);
+      });
+      child.on("close", (code) => {
+        clearTimeout(killTimer);
+        if (code !== 0) {
+          ctx.hublog("warn", "timelapse: ffmpeg CTA overlay exited " + code + " - posting the un-overlaid video instead. " + stderr.slice(-300));
+          return finish(bytes);
+        }
+        let out;
+        try { out = fs.readFileSync(outPath); }
+        catch (e) { ctx.hublog("warn", "timelapse: could not read ffmpeg CTA output - " + (e && e.message || e)); return finish(bytes); }
+        if (!out || out.length < 1000) {
+          ctx.hublog("warn", "timelapse: ffmpeg CTA output looked empty/corrupt - posting the un-overlaid video instead");
+          return finish(bytes);
+        }
+        finish(out);
+      });
+    });
+  }
+
   // Returns true when this job is DONE being tried (uploaded, or given up on
   // for a reason that will never change - no config, no match, corrupt
   // render). Returns false to keep it queued for the next drain (a network
@@ -213,6 +315,12 @@ function register(ctx) {
       return true;
     }
 
+    // duration/frames come from the pre-overlay probe deliberately - drawtext
+    // draws over existing frames, it doesn't add/remove any, so re-probing
+    // after the burn would just be the same numbers at the cost of another
+    // ffprobe spawn.
+    const posted = await burnCta(bytes, c.ctaText || DEFAULT_CTA_TEXT);
+
     const printedAt = fmtPrintedAt(job.startAt || job.at);
     const form = new FormData();
     form.set("passcode", c.passcode);
@@ -221,7 +329,7 @@ function register(ctx) {
     form.set("printed_at", printedAt);
     form.set("duration_seconds", String(duration));
     form.set("frame_count", String(frames));
-    form.set("video", new Blob([bytes], { type: "video/mp4" }), "timelapse.mp4");
+    form.set("video", new Blob([posted], { type: "video/mp4" }), "timelapse.mp4");
 
     try {
       const res = await fetch(url, { method: "POST", body: form });
@@ -278,4 +386,4 @@ function register(ctx) {
   if (timer.unref) timer.unref();
 }
 
-module.exports = { register, slugify, buildR2Key, fmtPrintedAt, pickCameraFile };
+module.exports = { register, slugify, buildR2Key, fmtPrintedAt, pickCameraFile, escapeDrawtext, ctaFilter };
