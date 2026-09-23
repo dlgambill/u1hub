@@ -12,7 +12,7 @@
 // r2_key the storefront's existing 169 videos don't use, silently.
 
 "use strict";
-const { slugify, buildR2Key, fmtPrintedAt, pickCameraFile, escapeDrawtext, ctaFilter } = require("../modules/timelapse.js");
+const { slugify, buildR2Key, fmtPrintedAt, pickCameraFile, scaleFitFilter, stillSegmentFilter, mainSegmentFilter } = require("../modules/timelapse.js");
 
 let pass = 0, fail = 0;
 const ok = (cond, name, detail) => {
@@ -80,43 +80,59 @@ for (const [input, want] of SLUG_TABLE) {
   ok(pickCameraFile([], eventAt, startAt) === null, "pickCameraFile returns null with no candidates");
 }
 
-// ---- escapeDrawtext / ctaFilter (2026-09-23, TikTok CTA overlay) ----
+// ---- scaleFitFilter / stillSegmentFilter / mainSegmentFilter ----
+// (2026-09-23, logo-intro + product-photo-outro compositing, replacing the
+// burned-in "Shop link in bio" CTA Danny rejected: "Get rid of it.")
+
+// scaleFitFilter - exact reproduction, including the fixed COMPOSE_FPS=30
+// this module actually ships. Pins that constant from drifting silently,
+// since it isn't itself exported.
 {
-  ok(escapeDrawtext("Order now: TikTok Shop") === "Order now\\: TikTok Shop",
-    "escapeDrawtext escapes a literal colon");
-  ok(escapeDrawtext("Danny's Shop") === "Danny’s Shop",
-    "escapeDrawtext swaps a straight apostrophe for a curly one");
-  ok(escapeDrawtext("a\\b") === "a\\\\b",
-    "escapeDrawtext doubles a literal backslash");
-  ok(escapeDrawtext("50% off") === "50\\% off",
-    "escapeDrawtext escapes a literal percent sign");
+  const filt = scaleFitFilter(1920, 1080);
+  const want = "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:" +
+    "(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p";
+  ok(filt === want, "scaleFitFilter builds the exact scale/pad/fps filter string", { filt });
 }
 
-// Falsification (rule #6): an unescaped colon in the CTA text adds an extra
-// top-level ':' to the filter string, indistinguishable to ffmpeg's parser
-// from the ':' that separates drawtext's own fontfile/text/fontcolor/...
-// options - it has no way to tell "a colon inside my text" from "the next
-// option starts here". Prove escaping actually removes that ambiguity by
-// counting unescaped colons in a naive (unescaped) filter string against the
-// real, escaped one.
+// mainSegmentFilter is scaleFitFilter with no fade - the timelapse is
+// already the held middle of the composited video.
 {
-  const raw = "Order now: TikTok Shop";
-  const countUnescapedColons = (s) => (s.match(/(^|[^\\]):/g) || []).length;
-  const naiveFilter = "drawtext=fontfile='X':text='" + raw + "':fontcolor=white";
-  const realFilter = "drawtext=fontfile='X':text='" + escapeDrawtext(raw) + "':fontcolor=white";
-  ok(countUnescapedColons(naiveFilter) > countUnescapedColons(realFilter),
-    "escaping removes the extra unescaped colon a naive filter string would carry into drawtext's option parser",
-    { naive: countUnescapedColons(naiveFilter), real: countUnescapedColons(realFilter) });
+  ok(mainSegmentFilter(1280, 720) === scaleFitFilter(1280, 720),
+    "mainSegmentFilter adds no fade beyond scaleFitFilter");
 }
 
-// ctaFilter - exact reproduction, including the fixed font path this module
-// actually ships. Pins CTA_FONT_FILE from drifting silently, since it isn't
-// itself exported.
+// stillSegmentFilter - duration math for each fade-edge mode, and that the
+// fade clauses actually land in the filter string, not just the duration.
 {
-  const filt = ctaFilter("Shop link in bio");
-  const want = "drawtext=fontfile='C\\:/Windows/Fonts/arialbd.ttf':text='Shop link in bio':" +
-    "fontcolor=white:fontsize=h/16:box=1:boxcolor=black@0.55:boxborderw=16:x=(w-text_w)/2:y=h*0.80";
-  ok(filt === want, "ctaFilter builds the exact drawtext filter string", { filt });
+  const none = stillSegmentFilter(1920, 1080, 3, 0.5, "none");
+  ok(none.duration === 3 && none.filter === scaleFitFilter(1920, 1080),
+    "stillSegmentFilter('none') adds no fade time or fade clause", none);
+
+  const inOnly = stillSegmentFilter(1920, 1080, 3, 0.5, "in");
+  ok(inOnly.duration === 3.5 && inOnly.filter === scaleFitFilter(1920, 1080) + ",fade=t=in:st=0:d=0.5",
+    "stillSegmentFilter('in') adds fadeSec once and a fade-in clause at st=0", inOnly);
+
+  const outOnly = stillSegmentFilter(1920, 1080, 3, 0.5, "out");
+  ok(outOnly.duration === 3.5 && outOnly.filter === scaleFitFilter(1920, 1080) + ",fade=t=out:st=3:d=0.5",
+    "stillSegmentFilter('out') adds fadeSec once and a fade-out clause starting at the hold's end", outOnly);
+
+  const both = stillSegmentFilter(1920, 1080, 1.5, 0.5, "both");
+  ok(both.duration === 2.5 &&
+     both.filter === scaleFitFilter(1920, 1080) + ",fade=t=in:st=0:d=0.5,fade=t=out:st=2:d=0.5",
+    "stillSegmentFilter('both') adds fadeSec twice and both clauses, fade-out starting at duration-fadeSec", both);
+}
+
+// Falsification (rule #6): if the fade-out start time were computed from
+// holdSec alone instead of (holdSec + fadeSec), a fade-in-and-out clip would
+// fade out too early - partway through its own fade-in, clipping the hold
+// short. With fadeSec=1, holdSec=2, edges=both: duration=4, correct
+// fade-out start=3; a holdSec-only calculation would wrongly say 2. Prove
+// the real one, not the wrong one, shows up in the filter string.
+{
+  const both = stillSegmentFilter(10, 10, 2, 1, "both");
+  ok(both.filter.includes("fade=t=out:st=3:d=1") && !both.filter.includes("fade=t=out:st=2:d=1"),
+    "fade-out start time is duration-fadeSec, not holdSec alone - it accounts for the fade-in time already spent",
+    { filter: both.filter });
 }
 
 console.log("\n" + pass + " passed, " + fail + " failed\n");

@@ -6,6 +6,6 @@
   "sf3dTimelapse": {
     "passcode": "",
     "uploadUrl": "https://pcbltjgwnuyaixiealbk.supabase.co/functions/v1/sf3d-timelapse-upload",
-    "ctaText": "Shop link in bio"
+    "logoFile": "sf3d-logo.png"
   }
 }

@@ -51,16 +51,32 @@ const MIN_DURATION_SEC = 5;             // guards against a 0-byte/corrupt
 const QUEUE_FILE = "timelapse-queue.json"; // survives a Hub restart mid-upload
 const DEFAULT_UPLOAD_URL = "https://pcbltjgwnuyaixiealbk.supabase.co/functions/v1/sf3d-timelapse-upload";
 
-// 2026-09-23: Danny wants a burned-in CTA graphic on these videos ("order
-// now in the TikTok Shop"). That's not accurate yet - there is no TikTok
-// Shop today (SF3D just started registering as a seller, which is a manual
-// process on tiktokshop.com only Danny can complete: business docs + a
-// payout bank account). Shipping "Shop link in bio" now, which IS true
-// today, matching the caption footer sf3d-timelapse-upload already appends.
-// Flip this one string in config.json's sf3dTimelapse.ctaText once the Shop
-// is approved and live - no code change needed for that switch.
-const DEFAULT_CTA_TEXT = "Shop link in bio";
-const CTA_TIMEOUT_MS = 120000; // a slow re-encode is not worth losing the video over, but must not hang forever
+// 2026-09-23: Danny rejected the burned-in "Shop link in bio" text overlay
+// shipped earlier today ("Get rid of it. I don't like it.") - real Shop
+// tagging is TikTok's own native product card, which only comes from the
+// manual in-app "Add Link" step once his TikTok Shop is live; there is no
+// API field for it, so nothing here fakes it with text. In its place: the
+// video fades from SF3D's logo into the timelapse, then fades out to a
+// still photo of the finished print - both per that same message.
+//
+// The photo is looked up from sf3d-timelapse-upload's GET route by
+// gcode_filename (no Square credentials on this Hub); the logo is read
+// straight off disk if config.json's sf3dTimelapse.logoFile points at a
+// real file, and skipped entirely if it doesn't (fails open, same as
+// everything else in this module) - Danny hasn't supplied SF3D's brand
+// logo file yet, so today every video composites with the photo outro only,
+// and picks up the logo intro automatically the day a file lands there. No
+// code change needed for that switch - same pattern the old ctaText flip was.
+const COMPOSE_FPS = 30;                // normalizes the still segments and
+                                        // the re-encoded main clip to one
+                                        // frame rate so concat below is a
+                                        // plain stream copy, not a re-encode
+const LOGO_HOLD_SEC = 1.5;             // intro: fade in, hold, fade out to
+const LOGO_FADE_SEC = 0.5;             // black, then a hard cut to the video
+const PHOTO_HOLD_SEC = 3;              // outro: hard cut from the video,
+const PHOTO_FADE_SEC = 0.75;           // fade in from black, then hold
+const COMPOSE_STEP_TIMEOUT_MS = 60000; // per ffmpeg step (3-4 short
+                                        // re-encodes, never one long one)
 
 // Reverse-engineered 2026-09-21 from all 169 existing sf3d_timelapses rows
 // and regex-verified against every one of them (see test/timelapse-standalone.js):
@@ -108,35 +124,35 @@ function pickCameraFile(files, eventAtMs, startAtMs) {
   return candidates[0] || null;
 }
 
-// ffmpeg's drawtext filter treats : \ ' and % as syntax inside its own
-// option-value string (this is on top of, not instead of, normal argv
-// handling - spawn() in burnCta below never goes through a shell, so no
-// shell quoting is needed, only drawtext's own). ctaText is a short,
-// Claude/Danny-controlled config string, not arbitrary user input, but
-// escaping it properly costs nothing and a stray colon must not silently
-// break the filtergraph.
-function escapeDrawtext(text) {
-  return String(text == null ? "" : text)
-    .replace(/\\/g, "\\\\")
-    .replace(/:/g, "\\:")
-    .replace(/'/g, "’") // a curly quote reads identically and sidesteps drawtext's own quoting rules entirely
-    .replace(/%/g, "\\%");
+// Scales+pads any input (the logo, the product photo, or the timelapse
+// itself) onto a common W x H canvas without distorting its aspect ratio,
+// then locks it to one frame rate/pixel format - this is what makes the
+// concat step below a plain stream copy instead of a re-encode: every
+// segment already agrees on codec parameters by the time it gets there.
+function scaleFitFilter(width, height) {
+  return "scale=" + width + ":" + height + ":force_original_aspect_ratio=decrease,pad=" + width + ":" + height +
+    ":(ow-iw)/2:(oh-ih)/2,setsar=1,fps=" + COMPOSE_FPS + ",format=yuv420p";
 }
 
-// Bold system font, referenced by absolute path rather than a fontconfig
-// family name lookup (font=Arial) - fontconfig family matching depends on a
-// font cache that may or may not be warm on a given Windows box, while every
-// Windows install ships this file at this path. Positioned at 80% of frame
-// height so it clears TikTok's own username/caption overlay (bottom-left)
-// and action-button rail (right edge) regardless of whether the source
-// video is landscape or square - these camera renders are not shot in 9:16,
-// which is a separate, larger question (crop/pad to vertical for better
-// TikTok reach) worth raising with Danny separately; not addressed here.
-const CTA_FONT_FILE = "C\\:/Windows/Fonts/arialbd.ttf";
-function ctaFilter(text) {
-  return "drawtext=fontfile='" + CTA_FONT_FILE + "':text='" + escapeDrawtext(text) +
-    "':fontcolor=white:fontsize=h/16:box=1:boxcolor=black@0.55:boxborderw=16:" +
-    "x=(w-text_w)/2:y=h*0.80";
+// A still image (logo or product photo) held for holdSec, with an optional
+// fade at either edge - "in", "out", "both", or "none". Returns the filter
+// string AND the total clip duration together, since a fade adds fadeSec on
+// top of the hold and the caller needs both the "-t" and "-vf" ffmpeg flags
+// built from the same number rather than repeating this arithmetic at each
+// call site.
+function stillSegmentFilter(width, height, holdSec, fadeSec, fadeEdges) {
+  const edges = fadeEdges === "both" ? 2 : fadeEdges === "none" ? 0 : 1;
+  const duration = holdSec + fadeSec * edges;
+  let filter = scaleFitFilter(width, height);
+  if (fadeEdges === "in" || fadeEdges === "both") filter += ",fade=t=in:st=0:d=" + fadeSec;
+  if (fadeEdges === "out" || fadeEdges === "both") filter += ",fade=t=out:st=" + (duration - fadeSec) + ":d=" + fadeSec;
+  return { filter, duration };
+}
+
+// The timelapse itself gets no fade, only the scale/pad/fps/format
+// normalization - it's already the held middle of the composited video.
+function mainSegmentFilter(width, height) {
+  return scaleFitFilter(width, height);
 }
 
 function register(ctx) {
@@ -182,7 +198,11 @@ function register(ctx) {
   // duration_seconds and frame_count are NOT NULL in sf3d_timelapses.
   // ffprobe is confirmed on ichabod's PATH (2026-09-21) but this still fails
   // open: a probe error returns zeros rather than dropping the video - a
-  // wrong-but-present number beats losing the file outright.
+  // wrong-but-present number beats losing the file outright. width/height
+  // (added 2026-09-23) size the compositing canvas below; they default to
+  // 1920x1080 - every U1 camera render checked so far - rather than 0x0,
+  // since an all-zero scale target would make ffmpeg reject the filter
+  // outright instead of just looking wrong.
   function probe(bytes) {
     const tmp = path.join(os.tmpdir(), "tl_" + Date.now() + "_" + Math.random().toString(36).slice(2) + ".mp4");
     try {
@@ -191,75 +211,164 @@ function register(ctx) {
         { encoding: "utf8", timeout: 15000 });
       const frm = spawnSync("ffprobe", ["-v", "error", "-count_frames", "-select_streams", "v:0",
         "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0", tmp], { encoding: "utf8", timeout: 15000 });
+      const dim = spawnSync("ffprobe", ["-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=width,height", "-of", "csv=p=0", tmp], { encoding: "utf8", timeout: 15000 });
       const duration = parseFloat((dur.stdout || "").trim()) || 0;
       const frames = parseInt((frm.stdout || "").trim(), 10) || 0;
-      return { duration, frames };
+      const [w, h] = (dim.stdout || "").trim().split(",").map((n) => parseInt(n, 10));
+      const width = w > 0 ? w : 1920;
+      const height = h > 0 ? h : 1080;
+      return { duration, frames, width, height };
     } catch (e) {
       ctx.hublog("warn", "timelapse: ffprobe failed - " + (e && e.message || e));
-      return { duration: 0, frames: 0 };
+      return { duration: 0, frames: 0, width: 1920, height: 1080 };
     } finally {
       try { fs.unlinkSync(tmp); } catch {}
     }
   }
 
-  // Burns ctaText into the video and returns the new bytes. Fails open to
-  // the ORIGINAL bytes on any problem (missing ffmpeg, missing font, a
-  // corrupt render, a timeout) - a video without the graphic beats no video
-  // at all, and this must never be the reason a real print's timelapse gets
-  // dropped. Runs ffmpeg via spawn() (async), not spawnSync like probe()
-  // above: probe() is a sub-second metadata read, but a real re-encode can
-  // run tens of seconds, and this Hub is also live-dispatching nine
-  // printers on the same event loop - spawnSync here would freeze all of
-  // that for the duration.
-  function burnCta(bytes, ctaText) {
-    return new Promise((resolve) => {
-      if (!ctaText || !String(ctaText).trim()) return resolve(bytes);
-
-      const stamp = Date.now() + "_" + Math.random().toString(36).slice(2);
-      const inPath = path.join(os.tmpdir(), "tlcta_in_" + stamp + ".mp4");
-      const outPath = path.join(os.tmpdir(), "tlcta_out_" + stamp + ".mp4");
-      let settled = false;
-      const finish = (result) => {
-        if (settled) return;
-        settled = true;
-        try { fs.unlinkSync(inPath); } catch {}
-        try { fs.unlinkSync(outPath); } catch {}
-        resolve(result);
-      };
-
-      try { fs.writeFileSync(inPath, bytes); }
-      catch (e) { ctx.hublog("warn", "timelapse: could not stage temp file for CTA overlay - " + (e && e.message || e)); return finish(bytes); }
-
-      const args = ["-y", "-i", inPath, "-vf", ctaFilter(ctaText),
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-c:a", "copy", outPath];
+  // Runs one ffmpeg step to completion, killing it if it runs past
+  // timeoutMs - a stuck re-encode is not worth losing the video over, but
+  // must not hang the Hub's event loop (also live-dispatching nine printers)
+  // forever either. Rejects on a non-zero exit or a spawn error;
+  // composeOrFallback below is what turns that into a fail-open fallback.
+  function runFfmpeg(args, timeoutMs) {
+    return new Promise((resolve, reject) => {
       let child;
       try { child = spawn("ffmpeg", args, { windowsHide: true }); }
-      catch (e) { ctx.hublog("warn", "timelapse: could not start ffmpeg for CTA overlay - " + (e && e.message || e)); return finish(bytes); }
-
-      const killTimer = setTimeout(() => { try { child.kill(); } catch {} }, CTA_TIMEOUT_MS);
+      catch (e) { return reject(e); }
+      const killTimer = setTimeout(() => { try { child.kill(); } catch {} }, timeoutMs);
       let stderr = "";
       if (child.stderr) child.stderr.on("data", (d) => { stderr += d; });
-      child.on("error", (e) => {
-        clearTimeout(killTimer);
-        ctx.hublog("warn", "timelapse: ffmpeg CTA overlay failed to start - " + (e && e.message || e));
-        finish(bytes);
-      });
+      child.on("error", (e) => { clearTimeout(killTimer); reject(e); });
       child.on("close", (code) => {
         clearTimeout(killTimer);
-        if (code !== 0) {
-          ctx.hublog("warn", "timelapse: ffmpeg CTA overlay exited " + code + " - posting the un-overlaid video instead. " + stderr.slice(-300));
-          return finish(bytes);
-        }
-        let out;
-        try { out = fs.readFileSync(outPath); }
-        catch (e) { ctx.hublog("warn", "timelapse: could not read ffmpeg CTA output - " + (e && e.message || e)); return finish(bytes); }
-        if (!out || out.length < 1000) {
-          ctx.hublog("warn", "timelapse: ffmpeg CTA output looked empty/corrupt - posting the un-overlaid video instead");
-          return finish(bytes);
-        }
-        finish(out);
+        if (code !== 0) reject(new Error("ffmpeg exited " + code + " - " + stderr.slice(-300)));
+        else resolve();
       });
     });
+  }
+
+  // Builds intro(optional)+timelapse+outro as three separately-encoded clips
+  // (all normalized to the same W x H / fps / pixel format via
+  // scaleFitFilter) and stream-copies them together with the concat
+  // demuxer - simpler and more robust than one filter_complex expression
+  // mixing two image inputs and a video input that don't share native fps
+  // or timestamps. Every U1 camera render checked so far carries no audio
+  // track (verified 2026-09-23 against a real timelapse), so the composited
+  // output is silent throughout, deliberately, not by omission - worth
+  // revisiting if that ever turns out not to hold for every printer.
+  // Throws on any failure; composeOrFallback below is what fails open.
+  async function composeVideo(bytes, photoBytes, logoBytes, width, height) {
+    const stamp = Date.now() + "_" + Math.random().toString(36).slice(2);
+    const dir = os.tmpdir();
+    const mainIn = path.join(dir, "tlc_main_" + stamp + ".mp4");
+    const photoIn = path.join(dir, "tlc_photo_" + stamp + ".jpg");
+    const logoIn = logoBytes ? path.join(dir, "tlc_logo_" + stamp + ".png") : null;
+    const segMain = path.join(dir, "tlc_segmain_" + stamp + ".mp4");
+    const segOutro = path.join(dir, "tlc_segoutro_" + stamp + ".mp4");
+    const segIntro = logoBytes ? path.join(dir, "tlc_segintro_" + stamp + ".mp4") : null;
+    const listFile = path.join(dir, "tlc_list_" + stamp + ".txt");
+    const finalOut = path.join(dir, "tlc_final_" + stamp + ".mp4");
+    const cleanup = () => {
+      for (const p of [mainIn, photoIn, logoIn, segMain, segOutro, segIntro, listFile, finalOut]) {
+        if (!p) continue;
+        try { fs.unlinkSync(p); } catch {}
+      }
+    };
+    try {
+      fs.writeFileSync(mainIn, bytes);
+      fs.writeFileSync(photoIn, photoBytes);
+      if (logoIn) fs.writeFileSync(logoIn, logoBytes);
+
+      await runFfmpeg(["-y", "-i", mainIn, "-vf", mainSegmentFilter(width, height),
+        "-r", String(COMPOSE_FPS), "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-an", segMain],
+        COMPOSE_STEP_TIMEOUT_MS);
+
+      const outro = stillSegmentFilter(width, height, PHOTO_HOLD_SEC, PHOTO_FADE_SEC, "in");
+      await runFfmpeg(["-y", "-loop", "1", "-i", photoIn, "-t", String(outro.duration), "-vf", outro.filter,
+        "-r", String(COMPOSE_FPS), "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-an", segOutro],
+        COMPOSE_STEP_TIMEOUT_MS);
+
+      const segments = [];
+      if (segIntro) {
+        const intro = stillSegmentFilter(width, height, LOGO_HOLD_SEC, LOGO_FADE_SEC, "both");
+        await runFfmpeg(["-y", "-loop", "1", "-i", logoIn, "-t", String(intro.duration), "-vf", intro.filter,
+          "-r", String(COMPOSE_FPS), "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-an", segIntro],
+          COMPOSE_STEP_TIMEOUT_MS);
+        segments.push(segIntro);
+      }
+      segments.push(segMain, segOutro);
+
+      // Concat demuxer list format: each path quoted, an embedded single
+      // quote escaped as '\'' - these are our own generated temp paths
+      // under os.tmpdir(), never user input, but the escape costs nothing.
+      const listBody = segments
+        .map((p) => "file '" + p.replace(/\\/g, "/").replace(/'/g, "'\\''") + "'")
+        .join("\n") + "\n";
+      fs.writeFileSync(listFile, listBody);
+      await runFfmpeg(["-y", "-f", "concat", "-safe", "0", "-i", listFile, "-c", "copy", finalOut],
+        COMPOSE_STEP_TIMEOUT_MS);
+
+      const out = fs.readFileSync(finalOut);
+      if (!out || out.length < 1000) throw new Error("composed output looked empty/corrupt");
+      cleanup();
+      return out;
+    } catch (e) {
+      cleanup();
+      throw e;
+    }
+  }
+
+  // Fails open to the plain timelapse bytes on ANY compositing problem
+  // (missing ffmpeg, a bad photo fetch, a corrupt logo file, a timeout) -
+  // exactly like the old CTA overlay failed open. No photo at all (product
+  // not matched, publish_social off, no image on file) skips compositing
+  // entirely rather than fading into a blank frame.
+  async function composeOrFallback(bytes, photoBytes, logoBytes, width, height) {
+    if (!photoBytes) return bytes;
+    try {
+      return await composeVideo(bytes, photoBytes, logoBytes, width, height);
+    } catch (e) {
+      ctx.hublog("warn", "timelapse: video compositing failed - posting the plain timelapse instead. " + (e && e.message || e));
+      return bytes;
+    }
+  }
+
+  // Looks up the finished-print photo for gcodeFilename via the same edge
+  // function the upload POST already talks to - passcode in a header, not
+  // the query string. Returns null (never throws past this point) on
+  // anything short of a clean 200 with an image_url AND a real image body,
+  // since "nothing to fade into" is this function's normal, expected answer
+  // for most calls (no product match, publish_social off, no photo on
+  // file), not an error worth logging every time.
+  async function fetchEndPhoto(uploadUrl, passcode, gcodeFilename) {
+    try {
+      const u = new URL(uploadUrl);
+      u.searchParams.set("gcode_filename", gcodeFilename);
+      const r = await fetch(u.toString(), { headers: { "x-sf3d-passcode": passcode } });
+      if (!r.ok) return null;
+      const j = await r.json().catch(() => null);
+      if (!j || !j.image_url) return null;
+      const img = await fetch(j.image_url);
+      if (!img.ok) return null;
+      const buf = Buffer.from(await img.arrayBuffer());
+      return buf.length > 500 ? buf : null;
+    } catch (e) {
+      ctx.hublog("warn", "timelapse: could not fetch end-of-video photo for " + gcodeFilename + " - " + (e && e.message || e));
+      return null;
+    }
+  }
+
+  // Reads config.json's sf3dTimelapse.logoFile off disk if it points at a
+  // real file - a relative path resolves against the Hub's own baseDir,
+  // same as every other config-driven path in this codebase. Missing
+  // config, missing file, or a read error all mean the same thing: no logo
+  // intro today, compose with the photo outro alone.
+  function loadLogoBytes(c) {
+    if (!c.logoFile) return null;
+    const p = path.isAbsolute(c.logoFile) ? c.logoFile : path.join(ctx.baseDir, c.logoFile);
+    try { return fs.readFileSync(p); } catch { return null; }
   }
 
   // Returns true when this job is DONE being tried (uploaded, or given up on
@@ -308,18 +417,22 @@ function register(ctx) {
       return true;
     }
 
-    const { duration, frames } = probe(bytes);
+    const { duration, frames, width, height } = probe(bytes);
     if (duration < MIN_DURATION_SEC) {
       ctx.hublog("info", "timelapse: rendered clip for " + job.printer + "/" + job.filename +
         " probed at " + duration + "s - treating as a failed render, skipping");
       return true;
     }
 
-    // duration/frames come from the pre-overlay probe deliberately - drawtext
-    // draws over existing frames, it doesn't add/remove any, so re-probing
-    // after the burn would just be the same numbers at the cost of another
-    // ffprobe spawn.
-    const posted = await burnCta(bytes, c.ctaText || DEFAULT_CTA_TEXT);
+    // duration/frames come from the pre-compose probe deliberately - they
+    // describe the ORIGINAL print's timelapse, matching what every other
+    // row in sf3d_timelapses already means; the intro/outro segments and
+    // the re-encode change the posted file's own length, but re-probing the
+    // composited output would silently redefine those two columns for just
+    // the new rows.
+    const photoBytes = await fetchEndPhoto(url, c.passcode, job.filename);
+    const logoBytes = loadLogoBytes(c);
+    const posted = await composeOrFallback(bytes, photoBytes, logoBytes, width, height);
 
     const printedAt = fmtPrintedAt(job.startAt || job.at);
     const form = new FormData();
@@ -386,4 +499,4 @@ function register(ctx) {
   if (timer.unref) timer.unref();
 }
 
-module.exports = { register, slugify, buildR2Key, fmtPrintedAt, pickCameraFile, escapeDrawtext, ctaFilter };
+module.exports = { register, slugify, buildR2Key, fmtPrintedAt, pickCameraFile, scaleFitFilter, stillSegmentFilter, mainSegmentFilter };
