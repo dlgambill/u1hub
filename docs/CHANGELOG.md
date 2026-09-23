@@ -77,6 +77,19 @@ printers, and nothing leaves your network unless you turn remote access on.
 
 ---
 
+## New in 2.29 - what it actually sells for
+
+The 2.28 line under a file says what a plate has to sell for. Now the box
+beside it takes what a piece really sells for and answers as you type: what
+the plate brings in, dollars per printer hour, dollars per gram of filament,
+and the margin over filament - in red when it lands under your sell floor.
+Save keeps one row per file (the last price wins), and the "table" link opens
+every file you have priced, most dollars per printer hour first, with totals
+at the bottom. Click a column to sort it the other ways, click a file name to
+select it, × to drop a row. Danny: "so that I can look and see what is most
+and least profitable." Rows live in margin.json beside the Hub, per install;
+nothing is decided from them.
+
 ### 2.28.1 - easier on the eyes
 
 Danny, after 2.28.0: "the UI is really dark and sometimes difficult to

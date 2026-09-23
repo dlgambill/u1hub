@@ -3695,6 +3695,38 @@ async function stopHub() {
     ok(/\/modules\/margin-ui\.js/.test(await (await fetch(HUB + "/")).text()), "margin client script injected when on");
     const mui = fs.readFileSync(path.join(REPO, "public", "modules", "margin-ui.js"), "utf8");
     ok(/id = "mgline"/.test(mui) && /jmeta/.test(mui) && /setMargin/.test(mui) && /\/api\/margin\/quote/.test(mui), "the client draws one line under the job card's meta and a Settings block with the two rates");
+
+    // v2.29: what a piece actually sells for, and the table of every priced file.
+    const sp = mg.actual({ grams: 297.1, minutes: 1076, name: "Spider - Zou3D x24.gcode", price: 5 });
+    ok(sp.pieces === 24 && sp.revenue === 120 && sp.actual_per_hour === 6.69 && sp.actual_per_g === 0.4 && sp.margin === 114.06 && sp.margin_pct === 95 && sp.below_floor === false, "actual: 24 spiders at $5 over 17.9 h on 297 g = $120 a plate, $6.69/hr, $0.40/g, $114 over filament", sp);
+    ok(mg.actual({ grams: 297.1, minutes: 1076, name: "Spider - Zou3D x24.gcode", price: 1 }).below_floor === true, "actual: $1 each is $0.08/g, under the $0.12 floor");
+    const a2 = mg.actual({ grams: 100, minutes: null, name: "plate.gcode", price: 20 });
+    ok(a2.pieces === 1 && a2.revenue === 20 && a2.actual_per_hour === null && a2.actual_per_g === 0.2, "actual: no count means the price is the plate's; no time means no per-hour", a2);
+    ok(mg.actual({ grams: null, minutes: 100, name: "x", price: 2 }).revenue === null, "actual: no grams, no numbers");
+    r = await jpost("/api/margin/price", { file: "Spider - Zou3D x24.gcode", type: "u1", price: 5, grams: 297.1, est: "17h 56m 17s" });
+    ok(r.status === 200 && r.body.row && r.body.row.per_hour === 6.69 && r.body.row.per_g === 0.4 && r.body.row.pieces === 24 && r.body.row.hours === 17.95, "POST /api/margin/price saves a row with the numbers worked out (time from the slicer's string)", r.body);
+    r = await jpost("/api/margin/price", { file: "Penguin x20.gcode", type: "u1", price: 4, grams: 200, minutes: 1200 });
+    ok(r.status === 200 && r.body.row.per_hour === 4 && r.body.row.per_g === 0.4 && r.body.row.margin === 76, "…a second file: 20 penguins at $4 over 20 h = $4/hr", r.body.row);
+    r = await jpost("/api/margin/price", { file: "Cheap x10.gcode", type: "u1", price: 0.5, grams: 100, minutes: 600 });
+    ok(r.status === 200 && r.body.row.below_floor === true && r.body.row.per_g === 0.05, "…a third under the floor is saved and marked", r.body.row);
+    r = await jpost("/api/margin/price", { file: "Spider - Zou3D x24.gcode", type: "u1", price: 6, grams: 297.1, est: "17h 56m 17s" });
+    ok(r.status === 200 && r.body.row.price === 6 && r.body.row.revenue === 144, "saving the same file again replaces its row (the latest price wins)", r.body.row);
+    r = await jpost("/api/margin/price", { file: "nogram.gcode", type: "u1", price: 5, grams: "" });
+    ok(r.status === 400 && /filament total/.test(r.body.error), "no grams: refused with a reason", r.body);
+    r = await jpost("/api/margin/price", { file: "x.gcode", type: "u1", price: "free", grams: 10 });
+    ok(r.status === 400, "a price that is not a number is refused");
+    r = await jget("/api/margin/table?type=u1");
+    ok(r.status === 200 && r.body.count === 3 && r.body.sort === "per_hour" && r.body.rows[0].file === "Spider - Zou3D x24.gcode" && r.body.rows[2].file === "Cheap x10.gcode", "GET /api/margin/table: three rows, most dollars per printer hour first", r.body.rows.map(x => x.file + " " + x.per_hour));
+    ok(r.body.totals && r.body.totals.revenue === 229 && r.body.totals.margin === 217.06, "…with totals", r.body.totals);
+    r = await jget("/api/margin/table?type=u1&sort=margin");
+    ok(r.body.rows[0].file === "Spider - Zou3D x24.gcode" && r.body.rows[1].file === "Penguin x20.gcode", "…sortable by margin");
+    r = await jget("/api/margin/table?type=u1&file=" + encodeURIComponent("Penguin x20.gcode"));
+    ok(r.body.row && r.body.row.price === 4, "…one file's row on request (the job card prefills from it)", r.body);
+    ok(JSON.parse(fs.readFileSync(path.join(hubDir, "margin.json"), "utf8")).prices["u1:Penguin x20.gcode"].price === 4, "rows persist in margin.json");
+    r = await jpost("/api/margin/price/remove", { file: "Cheap x10.gcode", type: "u1" });
+    ok(r.status === 200 && r.body.removed === true && (await jget("/api/margin/table?type=u1")).body.count === 2, "a row can be removed");
+    ok(/id="mgin"/.test(mui) && /\/api\/margin\/price/.test(mui) && /\/api\/margin\/table/.test(mui) && /mgmodal/.test(mui), "the client has the price box, Save, and the table modal");
+    ok(/margin\.json/.test(fs.readFileSync(path.join(REPO, ".gitignore"), "utf8")), "margin.json is state and gitignored");
   }
 
   console.log("\n== UI: gold.css discipline layer (v2.17) ==");

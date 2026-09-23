@@ -34,9 +34,14 @@ printer, with thumbnails.
 **Know whether it is worth printing.** Under every file you select, one line
 says what its filament costs, the least it has to sell for (per piece when the
 file name carries the plate count, like `Penguin x20.gcode`), and what that
-comes to per printer hour. The two rates behind it - your sell floor per gram
-and what filament costs you per gram - are in Settings. The Hub never decides
-anything from this; it is the number to look at before you queue a plate.
+comes to per printer hour. Type what a piece really sells for in the box
+beside it and you get the real numbers: what the plate brings in, dollars per
+printer hour, dollars per gram, margin over filament. Save it, and the table
+link lists every file you have priced, most profitable per printer hour
+first, so you can see which models carry the farm and which just keep it
+busy. The two rates behind the floor - your sell floor per gram and what
+filament costs you per gram - are in Settings. The Hub never decides anything
+from this; it is the number to look at before you queue a plate.
 
 **Get a second pair of eyes before you press print.** With your own Anthropic
 API key in Settings, the AI pre-flight button on the job card has Claude read
