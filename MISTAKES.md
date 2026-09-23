@@ -19,7 +19,7 @@ Running log of things that broke, why, and the rule that stops a repeat.
 | Asserted or acted without checking first | 12 incidents | rule 8 |
 | Harness green while the feature was broken | 4 incidents | rule 2 — "green" is not "verified"; the live gate for a button is the click |
 | Unverified shape trusted as complete | 3 incidents | rule 6 |
-| Shipped onto one surface, not every surface that draws the thing | 3 incidents | *approaching a law* — check every tab that renders it before calling it done |
+| Shipped onto one surface, not every surface that draws the thing | 4 incidents | *approaching a law* — check every tab that renders it before calling it done; the phone is a surface, 390px frame, scrollWidth <= innerWidth |
 | Version drift across the three files | 1 | rule 4 |
 | Staging vs git clone drift | 2 incidents | rule 3 |
 | Claimed done without opening the artifact | 1 | *watch this one* — a summary is not evidence |
@@ -27,6 +27,37 @@ Running log of things that broke, why, and the rule that stops a repeat.
 
 Bridge quirks are operating facts, not judgment failures; a rule that says
 "remember these four things" is a lookup table wearing a rule's clothes.
+
+---
+
+## 2026-09-23 - 2.29 shipped a phone that cut every printer card off at the right edge
+
+**What happened:** Danny, from his phone: "since we made changes
+yesterday, the printer cards have been getting cut off on mobile. I can't
+pinch them to fit the screen either." The 2.29 price readout on the job
+card was a `white-space:nowrap` span ~80 characters long. `.main` is a
+grid item with the default `min-width:auto`, so its track grew to the
+span (~700px on a 390px phone); the phone layout's `.shell{overflow-x:
+clip}` then cut the excess off with nothing to scroll or zoom into. Every
+card below the job card - the whole fleet - lost its right third.
+
+**Root cause:** two releases (2.29.0, 2.30.0) verified on 4546 in a
+desktop Chrome and never at a phone width, and I had written in the 2.28.1
+note that 390px was "the first thing to tell me" - then did not check it
+myself on the next two. Same cluster as "shipped onto one surface, not
+every surface that draws the thing": the phone is a surface.
+
+**Consequence:** the dashboard unusable on a phone for about a day, which
+is where Danny reads it from the market.
+
+**Rule:** the live gate for anything on the dashboard includes a 390px
+frame, and the check is one number: `document.documentElement.scrollWidth
+<= innerWidth`. The window-resize tool did not take on a maximized Chrome;
+a same-origin 390px iframe injected into the page did, and is now the
+way. And `min-width:0` on grid/flex items that hold arbitrary content is
+not optional - the shell has it now (gold.css), so this class of overflow
+cannot resize the page again. Cluster count for "one surface, not every
+surface" goes to 4.
 
 ---
 

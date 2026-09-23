@@ -379,3 +379,17 @@ body{font-size:14px;}
 .chip, .srcbar label{color:var(--ink-dim); border-color:var(--line);}
 .srcbar label.off{opacity:.55;}
 .pcard.offline{opacity:.62;}
+
+/* ---- 2.30.2: the page can never be wider than the phone again. -----------
+   .shell is a grid and .main is its item; a grid item's default
+   min-width:auto means its track grows to the widest UNBREAKABLE thing
+   inside it. The 2.29 price readout on the job card was one long nowrap
+   span, so on a 390px phone the column became ~700px, the shell's
+   overflow-x:clip cut every printer card off at the right edge, and there
+   was nothing to scroll or pinch to. The readout wraps now (margin-ui.js);
+   this is the belt: the column, the cards and the modules inside it may
+   shrink below their content, so the next nowrap anyone adds overflows its
+   own line instead of resizing the page. Never html,body{overflow-x:hidden}
+   (MISTAKES.md 2026-08-30). ---- */
+.main, .jobcard, .pcard, .fleet, #dashview, [id^="modview-"]{min-width:0;}
+.jobcard .jmeta, .mgline{overflow-wrap:anywhere;}

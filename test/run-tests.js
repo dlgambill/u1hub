@@ -3801,6 +3801,11 @@ async function stopHub() {
     ok(cbytes[0] === 0xef && cbytes[1] === 0xbb && cbytes[2] === 0xbf, "…and it opens in Excel as text (UTF-8 BOM on the wire)", [...cbytes.slice(0, 3)]);
     await jpost("/api/margin/price/remove", { file: "Cat, the \"big\" one x2.gcode", type: "u1" });
     ok(/id="mgexport"/.test(mui) && /table\.csv/.test(mui), "the table has an Export CSV button");
+    // 2.30.2: the phone regression. The price readout was one nowrap span;
+    // .main is a grid item with min-width:auto, so the column grew to the
+    // span and the shell's overflow-x:clip cut every card off at the edge.
+    ok(!/\.mgres\{[^}]*white-space:\s*nowrap/.test(mui), "the job-card readout is never nowrap (it made the page wider than a phone, 2026-09-23)");
+    ok(/\.main,[^{]*\{min-width:0;\}/.test(fs.readFileSync(path.join(REPO, "public", "gold.css"), "utf8")), "…and the main column may shrink below its content, so the next nowrap overflows its line instead of the page");
     ok(/margin\.json/.test(fs.readFileSync(path.join(REPO, ".gitignore"), "utf8")), "margin.json is state and gitignored");
   }
 

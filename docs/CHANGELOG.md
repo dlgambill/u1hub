@@ -77,6 +77,19 @@ printers, and nothing leaves your network unless you turn remote access on.
 
 ---
 
+### 2.30.2 - the phone, uncut
+
+Since 2.29 the dashboard on a phone could be wider than the screen: the
+printer cards ran off the right edge and nothing scrolled or pinched to
+reach them. The price readout on the job card was one line that refused
+to wrap, the main column is a grid item that grows to fit its widest
+unbreakable thing, and the phone layout clips the overflow - so the page
+was 700px wide on a 390px phone with the extra simply cut off. The readout
+wraps now, and the column, the cards and every module inside it are
+allowed to shrink below their content, so the next stray nowrap anyone
+adds spills over its own line instead of resizing the page. Checked in a
+390px frame: page 377px wide, every card inside it.
+
 ### 2.30.1 - the table as a file
 
 An Export CSV button on the "What sells" table. Same rows, same order as

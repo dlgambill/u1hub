@@ -46,7 +46,10 @@
       ".mgprice input{font:inherit; font-family:var(--sans); font-size:13px; width:76px; color:var(--ink); background:var(--panel-2); border:1px solid var(--line); border-radius:var(--r-sm,6px); padding:3px 7px;}",
       ".mgprice input:focus{outline:none; border-color:color-mix(in srgb, var(--signal) 55%, var(--line)); box-shadow:0 0 0 3px color-mix(in srgb, var(--signal) 16%, transparent);}",
       ".mgprice .btn{font-size:11.5px; padding:3px 10px;}",
-      ".mgprice .mgres{white-space:nowrap;}",
+      // 2.30.2: never nowrap here. .main is a grid item (min-width:auto), so an
+      // unbreakable 80-character readout made the whole column wider than a
+      // phone and the shell's overflow-x:clip cut every card off at the edge.
+      ".mgprice .mgres{white-space:normal; overflow-wrap:anywhere;}",
       ".mgprice .mgres.low b{color:var(--bad,#e5484d);}",
       ".mgprice .mgres.ok b{color:var(--ok,#3DD68C);}",
       ".mgprice .mgsaved{color:var(--ink-faint);}",
