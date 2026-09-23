@@ -81,6 +81,25 @@ function actual({ grams, minutes, name, price, sell_per_g, cost_per_g }) {
   return out;
 }
 
+// Pure: saved rows -> CSV text (header + one line per file). Exported for the harness.
+const CSV_COLS = [
+  ["file", r => r.file], ["type", r => r.type], ["pieces", r => r.pieces], ["price_each", r => r.price], ["plate_revenue", r => r.revenue],
+  ["hours", r => r.hours], ["per_printer_hour", r => r.per_hour], ["per_gram", r => r.per_g], ["grams", r => r.grams],
+  ["filament_cost", r => r.cost], ["margin", r => r.margin], ["margin_pct", r => r.margin_pct], ["min_price_each", r => r.min_unit],
+  ["sell_floor_per_g", r => r.sell_per_g], ["filament_cost_per_g", r => r.cost_per_g], ["below_floor", r => r.below_floor ? "yes" : "no"],
+  ["saved", r => new Date(r.at).toISOString()]
+];
+function csvCell(v) {
+  if (v == null) return "";
+  const s = String(v);
+  return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+function tableCsv(rows) {
+  const lines = [CSV_COLS.map(c => c[0]).join(",")];
+  for (const r of rows) lines.push(CSV_COLS.map(c => csvCell(c[1](r))).join(","));
+  return lines.join("\r\n") + "\r\n";
+}
+
 function register(ctx) {
   // ---- the price table (v2.29): one row per file, keyed by type:name -----
   const FILE = path.join(ctx.baseDir, "margin.json");
@@ -172,8 +191,23 @@ function register(ctx) {
                totals: rows.length ? { revenue: r2(rows.reduce((s, r) => s + (r.revenue || 0), 0)), margin: r2(rows.reduce((s, r) => s + (r.margin || 0), 0)), hours: r2(rows.reduce((s, r) => s + (r.hours || 0), 0)) } : null });
   });
 
+  // GET /api/margin/table.csv?type=u1&sort=per_hour - the same rows as a
+  // spreadsheet, one line per file, for the export button on the table.
+  // Plain CSV with a UTF-8 BOM so Excel on Windows opens it as text, not
+  // mojibake, and quotes only where a value needs them.
+  ctx.app.get("/api/margin/table.csv", (req, res) => {
+    const q = req.query || {};
+    const slug = q.type ? String(q.type) : null;
+    const sort = ["per_hour", "per_g", "margin", "revenue", "price", "at", "hours"].includes(String(q.sort)) ? String(q.sort) : "per_hour";
+    const rows = Object.values(ROWS).filter(r => !slug || r.type === slug)
+      .sort((a, b) => ((b[sort] == null ? -Infinity : b[sort]) - (a[sort] == null ? -Infinity : a[sort])) || a.file.localeCompare(b.file));
+    res.type("text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", 'attachment; filename="worth-printing-' + new Date().toISOString().slice(0, 10) + '.csv"');
+    res.send("\ufeff" + tableCsv(rows));
+  });
+
   ctx.provide("margin.quote", (args) => quote({ ...args, ...conf() }));
   ctx.provide("margin.table", () => Object.values(ROWS));
 }
 
-module.exports = { register, quote, actual, qtyFromName, DEFAULTS };
+module.exports = { register, quote, actual, qtyFromName, tableCsv, csvCell, DEFAULTS };

@@ -3786,6 +3786,21 @@ async function stopHub() {
     r = await jpost("/api/margin/price/remove", { file: "Cheap x10.gcode", type: "u1" });
     ok(r.status === 200 && r.body.removed === true && (await jget("/api/margin/table?type=u1")).body.count === 2, "a row can be removed");
     ok(/id="mgin"/.test(mui) && /\/api\/margin\/price/.test(mui) && /\/api\/margin\/table/.test(mui) && /mgmodal/.test(mui), "the client has the price box, Save, and the table modal");
+    // v2.30.1: the table as a file.
+    ok(mg.csvCell('Spider, "the" big one') === '"Spider, ""the"" big one"' && mg.csvCell(5) === "5" && mg.csvCell(null) === "", "csv: commas and quotes are quoted, numbers and blanks are bare");
+    r = await jpost("/api/margin/price", { file: "Cat, the \"big\" one x2.gcode", type: "u1", price: 9, grams: 50, minutes: 300 });
+    const cx = await fetch(HUB + "/api/margin/table.csv?type=u1&sort=margin");
+    const ctext = await cx.text();
+    ok(cx.status === 200 && /text\/csv/.test(cx.headers.get("content-type")) && /attachment; filename="worth-printing-\d{4}-\d{2}-\d{2}\.csv"/.test(cx.headers.get("content-disposition") || ""), "GET /api/margin/table.csv answers as a CSV download", cx.headers.get("content-disposition"));
+    const clines = ctext.replace(/^\ufeff/, "").split("\r\n").filter(Boolean);
+    ok(clines[0] === "file,type,pieces,price_each,plate_revenue,hours,per_printer_hour,per_gram,grams,filament_cost,margin,margin_pct,min_price_each,sell_floor_per_g,filament_cost_per_g,below_floor,saved", "…with a header row naming every column", clines[0]);
+    ok(clines.length === 4 && clines[1].startsWith("Spider - Zou3D x24.gcode,u1,24,6,144,"), "…one line per priced file in the sort order asked for (margin: the spider first)", clines.slice(1).map(l => l.split(",")[0]));
+    ok(clines.some(l => l.startsWith('"Cat, the ""big"" one x2.gcode",u1,2,9,18,5,3.6,0.36,50,1,17,94,3,')), "…a file name with a comma and quotes survives as one cell", clines.find(l => /Cat/.test(l)));
+    // .text() strips a BOM by spec (TextDecoder ignoreBOM=false), so look at the bytes.
+    const cbytes = new Uint8Array(await (await fetch(HUB + "/api/margin/table.csv?type=u1")).arrayBuffer());
+    ok(cbytes[0] === 0xef && cbytes[1] === 0xbb && cbytes[2] === 0xbf, "…and it opens in Excel as text (UTF-8 BOM on the wire)", [...cbytes.slice(0, 3)]);
+    await jpost("/api/margin/price/remove", { file: "Cat, the \"big\" one x2.gcode", type: "u1" });
+    ok(/id="mgexport"/.test(mui) && /table\.csv/.test(mui), "the table has an Export CSV button");
     ok(/margin\.json/.test(fs.readFileSync(path.join(REPO, ".gitignore"), "utf8")), "margin.json is state and gitignored");
   }
 

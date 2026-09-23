@@ -77,6 +77,14 @@ printers, and nothing leaves your network unless you turn remote access on.
 
 ---
 
+### 2.30.1 - the table as a file
+
+An Export CSV button on the "What sells" table. Same rows, same order as
+the screen, one line per priced file with every number the Hub worked out
+(pieces, price, plate revenue, hours, dollars per printer hour and per gram,
+filament cost, margin, the floor it was judged against, and when you saved
+it). Opens straight into Excel or Sheets.
+
 ## New in 2.30 - tidy the shelf from the shelf
 
 Three more buttons on every Models card, under Open in Orca and Settings.

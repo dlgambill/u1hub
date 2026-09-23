@@ -168,7 +168,9 @@
     MODAL = document.createElement("div");
     MODAL.className = "modal";
     MODAL.id = "mgmodal";
-    MODAL.innerHTML = '<div class="modalbox" style="max-width:860px"><div class="modalhdr"><span>What sells, per printer hour</span><button class="modalx" id="mgclose" title="Close">×</button></div><div class="mgwrap" id="mgwrap"></div><div class="mgnote" id="mgfoot"></div></div>';
+    MODAL.innerHTML = '<div class="modalbox" style="max-width:860px"><div class="modalhdr"><span>What sells, per printer hour</span>' +
+      '<span style="margin-left:auto; display:flex; gap:8px; align-items:center"><a class="btn ghost" id="mgexport" href="#" download style="font-size:11.5px; padding:4px 10px; text-decoration:none" title="Every priced file as a spreadsheet (CSV), in the order shown">Export CSV</a>' +
+      '<button class="modalx" id="mgclose" title="Close">×</button></span></div><div class="mgwrap" id="mgwrap"></div><div class="mgnote" id="mgfoot"></div></div>';
     document.body.appendChild(MODAL);
     MODAL.addEventListener("click", async e => {
       if (e.target === MODAL || e.target.id === "mgclose") { MODAL.classList.remove("show"); return; }
@@ -188,6 +190,8 @@
   function openTable() { ensureModal().classList.add("show"); loadTable(); }
   async function loadTable() {
     const box = MODAL.querySelector("#mgwrap"), foot = MODAL.querySelector("#mgfoot");
+    const ex = MODAL.querySelector("#mgexport");
+    if (ex) ex.href = "/api/margin/table.csv?type=" + encodeURIComponent(typeSlug()) + "&sort=" + SORT;   // v2.30.1: the same rows, same order, as a file
     const d = await jget("/api/margin/table?type=" + encodeURIComponent(typeSlug()) + "&sort=" + SORT);
     if (!d) { box.innerHTML = '<div class="mgnote">Could not load the table.</div>'; return; }
     if (!d.rows.length) { box.innerHTML = '<div class="mgnote">Nothing priced yet. Select a file, type what a piece sells for, press Save.</div>'; foot.textContent = ""; return; }
