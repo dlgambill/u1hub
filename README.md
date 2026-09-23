@@ -57,7 +57,11 @@ of 3MF project files (Designer\Model\file.3mf, the way designers ship them)
 and shows each one with the plate render saved inside it, the colors it was
 painted with, and the objects on the plate. Open in Orca launches it in
 Snapmaker Orca on the Hub computer; when you save the gcode, the Hub notices
-and offers to select it or send it to Dispatch.
+and offers to select it or send it to Dispatch. The shelf can be tidied from
+the shelf, too: Rename files a model as `Designer\Name\Designer - Name.3mf`
+(it shows you where first), Attributes fixes a designer or name the folders
+got wrong and offers the same move, and Delete removes a file for good after
+one confirm.
 
 ![Models: the shelf behind the library, with the designer's own plate renders](docs/models.png)
 

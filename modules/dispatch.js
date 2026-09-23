@@ -761,6 +761,13 @@ function register(ctx) {
         }
         let best = null;
         for (const cand of cands) if (!best || cand.cost < best.cost) best = cand;
+        // v2.30: the earliest ANY lane could have started this copy, windows
+        // and in-flight prints included. Written into the slot so a reader
+        // (the harness's "no job waits while another lane is free" check)
+        // can tell "queued behind something" from "nobody could start it
+        // sooner" without re-deriving the attended windows from the clock -
+        // which went red at 23:50, 23:02 and 22:49 (MISTAKES.md 2026-09-22).
+        const earliestAny = cands.length ? Math.min(...cands.map(x => x.start)) : null;
         // Stability without stickiness. Keep this copy on the machine it had
         // last time UNLESS moving it is a real win - a freed printer shows up
         // as hours earlier, estimate noise as minutes. Without the tolerance
@@ -798,6 +805,7 @@ function register(ctx) {
           job_id: job.id, file: job.file, type: job.type, copy: c + 1, of: copies,
           printer: best.lane.idx, printerName: best.lane.name,
           est_start: best.start, est_end: best.end, est_minutes: est,
+          earliest_any: earliestAny,
           est_assumed: !job.est_minutes || undefined,
           swaps: best.swaps, deadline: dl, deadline_source: dlInfo.src || undefined,
           pinned: pinned !== undefined || undefined,

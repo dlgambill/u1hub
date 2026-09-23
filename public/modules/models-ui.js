@@ -15,6 +15,10 @@
 // printer you pick - a table of setting, value, what the designer's profile
 // had, and why. After Orca saves, a strip at the top names the new gcode with
 // "Select in library" and "Send to Dispatch".
+// v2.30, second row: Rename (move the file to Designer\Name\Designer -
+// Name.3mf, the convention), Attributes (set the designer and name the Hub
+// should use for it, then the same rename offer) and Delete (permanent, one
+// confirm). All three confirm inline on the card - no browser dialogs.
 "use strict";
 (function () {
   let EL = null, DATA = null, CREATOR = "", Q = "", OFFSET = 0, BUSY = false, SESS = [], SESS_TIMER = 0, SETTINGS = null;
@@ -40,6 +44,7 @@
       // v2.27: coarse pointers (phones/tablets) keep the tab, lose the actions
       // that only do something at the Hub console itself.
       "@media (pointer: coarse) { .mdl-act, #mdl-sess, #mdl-cfgbtn { display: none !important; } }",
+      "@media (pointer: coarse) { .mdl-act2, .mdl-edit { display: none !important; } }",
       ".mdl-wrap{display:grid; grid-template-columns: 220px minmax(0,1fr); gap:14px; margin-top:12px;}",
       ".mdl-rail{background:var(--panel); border:1px solid var(--line); border-radius:var(--r-lg,12px); padding:10px; align-self:start; position:sticky; top:12px; max-height:calc(100vh - 40px); overflow:auto;}",
       ".mdl-rail button{display:flex; width:100%; justify-content:space-between; gap:8px; background:transparent; border:none; color:var(--ink-dim); font:inherit; font-size:12.5px; text-align:left; padding:6px 8px; border-radius:var(--r-sm,6px); cursor:pointer;}",
@@ -59,8 +64,24 @@
       ".mdl-chips{display:flex; gap:4px; align-items:center; min-height:14px; flex-wrap:wrap;}",
       ".mdl-chip{width:14px; height:14px; border-radius:4px; border:1px solid rgba(255,255,255,.18); flex:none;}",
       ".mdl-chips .k{font-family:var(--mono); font-size:10px; color:var(--ink-faint);}",
-      ".mdl-act{display:flex; gap:6px; margin-top:2px;}",
+      ".mdl-act{display:flex; gap:6px; margin-top:2px; flex-wrap:wrap;}",
       ".mdl-act .btn{font-size:11.5px; padding:4px 9px;}",
+      // v2.30: the second row of card actions (rename to the convention,
+      // attributes, delete) and the inline editor / confirm they open. No
+      // browser dialogs: a confirm is a second click on the same card.
+      ".mdl-act2{display:flex; gap:6px; margin-top:-1px; flex-wrap:wrap;}",
+      ".mdl-act2 .btn{font-size:11px; padding:3px 8px; color:var(--ink-dim);}",
+      ".mdl-act2 .btn.danger{color:var(--bad,#e5484d); border-color:color-mix(in srgb, var(--bad,#e5484d) 45%, var(--line));}",
+      ".mdl-edit{display:none; flex-direction:column; gap:6px; margin-top:4px; padding:8px; border:1px solid color-mix(in srgb, var(--signal) 40%, var(--line)); border-radius:var(--r-sm,6px); background:var(--panel-2);}",
+      ".mdl-edit.show{display:flex;}",
+      ".mdl-edit label{font-family:var(--mono); font-size:10.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-faint);}",
+      ".mdl-edit input{font:inherit; font-size:12.5px; color:var(--ink); background:var(--panel); border:1px solid var(--line); border-radius:var(--r-sm,6px); padding:5px 7px; width:100%;}",
+      ".mdl-edit .tgt{font-family:var(--mono); font-size:10.5px; color:var(--ink-dim); word-break:break-all; line-height:1.4;}",
+      ".mdl-edit .tgt b{color:var(--ink); font-weight:600;}",
+      ".mdl-edit .row{display:flex; gap:6px; flex-wrap:wrap; align-items:center;}",
+      ".mdl-edit .msg{font-size:11.5px; color:var(--ink-dim);}",
+      ".mdl-edit .msg.err{color:var(--bad,#e5484d);}",
+      ".mdl-card.conv .mdl-sub::before{content:'✓ '; color:var(--ok,#3DD68C);}",
       ".mdl-sess{background:var(--panel); border:1px solid color-mix(in srgb, var(--signal) 45%, var(--line)); border-radius:var(--r-lg,12px); padding:10px 13px; margin-bottom:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; font-size:13px;}",
       ".mdl-sess .k{font-family:var(--mono); font-size:11px; color:var(--ink-faint);}",
       ".mdl-empty{padding:30px; text-align:center; color:var(--ink-faint); font-size:13px;}",
@@ -118,6 +139,12 @@
     el.querySelector("#mdl-rescan").addEventListener("click", () => { OFFSET = 0; load(true); });
     el.querySelector("#mdl-cfgbtn").addEventListener("click", () => { el.querySelector("#mdl-cfg").classList.toggle("show"); });
     el.querySelector("#mdl-grid").addEventListener("click", onGridClick);
+    el.querySelector("#mdl-grid").addEventListener("keydown", e => {
+      const box = e.target.closest(".mdl-edit");
+      if (!box) return;
+      if (e.key === "Enter") { e.preventDefault(); if (box.querySelector("[data-save-attrs]")) saveAttrs(box.dataset.edit); }
+      if (e.key === "Escape") closeEdit(box.dataset.edit);
+    });
     el.querySelector("#mdl-foot").addEventListener("click", e => { if (e.target.id === "mdl-more") { OFFSET += (DATA && DATA.limit) || 60; load(false, true); } });
     el.querySelector("#mdl-sess").addEventListener("click", onSessClick);
     el.querySelector("#mdl-adv").addEventListener("click", onAdvClick);
@@ -195,16 +222,101 @@
 
   function card(it) {
     const q = "/api/models/thumb?file=" + encodeURIComponent(it.rel) + "&v=" + Math.round(it.mtime || 0);
-    return '<div class="mdl-card" data-rel="' + esc(it.rel) + '">' +
+    return '<div class="mdl-card' + (it.conventional ? " conv" : "") + '" data-rel="' + esc(it.rel) + '">' +
       '<div class="mdl-thumb"><img loading="lazy" src="' + q + '" alt="" onerror="this.replaceWith(Object.assign(document.createElement(\'span\'),{className:\'nothumb\',textContent:\'no preview in file\'}))"></div>' +
       '<div class="mdl-body">' +
       '<div class="mdl-name" title="' + esc(it.rel) + '">' + esc(it.name) + "</div>" +
-      '<div class="mdl-sub">' + esc(it.creator || "") + (it.model && it.model !== it.name ? " · " + esc(it.model) : "") + " · " + mb(it.size) + "</div>" +
+      '<div class="mdl-sub" title="' + (it.conventional ? "filed the way the convention wants it" : esc(it.rel)) + '">' + esc(it.creator || "") + (it.model && it.model !== it.name ? " · " + esc(it.model) : "") + " · " + mb(it.size) + "</div>" +
       '<div class="mdl-chips" data-info="' + esc(it.rel) + '"><span class="k">…</span></div>' +
       '<div class="mdl-act"><button class="btn primary" data-open="' + esc(it.rel) + '"' + (DATA && DATA.orca_found === false ? ' title="Snapmaker Orca not found - set its path under ⚙ Folder"' : "") + '>Open in Orca</button>' +
       (window.HUB_FEATURES && window.HUB_FEATURES.advisor === false ? "" : '<button class="btn ghost" data-suggest="' + esc(it.rel) + '" title="Have Claude read this file\'s geometry and the designer\'s profile and suggest the slicer settings for your printer">✦ Settings</button>') +
       '</div>' +
+      '<div class="mdl-act2">' +
+      '<button class="btn ghost" data-rename="' + esc(it.rel) + '" title="' + (it.conventional ? "Already filed as Designer\\Name\\Designer - Name.3mf" : "Move to Designer\\Name\\Designer - Name.3mf") + '"' + (it.conventional ? " disabled" : "") + '>Rename</button>' +
+      '<button class="btn ghost" data-attrs="' + esc(it.rel) + '" title="Set or change the designer and name">Attributes</button>' +
+      '<button class="btn ghost danger" data-del="' + esc(it.rel) + '" title="Delete this file from the folder">Delete</button>' +
+      '</div>' +
+      '<div class="mdl-edit" data-edit="' + esc(it.rel) + '"></div>' +
       "</div></div>";
+  }
+
+  // ---- v2.30: rename / attributes / delete, all inline on the card ---------
+  function cardOf(rel) { return EL.querySelector('.mdl-card[data-rel="' + CSS.escape(rel) + '"]'); }
+  function editBox(rel) { const c = cardOf(rel); return c ? c.querySelector(".mdl-edit") : null; }
+  function closeEdit(rel) { const b = editBox(rel); if (b) { b.className = "mdl-edit"; b.innerHTML = ""; } }
+  function itemOf(rel) { return (DATA && DATA.items || []).find(x => x.rel === rel) || null; }
+  const tgtHtml = (t, cur) => t ? '<div class="tgt">→ <b>' + esc(t).replace(/\//g, "\\") + "</b>" + (t === cur ? ' <span style="color:var(--ok,#3DD68C)">(already there)</span>' : "") + "</div>" : "";
+
+  async function openAttrs(rel) {
+    const box = editBox(rel); if (!box) return;
+    const it = itemOf(rel) || {};
+    const t = await jget("/api/models/target?file=" + encodeURIComponent(rel));
+    const a = it.attrs || {};
+    box.className = "mdl-edit show";
+    box.innerHTML =
+      '<label>Designer</label><input type="text" data-f="designer" value="' + esc(a.designer || (t && t.designer) || "") + '" placeholder="who made it" spellcheck="false">' +
+      '<label>Name</label><input type="text" data-f="name" value="' + esc(a.name || (t && t.title) || "") + '" placeholder="what it is" spellcheck="false">' +
+      '<div class="tgt" data-preview></div>' +
+      '<div class="row"><button class="btn primary" data-save-attrs="' + esc(rel) + '" style="font-size:11.5px; padding:4px 10px">Save</button><button class="btn ghost" data-cancel="' + esc(rel) + '" style="font-size:11px; padding:3px 8px">Cancel</button><span class="msg" data-msg></span></div>';
+    const preview = () => {
+      const d = box.querySelector('[data-f="designer"]').value.trim(), n = box.querySelector('[data-f="name"]').value.trim();
+      box.querySelector("[data-preview]").innerHTML = d && n ? tgtHtml(d + "/" + n + "/" + d + " - " + n + ".3mf", rel) : '<span style="color:var(--ink-faint)">both fields make the file\'s place: Designer\\Name\\Designer - Name.3mf</span>';
+    };
+    box.querySelectorAll("input").forEach(i => i.addEventListener("input", preview));
+    box.querySelector('[data-f="designer"]').focus();
+    preview();
+  }
+  async function saveAttrs(rel) {
+    const box = editBox(rel); if (!box) return;
+    const msg = box.querySelector("[data-msg]");
+    const r = await jpost("/api/models/attrs", { file: rel, designer: box.querySelector('[data-f="designer"]').value, name: box.querySelector('[data-f="name"]').value });
+    if (!r.ok) { msg.className = "msg err"; msg.textContent = r.d.error || "could not save"; return; }
+    if (r.d.item && DATA) { const i = DATA.items.findIndex(x => x.rel === rel); if (i >= 0) DATA.items[i] = r.d.item; }
+    const it = r.d.item;
+    // Saved. Now the offer: rename to where these attributes say it belongs.
+    box.innerHTML = '<div class="msg">Saved.</div>' + (it && it.target && !it.conventional
+      ? tgtHtml(it.target, rel) + '<div class="row"><button class="btn primary" data-do-rename="' + esc(rel) + '" style="font-size:11.5px; padding:4px 10px">Move and rename</button><button class="btn ghost" data-cancel="' + esc(rel) + '" style="font-size:11px; padding:3px 8px">Not now</button></div>'
+      : '<div class="row"><button class="btn ghost" data-cancel="' + esc(rel) + '" style="font-size:11px; padding:3px 8px">Close</button></div>');
+    const c = cardOf(rel);
+    if (c && it) {
+      c.querySelector(".mdl-name").textContent = it.name;
+      c.querySelector(".mdl-sub").textContent = (it.creator || "") + (it.model && it.model !== it.name ? " · " + it.model : "") + " · " + mb(it.size);
+      // New attributes can move the file's proper place: the ✓ and the Rename button follow.
+      c.classList.toggle("conv", !!it.conventional);
+      const rb = c.querySelector("[data-rename]"); if (rb) rb.disabled = !!it.conventional;
+    }
+  }
+  async function askRename(rel) {
+    const box = editBox(rel); if (!box) return;
+    const t = await jget("/api/models/target?file=" + encodeURIComponent(rel));
+    box.className = "mdl-edit show";
+    if (!t) { box.innerHTML = '<div class="msg err">Could not work out where it goes.</div>'; return; }
+    if (t.missing.length) { box.innerHTML = '<div class="msg">No ' + t.missing.join(" or ") + ' to file it under yet - set it first.</div><div class="row"><button class="btn primary" data-attrs="' + esc(rel) + '" style="font-size:11.5px; padding:4px 10px">Attributes</button><button class="btn ghost" data-cancel="' + esc(rel) + '" style="font-size:11px; padding:3px 8px">Cancel</button></div>'; return; }
+    if (t.already) { box.innerHTML = '<div class="msg">Already filed the way the convention wants it.</div><div class="row"><button class="btn ghost" data-cancel="' + esc(rel) + '" style="font-size:11px; padding:3px 8px">Close</button></div>'; return; }
+    box.innerHTML = tgtHtml(t.target, rel) + '<div class="row"><button class="btn primary" data-do-rename="' + esc(rel) + '" style="font-size:11.5px; padding:4px 10px">Move and rename</button><button class="btn ghost" data-cancel="' + esc(rel) + '" style="font-size:11px; padding:3px 8px">Cancel</button><span class="msg" data-msg></span></div>';
+  }
+  async function doRename(rel) {
+    const box = editBox(rel); const msg = box && box.querySelector("[data-msg]");
+    if (msg) msg.textContent = "moving…";
+    const r = await jpost("/api/models/rename", { file: rel });
+    if (!r.ok) { if (msg) { msg.className = "msg err"; msg.textContent = r.d.error || "could not rename"; } return; }
+    if (ADVFILE === rel) ADVFILE = r.d.rel;
+    // The list is the truth; redraw it rather than patch a card that has moved designers.
+    OFFSET = 0; await load();
+  }
+  function askDelete(rel) {
+    const box = editBox(rel); if (!box) return;
+    box.className = "mdl-edit show";
+    box.innerHTML = '<div class="msg">Delete <b>' + esc(rel.split("/").pop()) + '</b> from the folder? There is no undo.</div><div class="row"><button class="btn primary" data-do-del="' + esc(rel) + '" style="font-size:11.5px; padding:4px 10px; background:var(--bad,#e5484d); border-color:var(--bad,#e5484d); color:#fff">Delete for good</button><button class="btn ghost" data-cancel="' + esc(rel) + '" style="font-size:11px; padding:3px 8px">Keep it</button><span class="msg" data-msg></span></div>';
+  }
+  async function doDelete(rel) {
+    const box = editBox(rel); const msg = box && box.querySelector("[data-msg]");
+    const r = await jpost("/api/models/delete", { file: rel });
+    if (!r.ok) { if (msg) { msg.className = "msg err"; msg.textContent = r.d.error || "could not delete"; } return; }
+    const c = cardOf(rel); if (c) c.remove();
+    if (DATA) { DATA.items = DATA.items.filter(x => x.rel !== rel); DATA.total = Math.max(0, DATA.total - 1); DATA.total_all = Math.max(0, DATA.total_all - 1); }
+    if (ADVFILE === rel) { const adv = EL.querySelector("#mdl-adv"); adv.className = "mdl-adv"; adv.innerHTML = ""; ADVFILE = null; }
+    EL.querySelector("#mdl-count").textContent = DATA.total_all + " file" + (DATA.total_all === 1 ? "" : "s");
   }
 
   // ---- ✦ Settings: the 3MF suggester (v2.28) ----------------------------------
@@ -316,6 +428,14 @@
   async function onGridClick(e) {
     const sg = e.target.closest("[data-suggest]");
     if (sg) { openSuggest(sg.dataset.suggest); return; }
+    const t = e.target.closest("button");
+    if (t && t.dataset.rename != null) { closeEdit(t.dataset.rename); askRename(t.dataset.rename); return; }
+    if (t && t.dataset.attrs != null) { closeEdit(t.dataset.attrs); openAttrs(t.dataset.attrs); return; }
+    if (t && t.dataset.del != null) { closeEdit(t.dataset.del); askDelete(t.dataset.del); return; }
+    if (t && t.dataset.saveAttrs != null) { saveAttrs(t.dataset.saveAttrs); return; }
+    if (t && t.dataset.doRename != null) { doRename(t.dataset.doRename); return; }
+    if (t && t.dataset.doDel != null) { doDelete(t.dataset.doDel); return; }
+    if (t && t.dataset.cancel != null) { closeEdit(t.dataset.cancel); return; }
     const b = e.target.closest("[data-open]");
     if (!b) return;
     b.disabled = true; const was = b.textContent; b.textContent = "Opening…";

@@ -77,6 +77,35 @@ printers, and nothing leaves your network unless you turn remote access on.
 
 ---
 
+## New in 2.30 - tidy the shelf from the shelf
+
+Three more buttons on every Models card, under Open in Orca and Settings.
+
+**Rename** moves the file to where the convention says it lives:
+`Designer\Name\Designer - Name.3mf`. The designer and name come from the
+folders the file already sits in (a designer's download in
+`3D Genie\donut keyring\Donut+man+painted.3mf` becomes
+`3D Genie\donut keyring\3D Genie - donut keyring.3mf`), or from what you
+typed under Attributes, which wins. It shows you the target and asks once;
+it never renames over an existing file; the card, the designer rail and the
+index follow without a rescan. A file that is already filed shows a ✓ and a
+Rename button that has nothing to do.
+
+**Attributes** is for the file the folders got wrong, or the loose one at the
+root of the models folder with no designer at all: set the designer and the
+name, Save, and the card offers to move it right then. The attributes live in
+`models-attrs.json` beside the Hub and ride over the folder-derived values on
+every list, so a file can be filed correctly before it is moved.
+
+**Delete** is permanent, after one confirm on the card itself. Danny's call
+over a trash folder; the Hub only ever deletes a `.3mf` inside the models
+folder, and the harness proves a path outside it is refused.
+
+None of the three use a browser dialog - the confirm is a second click on the
+same card - and all three hide on touch screens with the rest of the desktop
+actions. A loose file named `Designer - Title.3mf` now reads its designer from
+its name, so the rail lists it under the right person.
+
 ## New in 2.29 - what it actually sells for
 
 The 2.28 line under a file says what a plate has to sell for. Now the box

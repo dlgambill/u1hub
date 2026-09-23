@@ -1239,7 +1239,6 @@ async function stopHub() {
       // section inherits from the finish-policy checks above.
       r = await jget("/api/dispatch/plan");
       const all = (r.body.slots || []).filter(s => !s.unplannable);
-      const lanesAll = new Set(all.map(s => s.printer));
       let wasteful = null;
       // "Later than NOW" was the wrong yardstick and it went red at 23:50
       // (2026-08-30): with a window closing at 23:59, a 90-minute job does not
@@ -1249,7 +1248,6 @@ async function stopHub() {
       // is only waiting on something if it starts materially later than the
       // earliest thing in this plan. Packing three jobs onto one lane still
       // trips it, because copies 2 and 3 land hours after copy 1.
-      const earliestPlanned = all.length ? Math.min(...all.map(s => s.est_start)) : Date.now();
       // Second pass at the same defect (2026-08-31, red at 23:02). Replacing
       // Date.now() with earliestPlanned removed the wall clock from the
       // COMPARISON but not from the PLAN: near a closing window some copies fit
@@ -1263,18 +1261,30 @@ async function stopHub() {
       // holding a 00:00 slot overlaps a 23:28→00:30 job and is correctly not
       // counted. Three copies stacked on one lane while the other has nothing
       // still trips it, which is the regression this check exists for.
-      const idleThrough = (printer, t0, t1) =>
-        !all.some(s => s.printer === printer && s.est_start < t1 && s.est_end > t0);
+      // (idleThrough and earliestPlanned, the second pass's yardsticks, are
+      // superseded below; kept in the history, not the code.)
+      // Third pass (2026-09-22, red at 22:49, and again at 22:54 after a
+      // first fix that read slot.delay): a job too long for what was left of
+      // today landed at 00:00 on lane 0 while a short job that still fit
+      // today ran on lane 1 and was done by then - so lane 1 was "idle
+      // through" the long job's span, and every geometric reading of the
+      // plan called that waste. It is not: no lane could have started that
+      // job before the window reopened. The planner now writes the answer
+      // into each slot - earliest_any, the earliest start ANY lane offered
+      // for that copy given everything placed before it, windows and
+      // in-flight prints included - so the check asks the one question it
+      // ever meant to ask: did this copy start materially later than the
+      // farm could have started it? Stacking three copies on one lane while
+      // the other is idle still trips it (copies 2 and 3 start hours after
+      // the idle lane could have taken them); a copy deferred by the window
+      // does not, because earliest_any is deferred with it. The allowance
+      // covers the planner's own tie-breaks (sticky lane, swap weighting),
+      // which are minutes, never hours.
       for (const s of mine) {
-        for (const p of lanesAll) {
-          if (p === s.printer) continue;
-          // another lane free for this job's entire duration, AND this job is
-          // genuinely queued behind something rather than merely starting when
-          // the farm does
-          if (idleThrough(p, s.est_start, s.est_end) && s.est_start > earliestPlanned + 60000) { wasteful = { job: s.file, on: s.printerName, at: new Date(s.est_start).toTimeString().slice(0, 5), freeLane: p }; break; }
-        }
-        if (wasteful) break;
+        if (s.earliest_any == null) continue;
+        if (s.est_start > s.earliest_any + 60 * 60000) { wasteful = { job: s.file, on: s.printerName, at: new Date(s.est_start).toTimeString().slice(0, 5), could_have: new Date(s.earliest_any).toTimeString().slice(0, 5), delay: s.delay }; break; }
       }
+      ok(mine.every(s => s.earliest_any != null), "every planned copy says when the farm could have started it at the earliest (earliest_any)", mine.map(s => s.earliest_any));
       ok(mine.length === 3 && !wasteful,
         "no job waits on a busy printer while another is free for its whole run",
         wasteful || { planned: mine.length, lanes: [...new Set(mine.map(s => s.printer))],
@@ -3491,6 +3501,56 @@ async function stopHub() {
     r = await jpost("/api/models/settings", { folder: "" });
     ok(r.status === 200 && r.body.folder === mroot, "saving a blank folder keeps the one that was set", r.body && r.body.folder);
     ok(fs.existsSync(path.join(hubDir, "models-index.json")) && JSON.parse(fs.readFileSync(path.join(hubDir, "models-index.json"), "utf8")).items.length === 4, "the index is kept on disk for the next boot");
+    // v2.30: attributes, rename to the convention, delete.
+    {
+      ok(mmod.split("3D Genie - Espeon.3mf").creator === "3D Genie" && mmod.split("3D Genie - Espeon.3mf").model === "Espeon", "split: a loose file named 'Designer - Title' reads its designer from the name");
+      ok(mmod.identity("3D Genie/donut keyring/Donut+man+painted.3mf").title === "donut keyring", "identity: a filed 3MF's title is its model folder, not the messy file name");
+      ok(mmod.identity("loose.3mf").designer === "" && mmod.identity("loose.3mf", { designer: "Someone", name: "A: thing?" }).title === "A thing", "identity: attributes win over folders, and are cleaned of characters a folder cannot hold");
+      ok(mmod.conventionRel("Cinderwing3D", "Baby Dragon") === "Cinderwing3D/Baby Dragon/Cinderwing3D - Baby Dragon.3mf", "the convention: Designer/Title/Designer - Title.3mf");
+      await jpost("/api/models/settings", { folder: mroot });
+      for (let i = 0; i < 20; i++) { r = await jget("/api/models"); if (!r.body.refreshing && r.body.total_all) break; await sleep(150); }
+      r = await jget("/api/models/target?file=loose.3mf");
+      ok(r.status === 200 && r.body.target === null && r.body.missing.join(",") === "designer", "target: a loose file with no designer cannot be filed yet, and says which field is missing", r.body);
+      r = await jpost("/api/models/rename", { file: "loose.3mf" });
+      ok(r.status === 400 && /designer first/.test(r.body.error), "rename: refused until the designer is set", r.body);
+      r = await jpost("/api/models/attrs", { file: "loose.3mf", designer: "Harness", name: "Loose Cube" });
+      ok(r.status === 200 && r.body.item && r.body.item.creator === "Harness" && r.body.item.name === "Loose Cube" && r.body.item.target === "Harness/Loose Cube/Harness - Loose Cube.3mf" && r.body.item.conventional === false, "attrs: designer and name saved, the item reads them, and the target is known", r.body.item);
+      ok(JSON.parse(fs.readFileSync(path.join(hubDir, "models-attrs.json"), "utf8")).attrs["loose.3mf"].designer === "Harness", "…persisted in models-attrs.json");
+      r = await jget("/api/models?creator=Harness");
+      ok(r.body.total === 1 && r.body.items[0].rel === "loose.3mf" && r.body.creators.some(c => c.name === "Harness" && c.count === 1), "the list and the designer rail read the attributes over the folders", r.body.creators);
+      r = await jpost("/api/models/rename", { file: "loose.3mf" });
+      ok(r.status === 200 && r.body.rel === "Harness/Loose Cube/Harness - Loose Cube.3mf" && fs.existsSync(path.join(mroot, "Harness", "Loose Cube", "Harness - Loose Cube.3mf")) && !fs.existsSync(path.join(mroot, "loose.3mf")), "rename: the file moves to Designer/Title/Designer - Title.3mf", r.body);
+      ok(r.body.item && r.body.item.conventional === true && r.body.item.creator === "Harness", "…and the returned item is marked as filed");
+      r = await jget("/api/models?creator=Harness");
+      ok(r.body.total === 1 && r.body.items[0].rel === "Harness/Loose Cube/Harness - Loose Cube.3mf", "…the index follows without a rescan", r.body.items.map(i => i.rel));
+      const at = JSON.parse(fs.readFileSync(path.join(hubDir, "models-attrs.json"), "utf8")).attrs;
+      ok(!at["loose.3mf"] && at["Harness/Loose Cube/Harness - Loose Cube.3mf"], "…and the attributes travel with the file");
+      r = await jpost("/api/models/rename", { file: "Harness/Loose Cube/Harness - Loose Cube.3mf" });
+      ok(r.status === 200 && r.body.unchanged === true, "rename on a filed file is a no-op, not an error");
+      // A filed designer 3MF: title = model folder, only the file name changes.
+      r = await jpost("/api/models/rename", { file: "Cinderwing3D/Tiny Horse/Horse_2_Color.3mf" });
+      ok(r.status === 200 && r.body.rel === "Cinderwing3D/Tiny Horse/Cinderwing3D - Tiny Horse.3mf" && fs.existsSync(path.join(mroot, "Cinderwing3D", "Tiny Horse", "Cinderwing3D - Tiny Horse.3mf")), "rename: a filed 3MF keeps its folders and takes the convention's file name", r.body);
+      // Collision: a second file that would land on the same name.
+      fs.writeFileSync(path.join(mroot, "Cinderwing3D", "Tiny Horse", "Horse_dup.3mf"), buildZip([{ name: "3D/3dmodel.model", data: Buffer.from("<model/>") }]));
+      await jget("/api/models?refresh=1"); await sleep(400);
+      r = await jpost("/api/models/rename", { file: "Cinderwing3D/Tiny Horse/Horse_dup.3mf" });
+      ok(r.status === 409 && /already at/.test(r.body.error) && fs.existsSync(path.join(mroot, "Cinderwing3D", "Tiny Horse", "Horse_dup.3mf")), "rename: never over an existing file - 409, nothing moved", r.body);
+      r = await jpost("/api/models/rename", { file: "../config.json" });
+      ok(r.status === 404, "rename: a path outside the folder is refused");
+      r = await jpost("/api/models/delete", { file: "../config.json" });
+      ok(r.status === 404 && fs.existsSync(path.join(hubDir, "config.json")), "delete: a path outside the folder is refused");
+      r = await jpost("/api/models/delete", { file: "Cinderwing3D/Tiny Horse/Horse_dup.3mf" });
+      ok(r.status === 200 && !fs.existsSync(path.join(mroot, "Cinderwing3D", "Tiny Horse", "Horse_dup.3mf")), "delete: the file is gone", r.body);
+      r = await jget("/api/models?q=" + encodeURIComponent("*horse_dup*"));
+      ok(r.body.total === 0, "…and out of the list at once");
+      r = await jpost("/api/models/delete", { file: "Cinderwing3D/Tiny Horse/Horse_dup.3mf" });
+      ok(r.status === 404, "delete: twice is a 404, not a crash");
+      const mui2 = fs.readFileSync(path.join(REPO, "public", "modules", "models-ui.js"), "utf8");
+      ok(/data-rename=/.test(mui2) && /data-attrs=/.test(mui2) && /data-del=/.test(mui2) && /\/api\/models\/rename/.test(mui2) && /\/api\/models\/delete/.test(mui2) && /\/api\/models\/attrs/.test(mui2), "the card has Rename, Attributes and Delete wired to the routes");
+      ok(!/\bconfirm\(/.test(mui2) && !/\balert\(/.test(mui2.replace(/alert\(r\.d\.error/g, "")), "…confirms inline on the card, no browser dialogs for the destructive ones");
+      ok(/@media \(pointer: coarse\) \{ \.mdl-act2, \.mdl-edit \{ display: none !important/.test(mui2), "…and the second row hides on touch like the first");
+      ok(/models-attrs\.json/.test(fs.readFileSync(path.join(REPO, ".gitignore"), "utf8")), "models-attrs.json is state and gitignored");
+    }
     r = await jpost("/api/models/settings", { folder: "", clear: true });
     ok(r.status === 200 && r.body.folder !== mroot, "clear:true is the way to reset it", r.body && r.body.folder);
   }

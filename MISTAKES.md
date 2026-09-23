@@ -15,7 +15,7 @@ Running log of things that broke, why, and the rule that stops a repeat.
 
 | Cluster | Entries | Law |
 |---|---|---|
-| Test depends on when it runs / what else runs | 4 incidents, 5 checks | rule 7 |
+| Test depends on when it runs / what else runs | 5 incidents, 6 checks | rule 7 - and read the reason the system recorded, not a proxy from times |
 | Asserted or acted without checking first | 12 incidents | rule 8 |
 | Harness green while the feature was broken | 4 incidents | rule 2 — "green" is not "verified"; the live gate for a button is the click |
 | Unverified shape trusted as complete | 3 incidents | rule 6 |
@@ -27,6 +27,40 @@ Running log of things that broke, why, and the rule that stops a repeat.
 
 Bridge quirks are operating facts, not judgment failures; a rule that says
 "remember these four things" is a lookup table wearing a rule's clothes.
+
+---
+
+## 2026-09-22 - The planner "waste" check went red at 22:49, third time at a window edge
+
+**What happened:** "no job waits on a busy printer while another is free
+for its whole run" failed on a run that started at 22:45 local. A job too
+long for what was left of the attended window landed at 00:00 on lane 0;
+a short job that still fit today ran on lane 1 and was done by midnight; so
+lane 1 was "idle through" the long job's span and the check called that
+waste. Two earlier passes (2026-08-30 at 23:50, 2026-08-31 at 23:02) had
+removed `Date.now()` from the comparison and then required the free lane to
+be free for the whole span. Neither asked what the PLAN was doing.
+
+**Root cause:** the check kept deriving "waiting" from geometry (start
+times and idle lanes), and the only question it ever meant to ask - could
+the farm have started this copy sooner? - was not answered anywhere in the
+plan. My first fix read `slot.delay` (why the copy waits on ITS lane) and
+went red five minutes later: that block is per chosen lane, and a copy can
+show `queue: 62` on lane 0 while no other lane could have started it
+earlier either. Wrong field, same reflex.
+
+**Consequence:** two red runs on release night, no bad code behind either.
+Not waved through: the planner now writes `earliest_any` into every slot
+(the earliest start any lane offered for that copy, windows and in-flight
+prints included) and the check compares against that. Three copies
+stacked on one idle-neighbored lane still trip it by hours; a copy the
+window deferred does not, because its earliest_any moved with it.
+
+**Rule:** rule 7, applied one level deeper. When a check wants to know why
+something happened, have the system record the answer and read it; do not
+reconstruct it from times, and do not grab the nearest field that sounds
+right (`delay` sounded right). If the response has no such field, add the
+field to the response before writing the assertion.
 
 ---
 

@@ -124,12 +124,44 @@ function nameMatcher(q) {
 }
 
 // rel "Creator/Model/file.3mf" -> { creator, model, name }
+// v2.30: a file at the root named the way the convention names it,
+// "Designer - Title.3mf", reads its designer from the name.
 function split(rel) {
   const parts = rel.split("/");
   const name = parts[parts.length - 1].replace(/\.3mf$/i, "");
   if (parts.length >= 3) return { creator: parts[0], model: parts[1], name };
   if (parts.length === 2) return { creator: parts[0], model: name, name };
+  const m = /^(.+?) - (.+)$/.exec(name);
+  if (m) return { creator: m[1].trim(), model: m[2].trim(), name };
   return { creator: "", model: name, name };
+}
+
+// ---- the naming convention (v2.30) ------------------------------------------
+// Danny keeps his library as <Designer>\<Title>\<Designer> - <Title>.3mf: the
+// folder layout this tab is built on, and the file name he wants on the file
+// itself so it still says whose it is when it travels alone. "Rename" moves a
+// file to exactly that; the designer and title come from the folders, or from
+// the attributes a person typed (attributes win, because folders are guesses
+// and a person is not).
+const BAD_CHARS = /[<>:"/\\|?*\u0000-\u001f]/g;
+function cleanPart(s) {
+  return String(s || "").replace(BAD_CHARS, "").replace(/\s+/g, " ").replace(/^[\s.]+|[\s.]+$/g, "").slice(0, 120);
+}
+// { designer, title } for a rel, from attrs then folders. The title of a file
+// in a <Designer>\<Model>\ folder is the model folder; a loose file's is its
+// own name.
+function identity(rel, attrs) {
+  const s = split(rel);
+  const parts = rel.split("/");
+  const a = attrs || {};
+  const designer = cleanPart(a.designer || s.creator);
+  // s.model is the model folder for a filed 3MF, the title parsed from
+  // "Designer - Title" for a loose one, else the file's own name.
+  const title = cleanPart(a.name || (parts.length >= 3 || s.creator ? s.model : s.name));
+  return { designer, title };
+}
+function conventionRel(designer, title) {
+  return designer + "/" + title + "/" + designer + " - " + title + ".3mf";
 }
 
 // Everything the card shows, read from inside the zip. Pure; exported for the harness.
@@ -210,6 +242,27 @@ function register(ctx) {
     if (j && Array.isArray(j.items) && j.folder) INDEX = { ...j, at: 0 };   // at:0 = stale, refresh soon
   } catch {}
   const saveIndex = () => { try { fs.writeFileSync(INDEX_FILE, JSON.stringify({ folder: INDEX.folder, dirMtime: INDEX.dirMtime, items: INDEX.items, creators: INDEX.creators, truncated: !!INDEX.truncated, saved: Date.now() })); } catch {} };
+  // v2.30: attributes a person typed (designer, name), keyed by rel, kept
+  // beside the index. They ride over the folder-derived values on every
+  // list, and Rename uses them to build the file's proper place.
+  const ATTRS_FILE = path.join(ctx.baseDir, "models-attrs.json");
+  let ATTRS = {};
+  try { ATTRS = JSON.parse(fs.readFileSync(ATTRS_FILE, "utf8")).attrs || {}; } catch {}
+  const saveAttrs = () => { try { fs.writeFileSync(ATTRS_FILE, JSON.stringify({ attrs: ATTRS }, null, 2)); } catch {} };
+  // An item as the tab sees it: folders, then attributes, then the
+  // convention target and whether the file already sits there.
+  function decorate(it) {
+    const a = ATTRS[it.rel];
+    const id = identity(it.rel, a);
+    const target = id.designer && id.title ? conventionRel(id.designer, id.title) : null;
+    return { ...it, creator: a && a.designer ? cleanPart(a.designer) : it.creator, name: a && a.name ? cleanPart(a.name) : it.name,
+             attrs: a ? { designer: a.designer || "", name: a.name || "" } : null, target, conventional: !!target && target === it.rel };
+  }
+  function creatorsOf(items) {
+    const cmap = new Map();
+    for (const it of items) cmap.set(it.creator, (cmap.get(it.creator) || 0) + 1);
+    return [...cmap.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => a.name.localeCompare(b.name));
+  }
 
   async function walk() {
     const c = conf();
@@ -292,7 +345,9 @@ function register(ctx) {
     const ix = await index(String(q.refresh || "") === "1");
     const match = nameMatcher(q.q);
     const creator = q.creator ? String(q.creator) : null;
-    let list = ix.items;
+    // v2.30: attributes ride over the folders before anything filters or counts.
+    const all = ix.items.map(decorate);
+    let list = all;
     if (creator) list = list.filter(it => it.creator === creator);
     if (q.q) list = list.filter(it => match(it.creator + "/" + it.model + "/" + it.name));
     const offset = Math.max(0, parseInt(q.offset, 10) || 0);
@@ -301,11 +356,89 @@ function register(ctx) {
     res.json({
       folder: ix.folder, missing: !!ix.missing, unreachable: ix.unreachable || null, scanning: !!ix.scanning, error: LAST_ERR,
       indexed_at: ix.at, refreshing: !!WALKING, truncated: !!ix.truncated,
-      total_all: ix.items.length, total: list.length, offset, limit,
-      creators: ix.creators,
+      total_all: all.length, total: list.length, offset, limit,
+      creators: creatorsOf(all),
       items: list.slice(offset, offset + limit),
       orcaExe: c.orcaExe, orca_found: fs.existsSync(c.orcaExe)
     });
+  });
+
+  // ---- v2.30: attributes, rename to the convention, delete ---------------------
+  const itemFor = rel => (INDEX && INDEX.items.find(it => it.rel === rel)) || null;
+  // POST /api/models/attrs { file, designer?, name? } - blank clears that one.
+  app.post("/api/models/attrs", (req, res) => {
+    const b = req.body || {};
+    const rel = String(b.file || "");
+    if (!safePath(rel)) return res.status(404).json({ error: "not in the models folder" });
+    const cur = { ...(ATTRS[rel] || {}) };
+    if ("designer" in b) { const v = cleanPart(b.designer); if (v) cur.designer = v; else delete cur.designer; }
+    if ("name" in b) { const v = cleanPart(b.name); if (v) cur.name = v; else delete cur.name; }
+    if (Object.keys(cur).length) { cur.at = Date.now(); ATTRS[rel] = cur; } else delete ATTRS[rel];
+    saveAttrs();
+    const it = itemFor(rel);
+    res.json({ ok: true, item: it ? decorate(it) : null, attrs: ATTRS[rel] || null });
+  });
+  // GET /api/models/target?file= - where Rename would put it, and why not.
+  app.get("/api/models/target", (req, res) => {
+    const rel = String(req.query.file || "");
+    if (!safePath(rel)) return res.status(404).json({ error: "not in the models folder" });
+    const id = identity(rel, ATTRS[rel]);
+    const target = id.designer && id.title ? conventionRel(id.designer, id.title) : null;
+    res.json({ file: rel, designer: id.designer, title: id.title, target, already: target === rel, missing: [!id.designer ? "designer" : null, !id.title ? "name" : null].filter(Boolean) });
+  });
+  // POST /api/models/rename { file } - move to <Designer>/<Title>/<Designer> - <Title>.3mf
+  app.post("/api/models/rename", async (req, res) => {
+    const rel = String((req.body || {}).file || "");
+    const from = safePath(rel);
+    if (!from) return res.status(404).json({ error: "not in the models folder" });
+    const id = identity(rel, ATTRS[rel]);
+    if (!id.designer || !id.title) return res.status(400).json({ error: "Set the " + (!id.designer ? "designer" : "name") + " first (Attributes), then rename" });
+    const newRel = conventionRel(id.designer, id.title);
+    if (newRel === rel) return res.json({ ok: true, rel, unchanged: true });
+    const to = safePath(newRel);
+    if (!to) return res.status(400).json({ error: "that designer or name cannot be a folder name" });
+    try { await fs.promises.access(from); } catch { return res.status(404).json({ error: "file not found: " + rel }); }
+    // Never rename over something: the share refuses silently, and a second
+    // copy with the same name is a real possibility in a downloaded library.
+    let exists = false; try { await fs.promises.access(to); exists = true; } catch {}
+    if (exists) return res.status(409).json({ error: "A file is already at " + newRel + " - change the name, or delete one of them" });
+    try {
+      await fs.promises.mkdir(path.dirname(to), { recursive: true });
+      await fs.promises.rename(from, to);
+    } catch (e) { return res.status(500).json({ error: "could not move the file: " + e.message }); }
+    // Carry the attributes and the index entry to the new name; the walk will
+    // agree with this on its next pass, and the tab does not have to wait.
+    if (ATTRS[rel]) { ATTRS[newRel] = ATTRS[rel]; delete ATTRS[rel]; saveAttrs(); }
+    let item = null;
+    if (INDEX) {
+      const i = INDEX.items.findIndex(it => it.rel === rel);
+      let st = null; try { st = await fs.promises.stat(to); } catch {}
+      const next = { rel: newRel, ...split(newRel), size: st ? st.size : (i >= 0 ? INDEX.items[i].size : 0), mtime: st ? st.mtimeMs : Date.now() };
+      if (i >= 0) INDEX.items[i] = next; else INDEX.items.push(next);
+      INDEX.items.sort((a, b) => a.creator.localeCompare(b.creator) || a.model.localeCompare(b.model) || a.name.localeCompare(b.name));
+      INDEX.creators = creatorsOf(INDEX.items);
+      saveIndex();
+      item = decorate(next);
+    }
+    hublog("info", "models: renamed " + rel + " -> " + newRel);
+    res.json({ ok: true, rel: newRel, from: rel, item });
+  });
+  // POST /api/models/delete { file } - permanent, Danny's call (2026-09-23),
+  // behind the client's own confirm. Only ever a .3mf under the folder.
+  app.post("/api/models/delete", async (req, res) => {
+    const rel = String((req.body || {}).file || "");
+    const p = safePath(rel);
+    if (!p) return res.status(404).json({ error: "not in the models folder" });
+    try { await fs.promises.unlink(p); }
+    catch (e) { return res.status(e.code === "ENOENT" ? 404 : 500).json({ error: e.code === "ENOENT" ? "file not found: " + rel : "could not delete: " + e.message }); }
+    if (ATTRS[rel]) { delete ATTRS[rel]; saveAttrs(); }
+    if (INDEX) {
+      const n = INDEX.items.length;
+      INDEX.items = INDEX.items.filter(it => it.rel !== rel);
+      if (INDEX.items.length !== n) { INDEX.creators = creatorsOf(INDEX.items); saveIndex(); }
+    }
+    hublog("info", "models: deleted " + rel);
+    res.json({ ok: true, rel });
   });
 
   // v2.27.1: a blank folder field no longer clears the setting. The form
@@ -447,4 +580,4 @@ function register(ctx) {
   ctx.provide("models.info", (ps, ms) => infoFromParts(ps, ms));
 }
 
-module.exports = { register, infoFromEntries, infoFromParts, pickThumb, nameMatcher, split, zipOpen, withZip };
+module.exports = { register, infoFromEntries, infoFromParts, pickThumb, nameMatcher, split, zipOpen, withZip, identity, conventionRel, cleanPart };
