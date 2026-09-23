@@ -1,4 +1,4 @@
-﻿# CLAUDE.md — U1 Print Hub
+# CLAUDE.md — U1 Print Hub
 
 ## Mistake log
 
