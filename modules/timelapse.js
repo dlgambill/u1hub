@@ -1,37 +1,59 @@
-// modules/timelapse.js — SF3D timelapse pipeline, U1-camera edition (v2.27).
+// modules/timelapse.js — SF3D timelapse pipeline, U1-camera edition (v2.34).
 //
-// Replaces the retired Raspberry Pi + Tapo-camera capture rig (ISP change
-// killed it 2026-08-27; Danny does not want it back - poor mounting/framing
-// on a C120). Archaeology (2026-09-21): the Pi's own capture/assemble/upload
-// code never lived in this repo or SF3D's, in any commit - it only ever ran
-// on the Pi's SD card, which is gone. This is a rebuild, not a repair.
+// 2026-09-24 rewrite. The 2.27-2.33 version of this module assumed every U1
+// renders its own finished timelapse in firmware and all the Hub had to do
+// was fetch the file: "Each U1 already renders its own finished timelapse
+// in firmware (Snapmaker's own feature, not a Moonraker plugin -
+// hardware-verified 2026-09-21 against two real prints on 192.168.12.175,
+// both approved by Danny)". That verification was real but narrower than the
+// comment implied - it confirmed firmware rendering had worked, in the past,
+// on one printer. It was never re-checked against a fresh completion, and
+// nobody ever checked the other eight printers at all.
 //
-// This module does NOT capture anything - no chamber-camera websocket, no
-// frame grabbing, no local ffmpeg encode. Each U1 already renders its own
-// finished timelapse in firmware (Snapmaker's own feature, not a Moonraker
-// plugin - hardware-verified 2026-09-21 against two real prints on
-// 192.168.12.175, both approved by Danny) and drops the .mp4 (+ a .jpg
-// thumbnail) in that printer's own /server/files/camera/ folder. All this
-// module does:
-//   1. Listen for ctx.events "print.done" (core/events.js) - fires once per
-//      real printing→complete edge, never replayed after a Hub restart.
-//   2. Find the file the printer already rendered for that print.
-//   3. Upload it to the SF3D edge function, which PUTs it to R2 and inserts
-//      the sf3d_timelapses row using the same r2_key convention the 169
-//      Pi-era videos already use.
+// Danny, after this went live and produced nothing for days:
+//   "WTF? We just set this up the other day to build timelapse's from the
+//   printer's cameras and upload them to R2. Why isn't it working?"
+// A fleet-wide check that day found: only U1 and U2 have EVER had a rendered
+// file in their camera folder, and the newest of those is from January
+// 2026 - months before this module existed. U3-U9 have never had one. The
+// "wait for firmware, then fetch" design was fetching from an oven that
+// wasn't on.
 //
-// gcode_filename is Danny's explicit requirement (2026-09-21): it must match
-// a product's sf3d_product_enrichment.gcode_files entries character for
-// character, because sf3d-catalog joins on it verbatim. It comes straight off
-// the print.done event - which core/events.js reads from the live fleet
-// snapshot - and is never re-derived from the rendered video's own filename,
-// which mangles spaces/parens unpredictably (see slugify below for exactly
-// how much it mangles them).
+// What Danny actually asked for - and what TIMELAPSE-PLAN.md (in this repo,
+// written 2026-09-19, apparently never implemented) already called
+// "Option A" - is for the HUB to do the capturing: watch a print's layer
+// count and grab a frame from the chamber camera every time it advances,
+// then assemble the frames into a video itself once the print finishes.
+// That's what this version does:
+//   1. "print.started" (core/events.js) opens the printer's chamber-camera
+//      socket (same camera.start_monitor plugin modules/camera.js already
+//      uses for live view - see there for the protocol notes) and polls
+//      /printer/objects/query?print_stats every CAPTURE_POLL_MS. Each time
+//      current_layer advances, grab one frame from monitor.jpg and save it.
+//   2. "print.done" stops the poll, and - if enough frames came in - runs
+//      ffmpeg once to turn frame_000001.jpg, frame_000002.jpg, ... into a
+//      silent .mp4 at CAPTURE_OUTPUT_FPS.
+//   3. That raw video is queued (surviving a Hub restart, same as before)
+//      and handed to the SAME compose/upload pipeline 2.32-2.33 already
+//      built: logo intro, product-photo outro, POST to the SF3D edge
+//      function, which PUTs to R2 and inserts the sf3d_timelapses row.
+// "print.cancelled" / "print.error" stop the capture and throw the frames
+// away - an abandoned print isn't worth a timelapse of. A Hub restart
+// mid-print picks capture back up (fewer frames than a full print, but a
+// short timelapse beats none) - see the boot catch-up below.
 //
-// Fails open everywhere. No config, no camera-file match, a network hiccup,
-// a rejected upload - each logs once and moves on, retrying on the next
-// drain. A missed timelapse is a shrug; a module that can crash the Hub
-// mid-print is not an acceptable trade for one.
+// gcode_filename is still Danny's explicit requirement (2026-09-21): it must
+// match a product's sf3d_product_enrichment.gcode_files entries character
+// for character, because sf3d-catalog joins on it verbatim. It still comes
+// straight off the fleet event, never derived from a filename on disk.
+//
+// Fails open everywhere. No config, no camera reachable, a network hiccup,
+// a rejected upload - each logs once and moves on. A missed timelapse is a
+// shrug; a module that can crash the Hub mid-print, or that stalls an
+// actual print job waiting on a frame grab, is not an acceptable trade for
+// one. Capture runs on its own timer against the printer's own reported
+// layer count - it never pauses or steps a print to get a frame (that's
+// TIMELAPS-PLAN.md's "Option B", explicitly deferred, not built here).
 "use strict";
 
 const fs = require("fs");
@@ -39,17 +61,41 @@ const path = require("path");
 const os = require("os");
 const { spawnSync, spawn } = require("child_process");
 
-const CAMERA_LIST_RETRIES = 6;          // the printer needs a few seconds
-const CAMERA_LIST_RETRY_MS = 5000;      // after "complete" to finish writing
-                                         // the mp4 - poll for up to ~30s
-const MATCH_WINDOW_MS = 5 * 60 * 1000;  // a render more than 5 min after the
-                                         // print.done event isn't this print
-const MIN_DURATION_SEC = 5;             // guards against a 0-byte/corrupt
-                                         // render, NOT a "too short to care
-                                         // about" cutoff - Snapmaker already
-                                         // makes that call itself
+const MIN_DURATION_SEC = 1.5;           // guards against a 0-byte/corrupt
+                                         // assembly, NOT a "too short to
+                                         // care about" cutoff - under the old
+                                         // firmware-rendered design Snapmaker
+                                         // picked the length and 5s was a
+                                         // sane corruption floor; now the Hub
+                                         // itself decides frame count/fps
+                                         // (see MIN_CAPTURE_FRAMES below,
+                                         // which is what actually decides
+                                         // "worth posting"), so a short but
+                                         // valid capture must not get
+                                         // rejected here
 const QUEUE_FILE = "timelapse-queue.json"; // survives a Hub restart mid-upload
 const DEFAULT_UPLOAD_URL = "https://pcbltjgwnuyaixiealbk.supabase.co/functions/v1/sf3d-timelapse-upload";
+
+// ---- Chamber-camera frame capture (2026-09-24) ----
+const CAPTURE_POLL_MS = 8000;           // how often to ask the printer for
+                                         // its current layer while a print
+                                         // the Hub is watching is running
+const CAPTURE_QUERY_TIMEOUT_MS = 6000;  // per print_stats query
+const CAPTURE_OUTPUT_FPS = 12;          // frame rate of the assembled clip -
+                                         // NOT the polling rate; a tall print
+                                         // with many layers plays back
+                                         // faster than it printed, same as
+                                         // any layer-driven timelapse
+const MIN_CAPTURE_FRAMES = 8;           // fewer than this and there's no
+                                         // real timelapse to show - discard
+                                         // rather than post a near-static clip
+const FRAMES_DIR_NAME = "timelapse-frames";   // per-job frame directories
+const PENDING_DIR_NAME = "timelapse-pending"; // assembled-but-not-yet-uploaded .mp4s
+const FRAME_GLOB = "frame_%06d.jpg";
+const ORPHAN_FRAMES_MAX_AGE_MS = 24 * 60 * 60 * 1000; // a frame dir left over
+                                         // from a crash is never going to
+                                         // finish on its own - clean it up
+                                         // instead of leaking disk forever
 
 // 2026-09-23: Danny rejected the burned-in "Shop link in bio" text overlay
 // shipped earlier today ("Get rid of it. I don't like it.") - real Shop
@@ -63,10 +109,7 @@ const DEFAULT_UPLOAD_URL = "https://pcbltjgwnuyaixiealbk.supabase.co/functions/v
 // gcode_filename (no Square credentials on this Hub); the logo is read
 // straight off disk if config.json's sf3dTimelapse.logoFile points at a
 // real file, and skipped entirely if it doesn't (fails open, same as
-// everything else in this module) - Danny hasn't supplied SF3D's brand
-// logo file yet, so today every video composites with the photo outro only,
-// and picks up the logo intro automatically the day a file lands there. No
-// code change needed for that switch - same pattern the old ctaText flip was.
+// everything else in this module).
 const COMPOSE_FPS = 30;                // normalizes the still segments and
                                         // the re-encoded main clip to one
                                         // frame rate so concat below is a
@@ -101,27 +144,6 @@ function fmtPrintedAt(ms) {
 function buildR2Key(printer, gcodeFilename, printedAtStr) {
   const slug = slugify(gcodeFilename);
   return "timelapses/" + slug + "/" + printer + "_" + printedAtStr + "_" + slug + ".mp4";
-}
-
-// Pick the newest camera-folder .mp4 that could plausibly be THIS print's
-// render: modified no earlier than the print's own (approximate) start and
-// no later than MATCH_WINDOW_MS after the print.done event fired. Several
-// printers rendering the same popular file around the same time is normal
-// (see the "Crystal Dragons" rows already in production) - the guard here is
-// per-printer recency, not cross-checking the rendered filename against
-// gcode_filename, since the rendered name mangles characters the DB's own
-// convention doesn't (see slugify above).
-function pickCameraFile(files, eventAtMs, startAtMs) {
-  const lo = startAtMs || 0;
-  const hi = eventAtMs + MATCH_WINDOW_MS;
-  const candidates = (files || [])
-    .filter((f) => f && /\.mp4$/i.test(String(f.path || "")))
-    .filter((f) => {
-      const mtimeMs = Number(f.modified) * 1000;
-      return mtimeMs >= lo && mtimeMs <= hi;
-    })
-    .sort((a, b) => Number(b.modified) - Number(a.modified));
-  return candidates[0] || null;
 }
 
 // Scales+pads any input (the logo, the product photo, or the timelapse
@@ -181,8 +203,48 @@ function stillEncodeArgs(inPath, outPath, width, height, holdSec, fadeSec, fadeE
   };
 }
 
+// frame_000001.jpg, frame_000042.jpg, ... - zero-padded so ffmpeg's image2
+// sequence reader (assembleArgs below) walks them in capture order without
+// any separate manifest/concat file, the same way the compose step above
+// avoids one for its three segments.
+function frameFileName(idx) {
+  return "frame_" + String(idx).padStart(6, "0") + ".jpg";
+}
+
+// Turns a directory of frame_NNNNNN.jpg files into one silent .mp4 at fps.
+// Pure/testable for the same reason mainEncodeArgs/stillEncodeArgs are: the
+// 2026-09-24 "-r AND fps= at once" bug (see the big comment above) is exactly
+// the kind of regression that hides in an argv nobody diffs. -framerate here
+// is an INPUT flag - it tells the image2 demuxer how fast to read frames off
+// disk - not a second, conflicting output frame-rate conversion; there is no
+// "-r" anywhere in this list, deliberately, and there must never be one.
+function assembleArgs(framesDir, outPath, fps) {
+  return ["-y", "-framerate", String(fps), "-i", path.join(framesDir, FRAME_GLOB),
+    "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p", "-an", outPath];
+}
+
 function register(ctx) {
   const queuePath = path.join(ctx.baseDir, QUEUE_FILE);
+  const framesRoot = path.join(ctx.baseDir, FRAMES_DIR_NAME);
+  const pendingDir = path.join(ctx.baseDir, PENDING_DIR_NAME);
+  try { fs.mkdirSync(framesRoot, { recursive: true }); } catch {}
+  try { fs.mkdirSync(pendingDir, { recursive: true }); } catch {}
+
+  // Orphan sweep: a Hub crash mid-print leaves a frame directory nobody will
+  // ever finish - not corrupt, just abandoned. A real in-progress capture
+  // touches its directory every CAPTURE_POLL_MS (a few seconds), so anything
+  // older than a day is certainly dead, not a print that's still running.
+  try {
+    for (const name of fs.readdirSync(framesRoot)) {
+      const p = path.join(framesRoot, name);
+      try {
+        const st = fs.statSync(p);
+        if (st.isDirectory() && Date.now() - st.mtimeMs > ORPHAN_FRAMES_MAX_AGE_MS) {
+          fs.rmSync(p, { recursive: true, force: true });
+        }
+      } catch {}
+    }
+  } catch {}
 
   function loadQueue() {
     try { return JSON.parse(fs.readFileSync(queuePath, "utf8")) || []; }
@@ -208,27 +270,151 @@ function register(ctx) {
     try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch {}
   }
 
-  async function listCameraFiles(base) {
-    const r = await fetch(base + "/server/files/list?root=camera");
-    if (!r.ok) return [];
-    const j = await r.json().catch(() => null);
-    return (j && j.result) || [];
+  // ---- Chamber-camera frame capture ----
+  const CAPTURE = new Map(); // printer name -> capture state
+
+  function findPrinter(name) {
+    return (ctx.printers || []).find((x) => x.name === name) || null;
   }
 
-  async function fetchVideo(base, filePath) {
-    const r = await fetch(base + "/server/files/camera/" + encodeURIComponent(filePath));
-    if (!r.ok) throw new Error("printer returned " + r.status + " for " + filePath);
-    return Buffer.from(await r.arrayBuffer());
+  // Same fetch-with-timeout-and-JPEG-SOI-check as modules/camera.js's own
+  // /api/camera grab() - deliberately duplicated rather than shared, since
+  // camera.js's version is wired to that module's own idle-reaped socket
+  // lifecycle and importing across modules isn't how this codebase is split.
+  async function grabFrame(base) {
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), 5000);
+    try {
+      const r = await fetch(base + "/server/files/camera/monitor.jpg", { signal: ctrl.signal });
+      clearTimeout(to);
+      if (!r.ok) return null;
+      const b = Buffer.from(await r.arrayBuffer());
+      return (b.length > 2 && b[0] === 0xff && b[1] === 0xd8) ? b : null; // valid JPEG SOI
+    } catch { clearTimeout(to); return null; }
+  }
+
+  async function readCurrentLayer(base) {
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), CAPTURE_QUERY_TIMEOUT_MS);
+    try {
+      const r = await fetch(base + "/printer/objects/query?print_stats", { signal: ctrl.signal });
+      clearTimeout(to);
+      if (!r.ok) return null;
+      const j = await r.json().catch(() => null);
+      const layer = j && j.result && j.result.status && j.result.status.print_stats &&
+        j.result.status.print_stats.info && j.result.status.print_stats.info.current_layer;
+      return (typeof layer === "number") ? layer : null;
+    } catch { clearTimeout(to); return null; }
+  }
+
+  // Dedicated per-printer websocket, same protocol modules/camera.js uses
+  // for live view (camera.start_monitor {domain:"lan", interval:0} makes the
+  // plugin write ~1fps JPEGs to monitor.jpg) - opened for the life of the
+  // capture rather than idle-reaped, and reconnected once after a drop for
+  // as long as state.active stays true.
+  function capOpenSocket(state) {
+    if (typeof WebSocket === "undefined") return;
+    if (!state.active) return;
+    const wsUrl = state.base.replace(/^http/, "ws") + "/websocket";
+    let ws;
+    try { ws = new WebSocket(wsUrl); } catch { return; }
+    state.ws = ws;
+    ws.onopen = () => {
+      try {
+        ws.send(JSON.stringify({ jsonrpc: "2.0", method: "camera.start_monitor", params: { domain: "lan", interval: 0 }, id: 950 }));
+      } catch {}
+    };
+    ws.onerror = () => {};
+    ws.onclose = () => {
+      state.ws = null;
+      if (state.active) setTimeout(() => { if (state.active) capOpenSocket(state); }, 5000);
+    };
+  }
+
+  // One tick: read the printer's current layer, and if it advanced since
+  // the last tick, grab a frame and save it. A read failure or an
+  // unchanged layer is a normal, silent no-op - print_stats not answering
+  // for one poll (a busy printer, a Wi-Fi blip) just means "try again in
+  // CAPTURE_POLL_MS", not "stop capturing".
+  async function capPollOnce(state) {
+    if (!state.active) return;
+    const layer = await readCurrentLayer(state.base);
+    if (layer == null) return;
+    const isFirst = typeof state.lastLayer !== "number";
+    if (!isFirst && layer <= state.lastLayer) return;
+    state.lastLayer = layer;
+    const frame = await grabFrame(state.base);
+    if (!frame) return;
+    const idx = state.frameIdx + 1;
+    try {
+      fs.writeFileSync(path.join(state.dir, frameFileName(idx)), frame);
+      state.frameIdx = idx;
+    } catch (e) {
+      ctx.hublog("warn", "timelapse: could not save a captured frame for " + state.printer + " - " + (e && e.message || e));
+    }
+  }
+
+  // Idempotent: a duplicate "print.started" for a printer already being
+  // captured (shouldn't happen - core/events.js only emits it on a real
+  // non-printing -> printing edge - but costs nothing to guard) is ignored
+  // rather than starting a second, competing capture into a new directory.
+  function capStart(printerName, filename) {
+    if (CAPTURE.has(printerName)) return;
+    const p = findPrinter(printerName);
+    if (!p) {
+      ctx.hublog("warn", "timelapse: can't start capture for " + printerName + " - it isn't in config.json");
+      return;
+    }
+    const base = String(p.url).replace(/\/+$/, "");
+    const safe = String(printerName).replace(/[^A-Za-z0-9_-]/g, "_");
+    const dir = path.join(framesRoot, safe + "_" + Date.now());
+    try { fs.mkdirSync(dir, { recursive: true }); }
+    catch (e) {
+      ctx.hublog("error", "timelapse: could not create a frame directory for " + printerName + " - " + (e && e.message || e));
+      return;
+    }
+    const state = {
+      printer: printerName, filename, base, dir,
+      frameIdx: 0, lastLayer: undefined, startedAtMs: Date.now(),
+      ws: null, active: true, pollTimer: null,
+    };
+    CAPTURE.set(printerName, state);
+    capOpenSocket(state);
+    state.pollTimer = setInterval(() => {
+      capPollOnce(state).catch((e) => ctx.hublog("warn", "timelapse: capture poll failed for " + printerName + " - " + (e && e.message || e)));
+    }, CAPTURE_POLL_MS);
+    if (state.pollTimer.unref) state.pollTimer.unref();
+    ctx.hublog("info", "timelapse: capture started for " + printerName + "/" + filename);
+  }
+
+  // Stops polling and tears down the socket; returns the (now-detached)
+  // state so the caller decides what happens to the frames already on disk
+  // - assembled (print.done) or discarded (cancelled/error/no capture).
+  function capStop(printerName) {
+    const state = CAPTURE.get(printerName);
+    if (!state) return null;
+    state.active = false;
+    CAPTURE.delete(printerName);
+    if (state.pollTimer) clearInterval(state.pollTimer);
+    if (state.ws) {
+      try { state.ws.send(JSON.stringify({ jsonrpc: "2.0", method: "camera.stop_monitor", params: { domain: "lan" }, id: 951 })); } catch {}
+      try { state.ws.close(); } catch {}
+    }
+    return state;
+  }
+
+  function discardFrames(state) {
+    if (!state) return;
+    try { fs.rmSync(state.dir, { recursive: true, force: true }); } catch {}
   }
 
   // duration_seconds and frame_count are NOT NULL in sf3d_timelapses.
   // ffprobe is confirmed on ichabod's PATH (2026-09-21) but this still fails
   // open: a probe error returns zeros rather than dropping the video - a
   // wrong-but-present number beats losing the file outright. width/height
-  // (added 2026-09-23) size the compositing canvas below; they default to
-  // 1920x1080 - every U1 camera render checked so far - rather than 0x0,
-  // since an all-zero scale target would make ffmpeg reject the filter
-  // outright instead of just looking wrong.
+  // default to 1920x1080 rather than 0x0, since an all-zero scale target
+  // would make ffmpeg reject the compositing filter outright instead of
+  // just looking wrong.
   function probe(bytes) {
     const tmp = path.join(os.tmpdir(), "tl_" + Date.now() + "_" + Math.random().toString(36).slice(2) + ".mp4");
     try {
@@ -257,7 +443,8 @@ function register(ctx) {
   // timeoutMs - a stuck re-encode is not worth losing the video over, but
   // must not hang the Hub's event loop (also live-dispatching nine printers)
   // forever either. Rejects on a non-zero exit or a spawn error;
-  // composeOrFallback below is what turns that into a fail-open fallback.
+  // composeOrFallback/assembleVideo below are what turn that into a
+  // fail-open outcome for their respective callers.
   function runFfmpeg(args, timeoutMs) {
     return new Promise((resolve, reject) => {
       let child;
@@ -275,16 +462,34 @@ function register(ctx) {
     });
   }
 
+  // Assembles a job's captured frames into one silent .mp4 in pendingDir.
+  // 2026-09-24 integration-test finding: ffmpeg can write a partial/empty
+  // file to outPath before failing (a bad/truncated frame partway through
+  // the sequence) - without the cleanup here, that orphaned file would sit
+  // in pendingDir forever, never referenced by anything, never cleaned up.
+  async function assembleVideo(state) {
+    const safe = String(state.printer).replace(/[^A-Za-z0-9_-]/g, "_");
+    const outPath = path.join(pendingDir, safe + "_" + state.startedAtMs + ".mp4");
+    try {
+      await runFfmpeg(assembleArgs(state.dir, outPath, CAPTURE_OUTPUT_FPS), COMPOSE_STEP_TIMEOUT_MS);
+      const stat = fs.statSync(outPath);
+      if (!stat || stat.size < 1000) throw new Error("assembled output looked empty/corrupt");
+      return outPath;
+    } catch (e) {
+      try { fs.unlinkSync(outPath); } catch {} // don't leak a partial/empty file nothing will ever clean up
+      throw e;
+    }
+  }
+
   // Builds intro(optional)+timelapse+outro as three separately-encoded clips
   // (all normalized to the same W x H / fps / pixel format via
   // scaleFitFilter) and stream-copies them together with the concat
   // demuxer - simpler and more robust than one filter_complex expression
   // mixing two image inputs and a video input that don't share native fps
-  // or timestamps. Every U1 camera render checked so far carries no audio
-  // track (verified 2026-09-23 against a real timelapse), so the composited
-  // output is silent throughout, deliberately, not by omission - worth
-  // revisiting if that ever turns out not to hold for every printer.
-  // Throws on any failure; composeOrFallback below is what fails open.
+  // or timestamps. The Hub's own captured clip carries no audio track
+  // (it's assembled straight from JPEG frames), so the composited output is
+  // silent throughout, deliberately, not by omission. Throws on any
+  // failure; composeOrFallback below is what fails open.
   async function composeVideo(bytes, photoBytes, logoBytes, width, height) {
     const stamp = Date.now() + "_" + Math.random().toString(36).slice(2);
     const dir = os.tmpdir();
@@ -392,60 +597,45 @@ function register(ctx) {
   }
 
   // Returns true when this job is DONE being tried (uploaded, or given up on
-  // for a reason that will never change - no config, no match, corrupt
-  // render). Returns false to keep it queued for the next drain (a network
-  // blip, a rejected upload) - see drain() below.
+  // for a reason that will never change - no config, missing/corrupt file
+  // on disk). Returns false to keep it queued for the next drain (a network
+  // blip, a rejected upload) - see drain() below. The raw captured video
+  // stays on disk at job.rawVideoPath until upload() either posts it or
+  // gives up on it for good, so a false return never loses the source file.
   async function upload(job) {
     const c = (ctx.cfg && ctx.cfg.sf3dTimelapse) || {};
     if (!c.passcode) {
       ctx.hublog("warn", "timelapse: config.json has no sf3dTimelapse.passcode set - skipping upload for " +
         job.printer + "/" + job.filename + " (put the shop passcode there to enable uploads)");
+      try { fs.unlinkSync(job.rawVideoPath); } catch {}
       return true; // won't become true later without a restart anyway
     }
     const url = c.uploadUrl || DEFAULT_UPLOAD_URL;
 
-    const printers = ctx.printers || [];
-    const p = printers.find((x) => x.name === job.printer);
-    if (!p) {
-      ctx.hublog("warn", "timelapse: printer " + job.printer + " is no longer in config.json - dropping its queued upload for " + job.filename);
-      return true;
-    }
-    const base = String(p.url).replace(/\/+$/, "");
-
-    let match = null;
-    for (let i = 0; i < CAMERA_LIST_RETRIES && !match; i++) {
-      if (i > 0) await new Promise((r) => setTimeout(r, CAMERA_LIST_RETRY_MS));
-      const files = await listCameraFiles(base).catch(() => []);
-      match = pickCameraFile(files, job.at, job.startAt);
-    }
-    if (!match) {
-      ctx.hublog("info", "timelapse: no rendered file appeared for " + job.printer + "/" + job.filename +
-        " within " + Math.round(CAMERA_LIST_RETRIES * CAMERA_LIST_RETRY_MS / 1000) +
-        "s - Snapmaker may have judged it too short to render, or the printer dropped off the LAN");
-      return true;
-    }
-
     let bytes;
-    try { bytes = await fetchVideo(base, match.path); }
+    try { bytes = fs.readFileSync(job.rawVideoPath); }
     catch (e) {
-      ctx.hublog("warn", "timelapse: could not fetch " + match.path + " from " + job.printer + " - " + e.message);
-      return false; // transient - retry on the next drain
+      ctx.hublog("warn", "timelapse: captured video for " + job.printer + "/" + job.filename +
+        " is missing on disk (" + (e && e.code || e.message) + ") - dropping, nothing left to retry");
+      return true;
     }
     if (bytes.length < 1000) {
-      ctx.hublog("warn", "timelapse: rendered file for " + job.printer + "/" + job.filename +
-        " is only " + bytes.length + " bytes - treating as a failed render, skipping");
+      ctx.hublog("warn", "timelapse: captured file for " + job.printer + "/" + job.filename +
+        " is only " + bytes.length + " bytes - treating as corrupt, skipping");
+      try { fs.unlinkSync(job.rawVideoPath); } catch {}
       return true;
     }
 
     const { duration, frames, width, height } = probe(bytes);
     if (duration < MIN_DURATION_SEC) {
-      ctx.hublog("info", "timelapse: rendered clip for " + job.printer + "/" + job.filename +
-        " probed at " + duration + "s - treating as a failed render, skipping");
+      ctx.hublog("info", "timelapse: captured clip for " + job.printer + "/" + job.filename +
+        " probed at " + duration + "s - shorter than the corruption guard, skipping");
+      try { fs.unlinkSync(job.rawVideoPath); } catch {}
       return true;
     }
 
     // duration/frames come from the pre-compose probe deliberately - they
-    // describe the ORIGINAL print's timelapse, matching what every other
+    // describe the Hub's own captured timelapse, matching what every other
     // row in sf3d_timelapses already means; the intro/outro segments and
     // the re-encode change the posted file's own length, but re-probing the
     // composited output would silently redefine those two columns for just
@@ -469,14 +659,15 @@ function register(ctx) {
       if (!res.ok) {
         const body = await res.text().catch(() => "");
         ctx.hublog("warn", "timelapse: upload rejected (" + res.status + ") for " + job.printer + "/" + job.filename + " - " + body.slice(0, 200));
-        return false; // retry - could be a transient 5xx
+        return false; // retry - could be a transient 5xx; rawVideoPath stays on disk
       }
       ctx.hublog("info", "timelapse: uploaded " + job.printer + "/" + job.filename +
         " (" + duration.toFixed(1) + "s, " + frames + " frames)");
+      try { fs.unlinkSync(job.rawVideoPath); } catch {}
       return true;
     } catch (e) {
       ctx.hublog("warn", "timelapse: upload failed for " + job.printer + "/" + job.filename + " - " + e.message);
-      return false;
+      return false; // retry - rawVideoPath stays on disk
     }
   }
 
@@ -497,26 +688,72 @@ function register(ctx) {
     } finally { RUNNING = false; }
   }
 
-  ctx.events.on("print.done", (ev) => {
+  ctx.events.on("print.started", (ev) => { capStart(ev.printer, ev.filename); });
+  ctx.events.on("print.cancelled", (ev) => discardFrames(capStop(ev.printer)));
+  ctx.events.on("print.error", (ev) => discardFrames(capStop(ev.printer)));
+
+  ctx.events.on("print.done", async (ev) => {
+    const state = capStop(ev.printer);
+    if (!state) {
+      ctx.hublog("info", "timelapse: " + ev.printer + " finished " + ev.filename + " but no capture was running for it - nothing to assemble");
+      return;
+    }
+    if (state.frameIdx < MIN_CAPTURE_FRAMES) {
+      ctx.hublog("info", "timelapse: only captured " + state.frameIdx + " frame(s) for " + ev.printer + "/" + ev.filename +
+        " - too few to be worth a video, discarding");
+      discardFrames(state);
+      return;
+    }
+    let rawVideoPath;
+    try {
+      rawVideoPath = await assembleVideo(state);
+    } catch (e) {
+      ctx.hublog("warn", "timelapse: could not assemble captured frames for " + ev.printer + "/" + ev.filename + " - " + (e && e.message || e));
+      discardFrames(state);
+      return;
+    }
+    discardFrames(state); // frames are in the assembled video now - the source jpegs aren't needed again
     try {
       const items = loadQueue();
-      items.push({ printer: ev.printer, filename: ev.filename, at: ev.at, startAt: ev.at - (ev.durationSec || 0) * 1000 });
+      items.push({ printer: ev.printer, filename: ev.filename, at: ev.at, startAt: state.startedAtMs, rawVideoPath });
       saveQueue(items);
     } catch (e) {
-      ctx.hublog("error", "timelapse: could not queue " + (ev && ev.filename) + " - " + (e && e.message || e));
+      ctx.hublog("error", "timelapse: could not queue " + ev.filename + " - " + (e && e.message || e));
+      try { fs.unlinkSync(rawVideoPath); } catch {}
       return;
     }
     drain().catch((e) => ctx.hublog("error", "timelapse: drain failed - " + (e && e.message || e)));
   });
 
+  // Boot catch-up: a Hub restart mid-print already missed that print's
+  // "print.started" edge - no new event is coming for it. Give the fleet
+  // poller (core/events.js) time to take its first snapshot, then start
+  // capture for anything already printing/paused. Starting mid-print means
+  // fewer frames than a full capture, but a short timelapse beats none.
+  const bootCatchup = setTimeout(async () => {
+    try {
+      const fleet = await ctx.fleet();
+      for (const p of fleet || []) {
+        if (p && p.online && (p.state === "printing" || p.state === "paused") && p.filename) {
+          capStart(p.name, p.filename);
+        }
+      }
+    } catch (e) {
+      ctx.hublog("warn", "timelapse: boot catch-up failed - " + (e && e.message || e));
+    }
+  }, 6000);
+  if (bootCatchup.unref) bootCatchup.unref();
+
   // Replay anything left from a crash/restart mid-upload, and retry
-  // periodically after that - a permanently-misconfigured passcode or a
-  // printer removed from config would otherwise sit queued until the next
-  // unrelated print.done fires.
+  // periodically after that - a permanently-misconfigured passcode would
+  // otherwise sit queued until the next unrelated print.done fires.
   const t0 = setTimeout(() => drain().catch(() => {}), 5000);
   if (t0.unref) t0.unref();
   const timer = setInterval(() => drain().catch(() => {}), 10 * 60 * 1000);
   if (timer.unref) timer.unref();
 }
 
-module.exports = { register, slugify, buildR2Key, fmtPrintedAt, pickCameraFile, scaleFitFilter, stillSegmentFilter, mainSegmentFilter, mainEncodeArgs, stillEncodeArgs };
+module.exports = {
+  register, slugify, buildR2Key, fmtPrintedAt, scaleFitFilter, stillSegmentFilter,
+  mainSegmentFilter, mainEncodeArgs, stillEncodeArgs, frameFileName, assembleArgs,
+};

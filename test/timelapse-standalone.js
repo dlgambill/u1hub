@@ -1,7 +1,8 @@
 // test/timelapse-standalone.js — pure logic in modules/timelapse.js.
 //
 // Kept out of run-tests.js because it needs no Hub, no mock printer and no
-// network: slugify/buildR2Key/fmtPrintedAt/pickCameraFile are pure functions.
+// network: slugify/buildR2Key/fmtPrintedAt/frameFileName/assembleArgs are
+// pure functions.
 //
 //   node test/timelapse-standalone.js
 //
@@ -12,7 +13,7 @@
 // r2_key the storefront's existing 169 videos don't use, silently.
 
 "use strict";
-const { slugify, buildR2Key, fmtPrintedAt, pickCameraFile, scaleFitFilter, stillSegmentFilter, mainSegmentFilter, mainEncodeArgs, stillEncodeArgs } = require("../modules/timelapse.js");
+const { slugify, buildR2Key, fmtPrintedAt, scaleFitFilter, stillSegmentFilter, mainSegmentFilter, mainEncodeArgs, stillEncodeArgs, frameFileName, assembleArgs } = require("../modules/timelapse.js");
 
 let pass = 0, fail = 0;
 const ok = (cond, name, detail) => {
@@ -62,22 +63,23 @@ for (const [input, want] of SLUG_TABLE) {
   ok(fmtPrintedAt(ms) === "20260726T042335Z", "fmtPrintedAt formats a known UTC instant", { got: fmtPrintedAt(ms) });
 }
 
-// pickCameraFile - excludes a stale leftover, excludes a too-early file,
-// picks the newest in-window candidate when more than one exists.
+// ---- frameFileName / assembleArgs (2026-09-24 capture rewrite) ----
+// Replaces the old pickCameraFile tests - that function (and the whole
+// "wait for firmware to render a file, then fetch it" design it served) is
+// gone. See modules/timelapse.js's header comment for why: a fleet check
+// found only 2 of 9 printers had ever produced a rendered file, and the
+// newest of those was from January - months before this module shipped.
 {
-  const eventAt = Date.UTC(2026, 8, 21, 12, 0, 0);
-  const startAt = eventAt - 20 * 60 * 1000; // print "started" 20 min earlier
-  const files = [
-    { path: "Old_Job_PLA_1h0m_20260101T000000Z.mp4", modified: Date.UTC(2026, 0, 1) / 1000 }, // weeks-old leftover
-    { path: "Old_Job_PLA_1h0m_20260101T000000Z.jpg", modified: Date.UTC(2026, 0, 1) / 1000 }, // not .mp4, ignored either way
-    { path: "TooEarly_PLA_20260921T113000Z.mp4", modified: (startAt - 5 * 60 * 1000) / 1000 }, // before print started
-    { path: "ThisPrint_PLA_20260921T121000Z.mp4", modified: (eventAt + 60 * 1000) / 1000 }, // 1 min after completion - the real one
-  ];
-  const match = pickCameraFile(files, eventAt, startAt);
-  ok(!!match && match.path === "ThisPrint_PLA_20260921T121000Z.mp4",
-    "pickCameraFile excludes stale and too-early files, picks the real render", { match });
-
-  ok(pickCameraFile([], eventAt, startAt) === null, "pickCameraFile returns null with no candidates");
+  ok(frameFileName(1) === "frame_000001.jpg", "frameFileName pads to 6 digits", { got: frameFileName(1) });
+  ok(frameFileName(42) === "frame_000042.jpg", "frameFileName pads a 2-digit number to 6", { got: frameFileName(42) });
+  ok(frameFileName(123456) === "frame_123456.jpg", "frameFileName doesn't truncate a 6-digit number", { got: frameFileName(123456) });
+}
+{
+  const args = assembleArgs("/tmp/frames", "/tmp/out.mp4", 12);
+  ok(!args.includes("-r"), "assembleArgs never passes a standalone output -r flag", { args });
+  ok(args.includes("-framerate") && args[args.indexOf("-framerate") + 1] === "12",
+    "assembleArgs sets -framerate from its fps argument", { args });
+  ok(args.includes("/tmp/frames/frame_%06d.jpg"), "assembleArgs points -i at the frame glob inside framesDir", { args });
 }
 
 // ---- scaleFitFilter / stillSegmentFilter / mainSegmentFilter ----
