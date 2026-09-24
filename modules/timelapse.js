@@ -155,6 +155,32 @@ function mainSegmentFilter(width, height) {
   return scaleFitFilter(width, height);
 }
 
+// ffmpeg argv builders - pure, so the "exactly one frame-rate mechanism"
+// invariant below is unit-testable without spawning ffmpeg. 2026-09-24:
+// the first shipped version of this pipeline ALSO passed a standalone "-r"
+// flag alongside the filter graph's own "fps=" clause - two separate
+// frame-rate conversions stacked on the same stream. Harmless on the still
+// image loops (a duplicated identical frame looks the same either way), but
+// on the real timelapse it visibly scrambled frames (Danny: looked like "a
+// demigorgan" with the product photo tacked on the end) - caught by
+// actually watching the output, not by the probe-only checks this module's
+// tests had relied on. Never add "-r" back here; scaleFitFilter/
+// stillSegmentFilter's own "fps=" is the one and only place frame rate
+// gets set.
+function mainEncodeArgs(inPath, outPath, width, height) {
+  return ["-y", "-i", inPath, "-vf", mainSegmentFilter(width, height),
+    "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-an", outPath];
+}
+
+function stillEncodeArgs(inPath, outPath, width, height, holdSec, fadeSec, fadeEdges) {
+  const { filter, duration } = stillSegmentFilter(width, height, holdSec, fadeSec, fadeEdges);
+  return {
+    duration,
+    args: ["-y", "-loop", "1", "-i", inPath, "-t", String(duration), "-vf", filter,
+      "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-an", outPath],
+  };
+}
+
 function register(ctx) {
   const queuePath = path.join(ctx.baseDir, QUEUE_FILE);
 
@@ -281,21 +307,15 @@ function register(ctx) {
       fs.writeFileSync(photoIn, photoBytes);
       if (logoIn) fs.writeFileSync(logoIn, logoBytes);
 
-      await runFfmpeg(["-y", "-i", mainIn, "-vf", mainSegmentFilter(width, height),
-        "-r", String(COMPOSE_FPS), "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-an", segMain],
-        COMPOSE_STEP_TIMEOUT_MS);
+      await runFfmpeg(mainEncodeArgs(mainIn, segMain, width, height), COMPOSE_STEP_TIMEOUT_MS);
 
-      const outro = stillSegmentFilter(width, height, PHOTO_HOLD_SEC, PHOTO_FADE_SEC, "in");
-      await runFfmpeg(["-y", "-loop", "1", "-i", photoIn, "-t", String(outro.duration), "-vf", outro.filter,
-        "-r", String(COMPOSE_FPS), "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-an", segOutro],
-        COMPOSE_STEP_TIMEOUT_MS);
+      const outro = stillEncodeArgs(photoIn, segOutro, width, height, PHOTO_HOLD_SEC, PHOTO_FADE_SEC, "in");
+      await runFfmpeg(outro.args, COMPOSE_STEP_TIMEOUT_MS);
 
       const segments = [];
       if (segIntro) {
-        const intro = stillSegmentFilter(width, height, LOGO_HOLD_SEC, LOGO_FADE_SEC, "both");
-        await runFfmpeg(["-y", "-loop", "1", "-i", logoIn, "-t", String(intro.duration), "-vf", intro.filter,
-          "-r", String(COMPOSE_FPS), "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-an", segIntro],
-          COMPOSE_STEP_TIMEOUT_MS);
+        const intro = stillEncodeArgs(logoIn, segIntro, width, height, LOGO_HOLD_SEC, LOGO_FADE_SEC, "both");
+        await runFfmpeg(intro.args, COMPOSE_STEP_TIMEOUT_MS);
         segments.push(segIntro);
       }
       segments.push(segMain, segOutro);
@@ -499,4 +519,4 @@ function register(ctx) {
   if (timer.unref) timer.unref();
 }
 
-module.exports = { register, slugify, buildR2Key, fmtPrintedAt, pickCameraFile, scaleFitFilter, stillSegmentFilter, mainSegmentFilter };
+module.exports = { register, slugify, buildR2Key, fmtPrintedAt, pickCameraFile, scaleFitFilter, stillSegmentFilter, mainSegmentFilter, mainEncodeArgs, stillEncodeArgs };

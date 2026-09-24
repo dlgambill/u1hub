@@ -12,7 +12,7 @@
 // r2_key the storefront's existing 169 videos don't use, silently.
 
 "use strict";
-const { slugify, buildR2Key, fmtPrintedAt, pickCameraFile, scaleFitFilter, stillSegmentFilter, mainSegmentFilter } = require("../modules/timelapse.js");
+const { slugify, buildR2Key, fmtPrintedAt, pickCameraFile, scaleFitFilter, stillSegmentFilter, mainSegmentFilter, mainEncodeArgs, stillEncodeArgs } = require("../modules/timelapse.js");
 
 let pass = 0, fail = 0;
 const ok = (cond, name, detail) => {
@@ -133,6 +133,38 @@ for (const [input, want] of SLUG_TABLE) {
   ok(both.filter.includes("fade=t=out:st=3:d=1") && !both.filter.includes("fade=t=out:st=2:d=1"),
     "fade-out start time is duration-fadeSec, not holdSec alone - it accounts for the fade-in time already spent",
     { filter: both.filter });
+}
+
+// ---- mainEncodeArgs / stillEncodeArgs: exactly one frame-rate mechanism ----
+// (2026-09-24 regression) The first shipped compose pipeline passed a
+// standalone "-r 30" ffmpeg flag ALONGSIDE the filter graph's own "fps=30"
+// clause - two separate frame-rate conversions stacked on the same stream.
+// Invisible on the still image loops (Danny's demo outro looked fine), but
+// it visibly scrambled the real timelapse into what Danny described as "a
+// demigorgan" - caught by him actually watching the output, not by these
+// tests, which only ever checked filter STRINGS, never the full argv ffmpeg
+// actually runs. Pin the real argv here so that gap can't reopen silently.
+{
+  const args = mainEncodeArgs("in.mp4", "out.mp4", 1920, 1080);
+  ok(!args.includes("-r"), "mainEncodeArgs never passes a standalone -r flag", { args });
+  ok(args.includes(mainSegmentFilter(1920, 1080)), "mainEncodeArgs' -vf is exactly mainSegmentFilter's output", { args });
+}
+{
+  const { args, duration } = stillEncodeArgs("logo.png", "out.mp4", 1920, 1080, 1.5, 0.5, "both");
+  ok(!args.includes("-r"), "stillEncodeArgs never passes a standalone -r flag", { args });
+  const want = stillSegmentFilter(1920, 1080, 1.5, 0.5, "both");
+  ok(args.includes(want.filter) && duration === want.duration,
+    "stillEncodeArgs' -vf and duration match stillSegmentFilter exactly", { args, duration });
+}
+
+// Falsification (rule #6): prove the check above would actually have
+// CAUGHT the real 2026-09-24 bug, not just that today's code happens to
+// pass it. Reproduce the old (buggy) argv shape inline and confirm the
+// same assertion fails against it.
+{
+  const buggyArgs = ["-y", "-i", "in.mp4", "-vf", mainSegmentFilter(1920, 1080),
+    "-r", "30", "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-an", "out.mp4"];
+  ok(buggyArgs.includes("-r"), "the old buggy argv shape (with -r) is exactly what this test would flag", { buggyArgs });
 }
 
 console.log("\n" + pass + " passed, " + fail + " failed\n");
