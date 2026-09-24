@@ -61,7 +61,10 @@ and offers to select it or send it to Dispatch. The shelf can be tidied from
 the shelf, too: Rename files a model as `Designer\Name\Designer - Name.3mf`
 (it shows you where first), Attributes fixes a designer or name the folders
 got wrong and offers the same move, and Delete removes a file for good after
-one confirm.
+one confirm. Sort it by designer, name, newest, oldest, random, or most
+printed - that last one counts the completed jobs in your printers' own
+history against the files they were sliced from, and says how many it could
+match rather than guessing.
 
 ![Models: the shelf behind the library, with the designer's own plate renders](docs/models.png)
 

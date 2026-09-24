@@ -27,7 +27,9 @@ function createMock(profile) {
     dropColorWrites: false,        // v2.10: simulate firmware silently refusing a
                                    // color write, so the Hub's read-back-verify
                                    // honesty can be proven (it must 502, not lie)
-    dropTypeWrites: false          // v2.22.1: same knob for the material write
+    dropTypeWrites: false,         // v2.22.1: same knob for the material write
+    history: []                    // v2.33: Moonraker job history, newest first:
+                                   // { filename, status, start_time, print_duration }
   };
 
   const objectsList = profile === "u1"
@@ -136,6 +138,13 @@ function createMock(profile) {
 
     if (u.pathname === "/server/files/metadata")
       return send(200, { result: {} });
+
+    // v2.33: the job history the Models tab's "most printed" order counts
+    // from. Shape as Moonraker answers it: { result: { count, jobs } }.
+    if (u.pathname === "/server/history/list") {
+      const limit = Number(u.searchParams.get("limit")) || 50;
+      return send(200, { result: { count: state.history.length, jobs: state.history.slice(0, limit) } });
+    }
 
     // v2.21 fixture, for the Klipper reverse proxy only: reflect what actually
     // arrived. The proxy relays a raw stream, and the failure it must rule out

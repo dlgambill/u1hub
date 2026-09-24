@@ -77,6 +77,35 @@ printers, and nothing leaves your network unless you turn remote access on.
 
 ---
 
+## New in 2.33 - sort the shelf
+
+A sort box on the Models tab, next to the filter: Designer A-Z (the order
+it always had), Name A-Z, Newest first, Oldest first, Most printed, and
+Random. The choice is remembered in the browser. Newest and oldest go by
+the file's own date, which for a download is the day it landed. Random
+deals one shuffle and keeps it: Show more pages through the same order
+without repeating a card, and a Shuffle button deals a new one.
+
+Most printed is the one that took work, because nothing on the shelf has
+been printed - what gets printed is the gcode sliced from it. The Hub asks
+every printer for its own job history (Moonraker keeps it on the printer),
+counts the completed jobs by file name, and matches them to the 3MFs two
+ways. If the Hub watched Orca save the gcode, from the Open in Orca button,
+it recorded which file it came from, and that link wins; it moves with a
+Rename and goes with a Delete. Otherwise it goes by the name: a gcode
+called `Penguin x20` is the Penguin; `donut_PLA_2h13m` (Orca's default
+name) is the donut; a designer's name or a collection folder's name in
+either is ignored; plurals and a qualifier in parentheses are forgiven
+("Crystal Dragons (Small)" is the Crystal Dragon). What it will not do is
+guess: a one-word name only matches exactly (Turtle is not Sea Turtle, and
+"Assembly", Orca's name for an unnamed plate, is not every model whose
+folder mentions assembly), and the foot of the list says how many
+completed jobs found a file here and how many printers answered, so a
+number you see is one you can trust and the rest is honestly unmatched.
+Each card in that order says how many times. The printers' histories are
+asked once every ten minutes, in parallel, and a printer that is off for
+the night still counts what it printed from the last answer it gave.
+
 ### 2.30.2 - the phone, uncut
 
 Since 2.29 the dashboard on a phone could be wider than the screen: the

@@ -3551,6 +3551,129 @@ async function stopHub() {
       ok(/@media \(pointer: coarse\) \{ \.mdl-act2, \.mdl-edit \{ display: none !important/.test(mui2), "…and the second row hides on touch like the first");
       ok(/models-attrs\.json/.test(fs.readFileSync(path.join(REPO, ".gitignore"), "utf8")), "models-attrs.json is state and gitignored");
     }
+    // v2.33: sort orders and "most printed". Danny (2026-09-24): "Can I get
+    // some sort options here... alphabetical, oldest, newest, most printed,
+    // random". The print counts come from the printers' own Moonraker job
+    // history, matched to shelf files by a recorded link (when the Hub watched
+    // Orca save the gcode) or by name.
+    {
+      ok(mmod.normName("Mini Frog x24.gcode") === "mini frog" && mmod.normName("donut_PLA_2h13m.gcode") === "donut" && mmod.normName("Penguin x 20 plate 2.gcode") === "penguin" && mmod.normName("Crystal Dragons (Small).gcode") === "crystal dragon small" && mmod.normName("Glass.3mf") === "glass" && mmod.normName("TNT Clickers Labels x32.gcode") === "tnt clicker label", "normName: extension, plate count, 'plate N' and Orca's filament/time tail go, punctuation becomes spaces, plurals go singular (but 'glass' stays)");
+      ok(mmod.stripNoise("spider zou3d", ["zou3d", "cinderwing3d"]) === "spider" && mmod.creditFor("Spider - Zou3D x24.gcode", [{ key: "s", norm: "spider" }, { key: "z", norm: "zou3d keychain" }], ["zou3d"]).join() === "s", "stripNoise: a designer's name in the gcode's name is not part of the model's name");
+      {
+        // A collection folder (13+ files) is noise, not a title: its name must
+        // not draw every printed gcode that carries it (live, 2026-09-24: a
+        // "prusa-format/ZOU3D" folder credited 240 files for one spider).
+        const coll = []; for (let i = 0; i < 14; i++) coll.push({ rel: "prusa-format/ZOU3D/f" + i + ".3mf", creator: "prusa-format", model: "ZOU3D", name: "Thing " + i, mtime: i });
+        coll.push({ rel: "ZOU3D/Spider/Spider.3mf", creator: "ZOU3D", model: "Spider", name: "Spider", mtime: 1 });
+        const cc = mmod.printCounts(coll, [{ filename: "Spider - Zou3D x24.gcode", status: "completed" }], {});
+        ok(cc.counts.size === 1 && cc.counts.get("ZOU3D/Spider/Spider.3mf") === 1, "printCounts: a collection folder's name is noise; the spider alone gets the print", [...cc.counts]);
+        // Two files in one model folder: the print goes to the one whose own
+        // name carries the folder's name, not to the egg beside it.
+        const pair = [{ rel: "C/Crystal Dragon/CrystalDragon3MF.3mf", creator: "C", model: "Crystal Dragon", name: "CrystalDragon3MF" }, { rel: "C/Crystal Dragon/CrystalEgg3MF.3mf", creator: "C", model: "Crystal Dragon", name: "CrystalEgg3MF" }];
+        const c2 = mmod.printCounts(pair, [{ filename: "Crystal Dragons (Small).gcode", status: "completed" }], {});
+        ok(c2.counts.size === 1 && c2.counts.get("C/Crystal Dragon/CrystalDragon3MF.3mf") === 1, "printCounts: a tie on the model folder's name goes to the file named for it", [...c2.counts]);
+      }
+      const titles = [{ key: "p", norm: "penguin" }, { key: "ph", norm: "penguin hat" }, { key: "c", norm: "cat" }, { key: "d", norm: "donut" }];
+      ok(mmod.creditFor("Penguin x20.gcode", titles).join() === "p" && mmod.creditFor("Penguin Hat x20.gcode", titles).join() === "ph", "creditFor: the exact name wins over the name that merely contains it");
+      ok(mmod.creditFor("donut_PLA_2h.gcode", titles).join() === "d" && mmod.creditFor("cat.gcode", titles).length === 0 && mmod.creditFor("art.gcode", [{ key: "x", norm: "cart" }]).length === 0, "creditFor: Orca's default gcode name still finds its model; names under four characters and mid-word hits never match");
+      ok(mmod.creditFor("Turtle (Two Tone) x5.gcode", [{ key: "t", norm: "turtle" }, { key: "tc", norm: "turtle chibi" }]).join() === "t" && mmod.creditFor("Turtle (Chibi) x14.gcode", [{ key: "t", norm: "turtle" }, { key: "tc", norm: "turtle chibi" }]).join() === "tc", "creditFor: a qualifier in parentheses is dropped only when the full name found nothing");
+      ok(mmod.creditFor("Sea Turtle (Chibi) x25.gcode", [{ key: "t", norm: "turtle" }]).length === 0 && mmod.creditFor("Assembly_PLA_4h.gcode", [{ key: "o", norm: "opossum articulated fidget snap fit assembly" }]).length === 0, "creditFor: a one-word name matches only exactly - 'Turtle' is not 'Sea Turtle', 'Assembly' is not a folder that mentions assembly");
+      ok(mmod.creditFor("Crystal Dragons (Small).gcode", [{ key: "cd", norm: "crystal dragon" }, { key: "x", norm: "crystal dragon original flat feet" }]).join() === "cd" && mmod.creditFor("Crystal Dragon x3.gcode", [{ key: "x", norm: "crystal dragon original flat feet" }, { key: "y", norm: "crystal dragon original flat feet curled wings" }]).join() === "x", "creditFor: a two-word name inside the gcode's name wins; a two-word gcode name inside a longer title takes the shortest such title");
+      const pitems = [{ rel: "a", name: "Donut", model: "Donut", mtime: 3 }, { rel: "b", name: "Mini Frog", model: "Mini Frog", mtime: 1 }, { rel: "c", name: "Penguin", model: "Penguin", mtime: 2 }];
+      const pjobs = [{ filename: "Penguin x20.gcode", status: "completed" }, { filename: "Penguin x20.gcode", status: "completed" }, { filename: "Penguin x20.gcode", status: "cancelled" }, { filename: "gcodes/donut_PLA_2h.gcode", status: "completed" }, { filename: "weird.gcode", status: "completed" }, { filename: "linked.gcode", status: "completed" }];
+      const pc = mmod.printCounts(pitems, pjobs, { "linked.gcode": "b", "weird.gcode": "gone" });
+      ok(pc.counts.get("c") === 2 && pc.counts.get("a") === 1 && pc.counts.get("b") === 1 && pc.jobs === 5 && pc.matched === 4, "printCounts: completed jobs only, links win, a link to a file that left the shelf is ignored", [...pc.counts]);
+      ok(mmod.sortItems(pitems, "printed", { counts: pc.counts }).map(i => i.rel).join() === "c,a,b" && mmod.sortItems(pitems, "newest").map(i => i.rel).join() === "a,c,b" && mmod.sortItems(pitems, "oldest").map(i => i.rel).join() === "b,c,a" && mmod.sortItems(pitems, "name").map(i => i.rel).join() === "a,b,c", "sortItems: printed, newest, oldest, name");
+      const r1 = mmod.sortItems(pitems, "random", { seed: 42 }).map(i => i.rel).join(), r2 = mmod.sortItems(pitems, "random", { seed: 42 }).map(i => i.rel).join();
+      ok(r1 === r2 && [7, 8, 9, 10, 11].some(sd => mmod.sortItems(pitems, "random", { seed: sd }).map(i => i.rel).join() !== r1), "sortItems: the same seed deals the same order, another seed another one");
+
+      await jpost("/api/models/settings", { folder: mroot });
+      // Ages, set on every file so the order is not left to the moment each
+      // fixture was written: the dragon is the oldest, the sheep the newest.
+      const ago = d => new Date(Date.now() - d * 86400000);
+      fs.utimesSync(path.join(mroot, "Cinderwing3D", "Baby Dragon", "Baby_Dragon_Color.3mf"), ago(30), ago(30));
+      fs.utimesSync(path.join(mroot, "Cinderwing3D", "Tiny Horse", "Cinderwing3D - Tiny Horse.3mf"), ago(20), ago(20));
+      fs.utimesSync(path.join(mroot, "Harness", "Loose Cube", "Harness - Loose Cube.3mf"), ago(10), ago(10));
+      fs.utimesSync(path.join(mroot, "3D Tinys Prints", "Baby Sheep", "Tinys_Sheep_Colored.3mf"), ago(1), ago(1));
+      // A walk already in flight (the rename above starts none, but the
+      // folder Save can) would answer with the times it read before these
+      // were set: let it finish, then ask for a fresh one.
+      for (let i = 0; i < 30; i++) { r = await jget("/api/models"); if (!r.body.refreshing) break; await sleep(150); }
+      await jget("/api/models?refresh=1");
+      for (let i = 0; i < 30; i++) { r = await jget("/api/models"); if (!r.body.refreshing && r.body.total_all === 4) break; await sleep(150); }
+      ok(r.body.sort === "designer" && r.body.items[0].creator === "3D Tinys Prints", "the default order is the index's own (designer, model, name) and the answer names it", r.body.items.map(i => i.rel));
+      r = await jget("/api/models?sort=name");
+      ok(r.body.sort === "name" && r.body.items.map(i => i.name).join("|") === "Baby_Dragon_Color|Cinderwing3D - Tiny Horse|Loose Cube|Tinys_Sheep_Colored", "sort=name: alphabetical by the name the card shows (attributes over the file name), case-blind", r.body.items.map(i => i.name));
+      r = await jget("/api/models?sort=newest");
+      ok(r.body.items.map(i => i.name).join("|") === "Tinys_Sheep_Colored|Loose Cube|Cinderwing3D - Tiny Horse|Baby_Dragon_Color", "sort=newest: the file touched last comes first", r.body.items.map(i => i.name));
+      r = await jget("/api/models?sort=oldest");
+      ok(r.body.items.map(i => i.name).join("|") === "Baby_Dragon_Color|Cinderwing3D - Tiny Horse|Loose Cube|Tinys_Sheep_Colored", "sort=oldest: …and last", r.body.items.map(i => i.name));
+      r = await jget("/api/models?sort=bogus");
+      ok(r.status === 200 && r.body.sort === "designer", "an unknown sort falls back to the default, no error");
+      r = await jget("/api/models?sort=random&limit=2");
+      const seed = r.body.seed;
+      ok(r.body.sort === "random" && Number.isInteger(seed) && seed > 0, "sort=random: the answer carries the seed it dealt", seed);
+      const page1 = r.body.items.map(i => i.rel);
+      r = await jget("/api/models?sort=random&limit=2&offset=2&seed=" + seed);
+      const page2 = r.body.items.map(i => i.rel);
+      ok(page1.length === 2 && page2.length === 2 && new Set(page1.concat(page2)).size === 4 && r.body.seed === seed, "…and the next page with that seed is the rest of the same shuffle, nothing twice, nothing missing", { page1, page2 });
+      r = await jget("/api/models?sort=random&limit=4&seed=" + seed);
+      ok(r.body.items.map(i => i.rel).join("|") === page1.concat(page2).join("|"), "…the whole shuffle in one page is the two pages end to end");
+
+      // Most printed: two printers' histories. The dragon was printed three
+      // times on the U1 (a fourth run was cancelled) and once on the SV; the
+      // horse once, under Orca's default gcode name inside a subfolder.
+      mockU1.state.history = [
+        { filename: "Baby_Dragon_Color x4.gcode", status: "completed", start_time: 1700000000, print_duration: 3600 },
+        { filename: "Baby_Dragon_Color x4.gcode", status: "cancelled", start_time: 1700003600, print_duration: 60 },
+        { filename: "Baby_Dragon_Color x4.gcode", status: "completed", start_time: 1700007200, print_duration: 3600 },
+        { filename: "Baby_Dragon_Color x4.gcode", status: "completed", start_time: 1700010800, print_duration: 3600 },
+        { filename: "gcodes/Cinderwing3D - Tiny Horse_PLA_1h.gcode", status: "completed", start_time: 1700014400, print_duration: 3600 }
+      ];
+      mockSv.state.history = [
+        { filename: "Baby_Dragon_Color x4.gcode", status: "completed", start_time: 1700020000, print_duration: 3600 },
+        { filename: "unrelated thing.gcode", status: "completed", start_time: 1700030000, print_duration: 600 }
+      ];
+      r = await jget("/api/models?sort=printed&refresh=1");
+      for (let i = 0; i < 30 && r.body.refreshing; i++) { await sleep(150); r = await jget("/api/models?sort=printed"); }
+      ok(r.body.sort === "printed" && r.body.items[0].name === "Baby_Dragon_Color" && r.body.items[0].prints === 4 && r.body.items[1].name === "Cinderwing3D - Tiny Horse" && r.body.items[1].prints === 1 && r.body.items[2].prints === 0, "sort=printed: completed prints across both printers, matched by name, most first; cancelled runs do not count", r.body.items.map(i => i.name + ":" + i.prints));
+      ok(r.body.printed && r.body.printed.printers === 2 && r.body.printed.of === 2 && r.body.printed.jobs === 6 && r.body.printed.matched === 5, "…and the answer says how many printers answered and how many jobs found a file here", r.body.printed);
+      r = await jget("/api/models?sort=name");
+      ok(r.body.items.every(i => i.prints === undefined), "the count rides only on the 'printed' order; the other orders pay nothing for history");
+
+      // A link recorded by the Hub itself: Orca (played by node, which exits at
+      // once on a .3mf) is opened on the sheep, a gcode with a name that could
+      // never match lands in the library, and from then on that gcode counts
+      // toward the sheep. Rename moves the link with the file.
+      r = await jpost("/api/models/settings", { orcaExe: process.execPath });
+      ok(r.status === 200 && r.body.orca_found === true, "(fixture) Orca's path points at node for the session probe");
+      r = await jpost("/api/models/open", { file: "3D Tinys Prints/Baby Sheep/Tinys_Sheep_Colored.3mf", type: "u1" });
+      ok(r.status === 200 && r.body.session && r.body.session.state === "watching", "open: a session watches the gcode folder", r.body);
+      const probe = path.join(gcodeDir, "Harness Link Probe.gcode");
+      fs.writeFileSync(probe, GCODE_SINGLE);
+      let sess = null;
+      for (let i = 0; i < 50; i++) { await sleep(200); const q = await jget("/api/models/sessions"); sess = (q.body.sessions || []).find(x => x.id === r.body.session.id); if (sess && sess.state === "done") break; }
+      ok(sess && sess.state === "done" && sess.newGcode === "Harness Link Probe.gcode", "…and sees the new gcode land", sess);
+      const lf = path.join(hubDir, "models-links.json");
+      ok(fs.existsSync(lf) && JSON.parse(fs.readFileSync(lf, "utf8")).links["Harness Link Probe.gcode"] === "3D Tinys Prints/Baby Sheep/Tinys_Sheep_Colored.3mf", "the gcode is linked to the file it came from, in models-links.json");
+      mockSv.state.history.push({ filename: "Harness Link Probe.gcode", status: "completed", start_time: 1700040000, print_duration: 100 }, { filename: "Harness Link Probe.gcode", status: "completed", start_time: 1700050000, print_duration: 100 });
+      r = await jget("/api/models?sort=printed&refresh=1");
+      for (let i = 0; i < 30 && r.body.refreshing; i++) { await sleep(150); r = await jget("/api/models?sort=printed"); }
+      const sheep = r.body.items.find(i => i.name === "Tinys_Sheep_Colored");
+      ok(sheep && sheep.prints === 2 && r.body.items[1].name === "Tinys_Sheep_Colored", "sort=printed: the linked gcode counts toward its file though the names share nothing", r.body.items.map(i => i.name + ":" + i.prints));
+      r = await jpost("/api/models/rename", { file: "3D Tinys Prints/Baby Sheep/Tinys_Sheep_Colored.3mf" });
+      ok(r.status === 200 && r.body.rel === "3D Tinys Prints/Baby Sheep/3D Tinys Prints - Baby Sheep.3mf" && JSON.parse(fs.readFileSync(lf, "utf8")).links["Harness Link Probe.gcode"] === r.body.rel, "rename: the link follows the file", JSON.parse(fs.readFileSync(lf, "utf8")).links);
+      r = await jget("/api/models?sort=printed");
+      ok(r.body.items.find(i => i.name === "3D Tinys Prints - Baby Sheep").prints === 2, "…and the count is still there under the new name");
+      fs.unlinkSync(probe);
+      await jpost("/api/models/settings", { orcaExe: path.join(tmp, "no-such-orca.exe") });
+      mockU1.state.history = []; mockSv.state.history = [];
+
+      const mui3 = fs.readFileSync(path.join(REPO, "public", "modules", "models-ui.js"), "utf8");
+      ok(/id="mdl-sort"/.test(mui3) && ["designer", "name", "newest", "oldest", "printed", "random"].every(k => new RegExp(k + ": \"").test(mui3)) && /u1\.models\.sort/.test(mui3), "the bar has the sort select with all six orders, remembered in this browser");
+      ok(/&seed=/.test(mui3) && /id="mdl-shuffle"/.test(mui3) && />printed \' \+ it\.prints \+ "×<\/span> · "/.test(mui3) && /d\.printed\.printers/.test(mui3), "…random pages with the seed and can be re-dealt; printed shows the count first on the card's line (the line clips at the end) and where it came from in the foot");
+      ok(/models-links\.json/.test(fs.readFileSync(path.join(REPO, ".gitignore"), "utf8")), "models-links.json is state and gitignored");
+    }
     r = await jpost("/api/models/settings", { folder: "", clear: true });
     ok(r.status === 200 && r.body.folder !== mroot, "clear:true is the way to reset it", r.body && r.body.folder);
   }

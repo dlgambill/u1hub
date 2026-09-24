@@ -215,6 +215,148 @@ function pickThumb(entries) {
   return null;
 }
 
+// ---- v2.33: sort orders and print counts ------------------------------------
+// The tab can be ordered six ways. "designer" is the index's own order
+// (designer, model, name); the others are computed on the filtered list at
+// request time, so a 30,000-file shelf still pays for one sort, not a walk.
+const SORTS = ["designer", "name", "newest", "oldest", "printed", "random"];
+
+// mulberry32: a small seeded generator, so "random" gives the SAME order to
+// every page of one shuffle (the client sends the seed back with each page)
+// and a fresh order when the seed changes.
+function seededShuffle(list, seed) {
+  let a = (Number(seed) >>> 0) || 1;
+  const rnd = () => { a |= 0; a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  const out = list.slice();
+  for (let i = out.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); const x = out[i]; out[i] = out[j]; out[j] = x; }
+  return out;
+}
+
+// A name as the print matcher sees it: lower case, extension gone, the plate
+// count ("x24", "x 24") and "plate 3" gone, Orca's default tail gone (it names
+// a gcode "<project>_<filament>_<time>", so "donut_PLA_2h13m" is "donut"),
+// punctuation to spaces, and plurals of four letters or more singular
+// ("Crystal Dragons" is the "Crystal Dragon" file).
+const FILAMENTS = /\b(pla|petg|abs|tpu|asa|pc|pa|pva|hips|pctg|nylon)\b/g;
+function normName(s) {
+  return String(s || "").toLowerCase()
+    .replace(/\.(gcode|3mf)$/i, "")
+    .replace(/[_+\-.,()\[\]#]+/g, " ")
+    .replace(/\b(x\s?\d+|plate\s?\d+|\d+h(\d+m)?|\d+m)\b/g, " ")
+    .replace(FILAMENTS, " ")
+    .replace(/\b([a-z]{3,}[a-rt-z])s\b/g, "$1")
+    .replace(/\s+/g, " ").trim();
+}
+// Words that name a designer or a collection folder, not a model: taken out of
+// a gcode's name before matching ("Spider - Zou3D x24" is "spider"), and never
+// offered as a title.
+function stripNoise(g, noise) {
+  let G = " " + g + " ";
+  for (const w of noise || []) if (w) G = G.split(" " + w + " ").join(" ");
+  return G.replace(/\s+/g, " ").trim();
+}
+// Which shelf files one printed gcode counts toward. An exact name wins;
+// otherwise the gcode's name carries the model's name as whole words (the
+// longest such name wins), otherwise the model's name carries the gcode's
+// (the shortest wins). Ties share the credit. A single word only ever
+// matches exactly: "Turtle" is not "Sea Turtle", and "Assembly" (Orca's
+// name for an unnamed plate) is not every model whose folder says
+// "snap-fit assembly" - live, 2026-09-24, those two ran the count up by
+// sixty. Names under four characters never match; "cat" would claim half
+// a shelf. Wrong counts are worse than unmatched ones: the foot line says
+// how many jobs found no file, a wrong number says nothing.
+function creditFor(gname, titles, noise) {
+  const g = stripNoise(normName(gname), noise);
+  const got = creditNorm(g, titles);
+  if (got.length || !/\(/.test(String(gname))) return got;
+  // No match with the qualifier in parentheses; "Crystal Dragons (Small)" is
+  // still the Crystal Dragon. The precise name was tried first, so a shelf
+  // that has both "Turtle (Chibi)" and "Turtle" is not confused.
+  const g2 = stripNoise(normName(String(gname).replace(/\([^)]*\)/g, " ")), noise);
+  return g2 !== g ? creditNorm(g2, titles) : [];
+}
+function creditNorm(g, titles) {
+  if (g.length < 4) return [];
+  const G = " " + g + " ";
+  const gWords = g.split(" ").length;
+  let best = 0, out = [];
+  for (const t of titles) {
+    if (!t.norm || t.norm.length < 4) continue;
+    let score = 0;
+    if (t.norm === g) score = 3e6;
+    else if (t.norm.includes(" ") && G.includes(" " + t.norm + " ")) score = 2e6 + t.norm.length;
+    else if (gWords >= 2 && (" " + t.norm + " ").includes(G)) score = 1e6 - t.norm.length;
+    if (!score) continue;
+    if (score > best) { best = score; out = [t]; }
+    else if (score === best) out.push(t);
+  }
+  // A tie on a shared model folder's name ("Crystal Dragon & Egg" holding
+  // the dragon and its egg): the file whose own name carries the most of the
+  // gcode's words is the one that was printed. Title entries carry the
+  // file's squashed name.
+  if (out.length > 1) {
+    const words = g.split(" ").filter(w => w.length >= 4);
+    const hits = t => t.name ? words.filter(w => t.name.includes(w)).length : 0;
+    const top = Math.max(...out.map(hits));
+    if (top > 0) out = out.filter(t => hits(t) === top);
+  }
+  return [...new Set(out.map(t => t.key))];
+}
+// Completed prints per shelf file. jobs: [{ filename, status }] from the
+// printers' history (any path prefix); links: { gcodeBasename: rel } written
+// when the Hub itself watched Orca save the gcode (those win over the name
+// match, and a link to a file that has left the shelf is ignored).
+// A model folder holding more than a dozen files is a collection (a designer's
+// archive, a "prusa-format" dump), so its name is noise, like every designer's.
+const COLLECTION_MIN = 13;
+function printCounts(items, jobs, links) {
+  const have = new Set(items.map(it => it.rel));
+  const perModel = new Map();
+  for (const it of items) { const k = it.creator + "/" + it.model; perModel.set(k, (perModel.get(k) || 0) + 1); }
+  const noise = new Set();
+  for (const it of items) {
+    if (it.creator) noise.add(normName(it.creator));
+    if (perModel.get(it.creator + "/" + it.model) >= COLLECTION_MIN) noise.add(normName(it.model));
+  }
+  noise.delete("");
+  const noiseList = [...noise];
+  const titles = [];
+  for (const it of items) {
+    const a = stripNoise(normName(it.name), noiseList), b = stripNoise(normName(it.model), noiseList);
+    const squashed = a.replace(/ /g, "");
+    if (a) titles.push({ key: it.rel, norm: a, name: squashed });
+    if (b && b !== a) titles.push({ key: it.rel, norm: b, name: squashed });
+  }
+  const perGcode = new Map();
+  for (const j of jobs || []) {
+    if (String(j.status || "") !== "completed") continue;
+    const base = String(j.filename || "").split(/[\\/]/).pop();
+    if (!base) continue;
+    perGcode.set(base, (perGcode.get(base) || 0) + 1);
+  }
+  const counts = new Map();
+  let matched = 0;
+  for (const [base, k] of perGcode) {
+    const linked = links && links[base];
+    const rels = linked && have.has(linked) ? [linked] : creditFor(base, titles, noiseList);
+    if (rels.length) matched += k;
+    for (const r of rels) counts.set(r, (counts.get(r) || 0) + k);
+  }
+  return { counts, jobs: [...perGcode.values()].reduce((a, b) => a + b, 0), matched };
+}
+function sortItems(list, sort, opt) {
+  const o = opt || {};
+  const byName = (a, b) => String(a.name).localeCompare(String(b.name), undefined, { sensitivity: "base", numeric: true }) || a.rel.localeCompare(b.rel);
+  switch (sort) {
+    case "name": return list.slice().sort(byName);
+    case "newest": return list.slice().sort((a, b) => (b.mtime || 0) - (a.mtime || 0) || byName(a, b));
+    case "oldest": return list.slice().sort((a, b) => (a.mtime || 0) - (b.mtime || 0) || byName(a, b));
+    case "printed": { const c = o.counts || new Map(); return list.slice().sort((a, b) => (c.get(b.rel) || 0) - (c.get(a.rel) || 0) || byName(a, b)); }
+    case "random": return seededShuffle(list, o.seed);
+    default: return list;
+  }
+}
+
 function register(ctx) {
   const { app, hublog } = ctx;
   const conf = () => {
@@ -249,6 +391,51 @@ function register(ctx) {
   let ATTRS = {};
   try { ATTRS = JSON.parse(fs.readFileSync(ATTRS_FILE, "utf8")).attrs || {}; } catch {}
   const saveAttrs = () => { try { fs.writeFileSync(ATTRS_FILE, JSON.stringify({ attrs: ATTRS }, null, 2)); } catch {} };
+  // v2.33: which gcode came from which shelf file, recorded when the Hub
+  // watched Orca save it. Keyed by gcode basename; the value is the 3MF rel.
+  // "Most printed" trusts these before it guesses from names.
+  const LINKS_FILE = path.join(ctx.baseDir, "models-links.json");
+  let LINKS = {};
+  try { LINKS = JSON.parse(fs.readFileSync(LINKS_FILE, "utf8")).links || {}; } catch {}
+  const saveLinks = () => { try { fs.writeFileSync(LINKS_FILE, JSON.stringify({ links: LINKS }, null, 2)); } catch {} };
+  // v2.33: the printers' job history, one answer kept per printer. Moonraker
+  // holds the history on the printer; the Hub asks each one (3.5 s, in
+  // parallel) and keeps the last good list, so a printer that is off for the
+  // night still counts what it printed. Refreshed after ten minutes or on
+  // Rescan.
+  const HIST = new Map();            // url -> { at, jobs }
+  const HIST_TTL_MS = 10 * 60 * 1000;
+  let HIST_AT = 0, HIST_BUSY = null;
+  async function historyJobs(force) {
+    const printers = ctx.printers || [];
+    if (!force && HIST_AT && Date.now() - HIST_AT < HIST_TTL_MS) return summarize(printers);
+    if (!HIST_BUSY) HIST_BUSY = Promise.all(printers.map(async p => {
+      const base = String(p.url || "").replace(/\/+$/, "");
+      if (!base) return;
+      try {
+        const ctrl = new AbortController();
+        const to = setTimeout(() => ctrl.abort(), 3500);
+        const r = await fetch(base + "/server/history/list?limit=1000&order=desc", { signal: ctrl.signal });
+        clearTimeout(to);
+        if (!r.ok) return;
+        const jobs = ((((await r.json()).result) || {}).jobs) || [];
+        HIST.set(base, { at: Date.now(), jobs: jobs.map(j => ({ filename: j.filename || "", status: j.status || "" })) });
+      } catch {}
+    })).then(() => { HIST_AT = Date.now(); }).finally(() => { HIST_BUSY = null; });
+    await HIST_BUSY;
+    return summarize(printers);
+  }
+  function summarize(printers) {
+    const jobs = [];
+    let answered = 0;
+    for (const p of printers) {
+      const h = HIST.get(String(p.url || "").replace(/\/+$/, ""));
+      if (!h) continue;
+      answered++;
+      jobs.push(...h.jobs);
+    }
+    return { jobs, printers: answered, of: printers.length, at: HIST_AT };
+  }
   // An item as the tab sees it: folders, then attributes, then the
   // convention target and whether the file already sits there.
   function decorate(it) {
@@ -350,6 +537,18 @@ function register(ctx) {
     let list = all;
     if (creator) list = list.filter(it => it.creator === creator);
     if (q.q) list = list.filter(it => match(it.creator + "/" + it.model + "/" + it.name));
+    // v2.33: order. "random" answers with the seed it used so the next page
+    // of the same shuffle can ask for it back; "printed" carries the count on
+    // each item and says how many printers' history it comes from.
+    const sort = SORTS.includes(String(q.sort)) ? String(q.sort) : "designer";
+    const seed = sort === "random" ? ((parseInt(q.seed, 10) >>> 0) || (crypto.randomBytes(4).readUInt32LE(0) || 1)) : null;
+    let printed = null;
+    if (sort === "printed") {
+      const h = await historyJobs(String(q.refresh || "") === "1");
+      const pc = printCounts(all, h.jobs, LINKS);
+      printed = { printers: h.printers, of: h.of, jobs: pc.jobs, matched: pc.matched, at: h.at };
+      list = sortItems(list, sort, { counts: pc.counts }).map(it => ({ ...it, prints: pc.counts.get(it.rel) || 0 }));
+    } else list = sortItems(list, sort, { seed });
     const offset = Math.max(0, parseInt(q.offset, 10) || 0);
     const limit = Math.min(200, Math.max(1, parseInt(q.limit, 10) || PAGE_DEFAULT));
     const c = conf();
@@ -357,6 +556,7 @@ function register(ctx) {
       folder: ix.folder, missing: !!ix.missing, unreachable: ix.unreachable || null, scanning: !!ix.scanning, error: LAST_ERR,
       indexed_at: ix.at, refreshing: !!WALKING, truncated: !!ix.truncated,
       total_all: all.length, total: list.length, offset, limit,
+      sort, seed, printed,
       creators: creatorsOf(all),
       items: list.slice(offset, offset + limit),
       orcaExe: c.orcaExe, orca_found: fs.existsSync(c.orcaExe)
@@ -415,6 +615,9 @@ function register(ctx) {
       let st = null; try { st = await fs.promises.stat(to); } catch {}
       const next = { rel: newRel, ...split(newRel), size: st ? st.size : (i >= 0 ? INDEX.items[i].size : 0), mtime: st ? st.mtimeMs : Date.now() };
       if (i >= 0) INDEX.items[i] = next; else INDEX.items.push(next);
+      let moved = false;
+      for (const k of Object.keys(LINKS)) if (LINKS[k] === rel) { LINKS[k] = newRel; moved = true; }
+      if (moved) saveLinks();
       INDEX.items.sort((a, b) => a.creator.localeCompare(b.creator) || a.model.localeCompare(b.model) || a.name.localeCompare(b.name));
       INDEX.creators = creatorsOf(INDEX.items);
       saveIndex();
@@ -435,6 +638,9 @@ function register(ctx) {
     if (INDEX) {
       const n = INDEX.items.length;
       INDEX.items = INDEX.items.filter(it => it.rel !== rel);
+      let dropped = false;
+      for (const k of Object.keys(LINKS)) if (LINKS[k] === rel) { delete LINKS[k]; dropped = true; }
+      if (dropped) saveLinks();
       if (INDEX.items.length !== n) { INDEX.creators = creatorsOf(INDEX.items); saveIndex(); }
     }
     hublog("info", "models: deleted " + rel);
@@ -545,6 +751,7 @@ function register(ctx) {
       for (const [name, mtime] of snap()) {
         if (!before.has(name) || before.get(name) !== mtime) {
           s.state = "done"; s.newGcode = name; s.doneAt = Date.now(); clearInterval(iv);
+          LINKS[name] = s.file; saveLinks();   // v2.33: "most printed" counts this gcode toward this file
           // The library snapshot re-walks on its own: a new file changes the
           // folder's mtime, which listLibrary checks on the next request.
           hublog("info", "models: Orca saved " + name + " (from " + s.file + ")");
@@ -580,4 +787,4 @@ function register(ctx) {
   ctx.provide("models.info", (ps, ms) => infoFromParts(ps, ms));
 }
 
-module.exports = { register, infoFromEntries, infoFromParts, pickThumb, nameMatcher, split, zipOpen, withZip, identity, conventionRel, cleanPart };
+module.exports = { register, infoFromEntries, infoFromParts, pickThumb, nameMatcher, split, zipOpen, withZip, identity, conventionRel, cleanPart, SORTS, normName, stripNoise, creditFor, printCounts, sortItems, seededShuffle };

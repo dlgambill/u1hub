@@ -23,6 +23,11 @@
 (function () {
   let EL = null, DATA = null, CREATOR = "", Q = "", OFFSET = 0, BUSY = false, SESS = [], SESS_TIMER = 0, SETTINGS = null;
   let ADV = null, ADVFILE = null;   // v2.28: /api/advisor state (key_set), the file the suggestion panel is open for
+  // v2.33: the order the shelf is shown in, remembered per browser; SEED is
+  // the shuffle the server dealt, sent back so "Show more" pages the same one.
+  const SORTS = { designer: "Designer A-Z", name: "Name A-Z", newest: "Newest first", oldest: "Oldest first", printed: "Most printed", random: "Random" };
+  let SORT = "designer", SEED = 0;
+  try { const v = localStorage.getItem("u1.models.sort"); if (v && SORTS[v]) SORT = v; } catch {}
   const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   async function jget(p) { try { const r = await fetch(p); return r.ok ? r.json() : null; } catch { return null; } }
   async function jpost(p, b) {
@@ -53,6 +58,8 @@
       ".mdl-rail .n{font-family:var(--mono); font-size:10.5px; color:var(--ink-faint);}",
       ".mdl-bar{display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:10px;}",
       ".mdl-bar input.field{flex:1 1 240px; min-width:0;}",
+      ".mdl-bar select.field{flex:0 0 auto; width:auto; padding-right:26px;}",
+      ".mdl-sub .prints{color:var(--ink); font-weight:600;}",
       ".mdl-grid{display:grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap:10px;}",
       ".mdl-card{background:var(--panel); border:1px solid var(--line); border-radius:var(--r-lg,12px); overflow:hidden; display:flex; flex-direction:column; min-width:0;}",
       ".mdl-thumb{aspect-ratio:1/1; background:var(--panel-2,#15171c); display:flex; align-items:center; justify-content:center; overflow:hidden;}",
@@ -130,6 +137,8 @@
       '<div class="mdl-cfg" id="mdl-cfg"></div>' +
       '<div class="mdl-bar">' +
       '<input class="field" id="mdl-q" placeholder="Filter models… (* ? -word)" title="Plain text matches anywhere in designer/model/file. * and ? are wildcards. -word excludes.">' +
+      '<select class="field" id="mdl-sort" title="Order the shelf is shown in">' + Object.keys(SORTS).map(k => '<option value="' + k + '"' + (k === SORT ? " selected" : "") + ">" + SORTS[k] + "</option>").join("") + "</select>" +
+      '<button class="btn ghost" id="mdl-shuffle" title="Deal a new random order"' + (SORT === "random" ? "" : ' style="display:none"') + '>🎲 Shuffle</button>' +
       '<button class="btn ghost" id="mdl-rescan" title="Walk the folder again now">⟳ Rescan</button>' +
       '<button class="btn ghost" id="mdl-cfgbtn">⚙ Folder</button>' +
       '</div>' +
@@ -137,6 +146,13 @@
     let t = 0;
     el.querySelector("#mdl-q").addEventListener("input", e => { clearTimeout(t); t = setTimeout(() => { Q = e.target.value.trim(); OFFSET = 0; load(); }, 220); });
     el.querySelector("#mdl-rescan").addEventListener("click", () => { OFFSET = 0; load(true); });
+    el.querySelector("#mdl-sort").addEventListener("change", e => {
+      SORT = SORTS[e.target.value] ? e.target.value : "designer";
+      try { localStorage.setItem("u1.models.sort", SORT); } catch {}
+      el.querySelector("#mdl-shuffle").style.display = SORT === "random" ? "" : "none";
+      SEED = 0; OFFSET = 0; load();
+    });
+    el.querySelector("#mdl-shuffle").addEventListener("click", () => { SEED = 0; OFFSET = 0; load(); });
     el.querySelector("#mdl-cfgbtn").addEventListener("click", () => { el.querySelector("#mdl-cfg").classList.toggle("show"); });
     el.querySelector("#mdl-grid").addEventListener("click", onGridClick);
     el.querySelector("#mdl-grid").addEventListener("keydown", e => {
@@ -183,9 +199,11 @@
   async function load(refresh, append) {
     if (BUSY) return; BUSY = true;
     try {
-      const u = "/api/models?limit=60&offset=" + OFFSET + (Q ? "&q=" + encodeURIComponent(Q) : "") + (CREATOR ? "&creator=" + encodeURIComponent(CREATOR) : "") + (refresh ? "&refresh=1" : "");
+      const u = "/api/models?limit=60&offset=" + OFFSET + (Q ? "&q=" + encodeURIComponent(Q) : "") + (CREATOR ? "&creator=" + encodeURIComponent(CREATOR) : "") + (refresh ? "&refresh=1" : "")
+        + (SORT !== "designer" ? "&sort=" + SORT : "") + (SORT === "random" && SEED ? "&seed=" + SEED : "");
       const d = await jget(u);
       if (!d) return;
+      if (d.sort === "random" && d.seed) SEED = d.seed;
       const prev = DATA; DATA = d;
       SETTINGS = { ...(SETTINGS || {}), orcaExe: d.orcaExe || (SETTINGS && SETTINGS.orcaExe) || null, orca_found: d.orca_found };
       render(append && prev ? prev.items : null);
@@ -216,7 +234,8 @@
     }
     const foot = EL.querySelector("#mdl-foot");
     const shown = items.length;
-    foot.innerHTML = d.total ? (shown + " of " + d.total + (shown < d.total ? ' · <button class="btn ghost" id="mdl-more" style="font-size:11.5px; padding:4px 10px">Show more</button>' : "")) + (d.truncated ? " · index capped" : "") : "";
+    const pnote = d.printed ? (d.printed.printers ? " · prints counted from " + d.printed.printers + " of " + d.printed.of + " printer" + (d.printed.of === 1 ? "" : "s") + "' history (" + d.printed.matched + " of " + d.printed.jobs + " completed jobs matched a file here)" : " · no printer answered for its job history, so nothing is counted yet") : "";
+    foot.innerHTML = d.total ? (shown + " of " + d.total + (shown < d.total ? ' · <button class="btn ghost" id="mdl-more" style="font-size:11.5px; padding:4px 10px">Show more</button>' : "")) + (d.truncated ? " · index capped" : "") + pnote : "";
     if (!SETTINGS || !SETTINGS.orcaExe) SETTINGS = { ...(SETTINGS || {}), orca_found: d.orca_found };
   }
 
@@ -226,7 +245,7 @@
       '<div class="mdl-thumb"><img loading="lazy" src="' + q + '" alt="" onerror="this.replaceWith(Object.assign(document.createElement(\'span\'),{className:\'nothumb\',textContent:\'no preview in file\'}))"></div>' +
       '<div class="mdl-body">' +
       '<div class="mdl-name" title="' + esc(it.rel) + '">' + esc(it.name) + "</div>" +
-      '<div class="mdl-sub" title="' + (it.conventional ? "filed the way the convention wants it" : esc(it.rel)) + '">' + esc(it.creator || "") + (it.model && it.model !== it.name ? " · " + esc(it.model) : "") + " · " + mb(it.size) + "</div>" +
+      '<div class="mdl-sub" title="' + (it.conventional ? "filed the way the convention wants it" : esc(it.rel)) + '">' + (it.prints != null ? '<span class="prints" title="completed prints of gcode sliced from this file, from the printers\' own job history">printed ' + it.prints + "×</span> · " : "") + esc(it.creator || "") + (it.model && it.model !== it.name ? " · " + esc(it.model) : "") + " · " + mb(it.size) + "</div>" +
       '<div class="mdl-chips" data-info="' + esc(it.rel) + '"><span class="k">…</span></div>' +
       '<div class="mdl-act"><button class="btn primary" data-open="' + esc(it.rel) + '"' + (DATA && DATA.orca_found === false ? ' title="Snapmaker Orca not found - set its path under ⚙ Folder"' : "") + '>Open in Orca</button>' +
       (window.HUB_FEATURES && window.HUB_FEATURES.advisor === false ? "" : '<button class="btn ghost" data-suggest="' + esc(it.rel) + '" title="Have Claude read this file\'s geometry and the designer\'s profile and suggest the slicer settings for your printer">✦ Settings</button>') +
@@ -280,7 +299,7 @@
     const c = cardOf(rel);
     if (c && it) {
       c.querySelector(".mdl-name").textContent = it.name;
-      c.querySelector(".mdl-sub").textContent = (it.creator || "") + (it.model && it.model !== it.name ? " · " + it.model : "") + " · " + mb(it.size);
+      c.querySelector(".mdl-sub").textContent = (it.prints != null ? "printed " + it.prints + "× · " : "") + (it.creator || "") + (it.model && it.model !== it.name ? " · " + it.model : "") + " · " + mb(it.size);
       // New attributes can move the file's proper place: the ✓ and the Rename button follow.
       c.classList.toggle("conv", !!it.conventional);
       const rb = c.querySelector("[data-rename]"); if (rb) rb.disabled = !!it.conventional;
