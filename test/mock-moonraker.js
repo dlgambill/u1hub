@@ -28,8 +28,10 @@ function createMock(profile) {
                                    // color write, so the Hub's read-back-verify
                                    // honesty can be proven (it must 502, not lie)
     dropTypeWrites: false,         // v2.22.1: same knob for the material write
-    history: []                    // v2.33: Moonraker job history, newest first:
+    history: [],                   // v2.33: Moonraker job history, newest first:
                                    // { filename, status, start_time, print_duration }
+    camGrabs: 0,                   // v2.35: monitor.jpg fetches seen (issue #4: one per grab, not per viewer)
+    camDelayMs: 600                // how long the "camera" takes to answer
   };
 
   const objectsList = profile === "u1"
@@ -138,6 +140,16 @@ function createMock(profile) {
 
     if (u.pathname === "/server/files/metadata")
       return send(200, { result: {} });
+
+    // v2.35: the chamber camera's frame, as Snapmaker's plugin writes it. A
+    // minimal JPEG (SOI ... EOI) after a delay, counted, so the harness can
+    // prove the Hub asks once per grab however many viewers are waiting.
+    if (u.pathname === "/server/files/camera/monitor.jpg" && profile === "u1") {
+      state.camGrabs++;
+      const jpg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0xff, 0xd9]);
+      setTimeout(() => { res.writeHead(200, { "Content-Type": "image/jpeg" }); res.end(jpg); }, state.camDelayMs);
+      return;
+    }
 
     // v2.33: the job history the Models tab's "most printed" order counts
     // from. Shape as Moonraker answers it: { result: { count, jobs } }.

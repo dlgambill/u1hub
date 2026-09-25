@@ -393,3 +393,15 @@ body{font-size:14px;}
    (MISTAKES.md 2026-08-30). ---- */
 .main, .jobcard, .pcard, .fleet, #dashview, [id^="modview-"]{min-width:0;}
 .jobcard .jmeta, .mgline{overflow-wrap:anywhere;}
+
+/* ---- 2.35: big screens (issue #4). ------------------------------------------
+   .main is capped at 980px so paragraphs and forms stay readable, and that
+   cap is why a 4K monitor still showed two printer cards per row. The
+   views that are grids of cards - the dashboard, Dispatch, Models, Match -
+   may use the room; the text-heavy ones keep the cap. app.js marks the
+   open view on <body>. Cards stay at their 300px minimum, so a 1760px
+   column gives five across and four U1s sit in one row. ---- */
+@media (min-width:1500px){
+  body[data-view="dash"] .main, body[data-view="dispatch"] .main, body[data-view="models"] .main, body[data-view="match"] .main{max-width:1760px;}
+  body[data-view="dash"] .jobcard{max-width:980px;}   /* the job card is a form, not a grid; it keeps the reading width */
+}

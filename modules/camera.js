@@ -24,6 +24,7 @@ function register(ctx) {
   const CAM_COOLDOWN_MS = 5000;   // plugin misbehaves if start_monitor is hammered
   const CAM_IDLE_MS = 60000;      // stop the stream after this long with no viewers
   const CAM_WARMUP_MS = 1400;     // first frame lands ~1.1s after start
+  const INFLIGHT = new Map();     // idx -> Promise<Buffer|null>, the grab everyone waiting shares (v2.35)
 
   function camConnect(idx) {
     const p = ctx.printers[idx];
@@ -97,9 +98,21 @@ function register(ctx) {
     };
     // On a cold start the stream needs ~1.1s to write its first frame; without the
     // wait we'd serve the stale monitor.jpg left on disk. Warm streams skip this.
-    if (cold) await new Promise(r => setTimeout(r, CAM_WARMUP_MS));
-    let jpg = await grab();
-    if (!jpg) { await new Promise(r => setTimeout(r, 800)); jpg = await grab(); }
+    // v2.35 (issue #4): one grab per printer at a time. Every browser tab and
+    // every tile asking for the same printer while a grab is running gets that
+    // grab's frame, so a slow camera is asked once, not once per request piled
+    // up behind it - the pile is what the printer's little file server choked on.
+    let job = INFLIGHT.get(idx);
+    if (!job) {
+      job = (async () => {
+        if (cold) await new Promise(r => setTimeout(r, CAM_WARMUP_MS));
+        let jpg = await grab();
+        if (!jpg) { await new Promise(r => setTimeout(r, 800)); jpg = await grab(); }
+        return jpg;
+      })().finally(() => { if (INFLIGHT.get(idx) === job) INFLIGHT.delete(idx); });
+      INFLIGHT.set(idx, job);
+    }
+    const jpg = await job;
     if (!jpg) return res.status(503).json({ error: "no frame" });
     res.set("Cache-Control", "no-store").type("jpeg").send(jpg);
   });

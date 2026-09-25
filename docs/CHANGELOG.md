@@ -77,6 +77,37 @@ printers, and nothing leaves your network unless you turn remote access on.
 
 ---
 
+### 2.35 - four cameras on a 4K screen (issue #4)
+
+Dave Hart reported that with four U1 cards streaming video, everything -
+the video and the print status - froze after about seven minutes until
+he relaunched the program. Two things were wrong, one on each side.
+
+In the browser, the camera ticker asked every tile for a new frame every
+1.6 seconds whether or not the last one had arrived. A frame can take the
+Hub up to eight seconds when a camera is having a slow spell (two tries at
+the printer plus a warm-up), so requests stacked up: two per tile, four
+tiles, and a browser allows six connections to one address, one of which
+is the live-update stream. The cameras took every slot, the status polls
+queued behind them, and the page looked dead. Now a tile asks for its next
+frame only after the last one loaded or failed.
+
+On the Hub, every viewer's request for a printer's frame ran its own grab
+against the printer, so the pile above also hammered the printer's small
+file server. Now one grab is shared by everyone waiting for that printer.
+
+Second ask in the same issue: more than two printer cards per row on a 4K
+monitor. The page column was capped at 980px so paragraphs and forms stay
+readable, and that cap was why a huge screen still showed two cards per
+row. On screens 1500px and wider, the dashboard, Dispatch, Models and Match
+views may now use up to 1760px; the job card and the text-heavy views keep
+the reading width. Four U1s sit in one row.
+
+### 2.34 - timelapses from the chamber camera
+
+The SF3D timelapse module captures frames from the chamber camera itself
+instead of waiting on the firmware's own timelapse file.
+
 ## New in 2.33 - sort the shelf
 
 A sort box on the Models tab, next to the filter: Designer A-Z (the order

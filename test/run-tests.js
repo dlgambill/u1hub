@@ -3678,6 +3678,31 @@ async function stopHub() {
     ok(r.status === 200 && r.body.folder !== mroot, "clear:true is the way to reset it", r.body && r.body.folder);
   }
 
+  console.log("\n== CAM: chamber camera frames under load (v2.35, issue #4) ==");
+  {
+    // dehart007-eng, GitHub issue #4: four U1 cards with video on, and after
+    // about seven minutes every stream AND the print status froze until the
+    // program was relaunched. Two halves. The server: every viewer's request
+    // for a printer's frame used to run its own grab against the printer, so
+    // a camera having a slow spell was hammered by the pile behind it. Now
+    // one grab is shared by everyone waiting. The client: the ticker used to
+    // ask for a new frame every 1.6 s whether or not the last had arrived,
+    // and with two frames per tile in flight, four tiles filled a browser's
+    // six connections to one host (one of them the live-update stream), so
+    // the status polls queued behind the cameras. Now a tile has one frame
+    // in flight at a time.
+    mockU1.state.camGrabs = 0; mockU1.state.camDelayMs = 600;
+    const six = await Promise.all([0, 1, 2, 3, 4, 5].map(() => fetch(HUB + "/api/camera?id=0")));
+    ok(six.every(x => x.status === 200 && /image\/jpeg/.test(x.headers.get("content-type") || "")), "six viewers asking for the same printer's frame at once all get a JPEG", six.map(x => x.status));
+    ok(mockU1.state.camGrabs === 1, "…from ONE grab at the printer, not six (a slow camera is asked once)", mockU1.state.camGrabs);
+    mockU1.state.camGrabs = 0;
+    await fetch(HUB + "/api/camera?id=0");
+    ok(mockU1.state.camGrabs === 1, "…and the next request after it lands grabs again (nothing is cached past the shared grab)", mockU1.state.camGrabs);
+    const appjs = fs.readFileSync(path.join(REPO, "public", "app.js"), "utf8");
+    ok(/if\(rec\.busy && Date\.now\(\)-rec\.busyAt < CAM_BUSY_MAX_MS\) return;/.test(appjs) && /back\.onload=\(\)=>\{ rec\.busy=false;/.test(appjs) && /back\.onerror=\(\)=>\{ rec\.busy=false;/.test(appjs), "the client ticker skips a tile whose last frame has not loaded or failed yet, with a cap so a lost event cannot stall it for good");
+    ok(/document\.body\.dataset\.view = v;/.test(appjs) && /body\[data-view="dash"\] \.main[^{]*\{max-width:1760px;\}/.test(fs.readFileSync(path.join(REPO, "public", "gold.css"), "utf8")), "the dashboard may use a wide screen: four U1s fit in one row on a 4K monitor (issue #4, second ask)");
+  }
+
   console.log("\n== SUG: the 3MF settings suggester (v2.28) ==");
   {
     // Danny (2026-09-22): the 2.25 pre-flight "doesn't exactly match the

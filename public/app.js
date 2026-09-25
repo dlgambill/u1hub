@@ -887,19 +887,40 @@ function mountCameras(){
 // swap it in once it has fully decoded — so a tile never blanks or shows a
 // partial/errored frame. That mid-load repaint is what read as "flashing" when
 // several streams refreshed at once on desktop.
+// v2.35 (issue #4): one request in flight per tile, never a pile. The ticker
+// used to point the back buffer at a new frame every 1.6 s whether or not
+// the last one had arrived. A frame can take the server up to ~8 s (two
+// 3.5 s tries at the printer plus a warm-up), so a camera having a slow
+// spell stacked requests, and a browser allows six connections to one host
+// on HTTP/1.1 - one of which is the live-update stream. Four cards with two
+// frames each in flight took every slot, the status polls queued behind
+// them, and the whole page looked frozen until the tab was closed. Now a
+// tile asks for its next frame only after the last one loaded or failed,
+// with a 12 s cap in case neither event ever fires.
+const CAM_BUSY_MAX_MS = 12000;
+function camRequest(img, id, rec){
+  if(rec && rec.busy && Date.now()-rec.busyAt < CAM_BUSY_MAX_MS) return;
+  if(rec){ rec.busy=true; rec.busyAt=Date.now(); }
+  img.src="/api/camera?id="+id+"&t="+Date.now();
+}
 function tickCameras(){
   [...CAMERAS.visible].forEach((id,i)=>{
     const rec=CAMERAS.imgs[id]; if(!rec) return;
     setTimeout(()=>{
+      if(rec.busy && Date.now()-rec.busyAt < CAM_BUSY_MAX_MS) return;
       const back = rec.front===rec.a ? rec.b : rec.a;
-      back.onload=()=>{ back.classList.add("show"); if(rec.front && rec.front!==back) rec.front.classList.remove("show"); rec.front=back; };
-      back.onerror=()=>{};   // blip → keep the last good frame, don't flash to placeholder
-      back.src="/api/camera?id="+id+"&t="+Date.now();
+      back.onload=()=>{ rec.busy=false; back.classList.add("show"); if(rec.front && rec.front!==back) rec.front.classList.remove("show"); rec.front=back; };
+      back.onerror=()=>{ rec.busy=false; };   // blip → keep the last good frame, don't flash to placeholder
+      camRequest(back, id, rec);
     }, i*180);
   });
   if(CAMERAS.big!=null){
     const b=document.getElementById("cambig");
-    if(b) b.src="/api/camera?id="+CAMERAS.big+"&t="+Date.now();
+    if(b){
+      const rec=CAMERAS.bigrec || (CAMERAS.bigrec={ busy:false, busyAt:0 });
+      b.onload=()=>{ rec.busy=false; }; b.onerror=()=>{ rec.busy=false; };
+      camRequest(b, CAMERAS.big, rec);
+    }
   }
 }
 setInterval(tickCameras, CAM_POLL_MS);
@@ -1085,6 +1106,7 @@ function setView(v){
   if ((v==="match" && HF.match===false) || (v==="spools" && HF.spools===false)) v = "dash";
   if (HubModules._mods[v] === undefined && v!=="dash" && v!=="match" && v!=="spools") v = "dash";
   document.querySelectorAll(".vtab").forEach(t=>t.classList.toggle("on", t.dataset.view===v));
+  document.body.dataset.view = v;   // v2.35: gold.css widens some views on big screens (issue #4)
   const dash=$("dashview"), match=$("matchview"), spool=$("spoolview");
   dash.style.display = v==="dash" ? "" : "none";
   match.style.display = v==="match" ? "" : "none";
@@ -1096,6 +1118,9 @@ function setView(v){
   const md = HubModules._mods[v];
   if (md && md.onShow) { try { md.onShow(); } catch(e) { console.error("module '"+v+"' onShow failed", e); } }
 }
+// A plain load with no hash never calls setView; the dashboard is simply the
+// view already showing, so mark it (the wide-screen rule keys off this).
+if(document.body && !document.body.dataset.view) document.body.dataset.view="dash";
 
 // ---- Client module registry (v2.11) -----------------------------------------
 // Browser-side twin of the server's module loader. A client module file
