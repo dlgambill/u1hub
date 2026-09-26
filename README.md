@@ -111,6 +111,17 @@ best match first, one tap from printing.
 
 ![Match: jobs your loaded colors can print right now](docs/spool-match.png)
 
+**Keep a logbook for every printer.** The Logbook tab records what went
+wrong on each machine, what fixed it, and how many print hours it had at the
+time, so the next time a nozzle clogs you can search "clog" and see what
+worked last time. The Hub fills in what it already knows: a pause or error
+the printer reports with a reason is logged by itself, and taking a printer
+out of service opens an entry that asks what fixed it when it comes back.
+Add upkeep that comes round again, every so many print hours (read from each
+printer), every so many days, or both. What's due shows on the printer card,
+the Done button logs it, and your phone can get a heads-up when something
+comes due.
+
 **Let your phone tell you.** Settings can send push notifications through
 [ntfy](https://ntfy.sh) (free, no account) when a print finishes, a printer
 pauses (with the reason), errors, or stops answering. Pick the events you want;

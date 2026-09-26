@@ -97,7 +97,7 @@ function saveConfigFile() {
 // fork). Default is everything ON: an untouched config behaves exactly like
 // 2.10. U1HUB_PROFILE=lite (the Lite binary's baked-in default) flips the
 // Lite set off unless config.json explicitly says otherwise.
-const MODULE_DEFAULTS = { power: true, camera: true, spools: true, match: true, mixer: true, "types-beta": true, dispatch: true, slicing: false, resources: true, updates: true, klipper: true, spoolman: true, notify: true, advisor: true, models: true, margin: true };
+const MODULE_DEFAULTS = { power: true, camera: true, spools: true, match: true, mixer: true, "types-beta": true, dispatch: true, slicing: false, resources: true, updates: true, klipper: true, spoolman: true, notify: true, advisor: true, models: true, margin: true, logbook: true };   // v2.37 logbook stays on in Lite: upkeep matters on any farm
 
 // resources (v2.16) needs dispatch for the schedule; with dispatch off it mounts
 // but every endpoint answers "nothing is scheduled" rather than erroring. It

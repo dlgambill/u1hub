@@ -77,6 +77,42 @@ printers, and nothing leaves your network unless you turn remote access on.
 
 ---
 
+## New in 2.37 - a logbook for every printer
+
+Asked for on Reddit: "a log of issues solved on them, when, what and
+solution for future reference. And also a maintenance schedule/log ... with
+maybe notifications to actually do what and when." Both are in a new
+Logbook tab.
+
+**The log.** Every entry is a printer, a date, what happened, and what fixed
+it, stamped with the printer's print hours at the time. You can add one by
+hand, but most of the time you won't have to start it: when a printer pauses
+or errors with a reason (a tangle, a runout, a heater fault), that reason is
+logged by itself, and when you take a printer out of service the note you
+gave becomes an entry that is closed when the printer comes back, with a
+"what fixed it?" waiting for your answer. The same reason twice within half
+an hour is one entry, not two. Search covers what happened and the fix, so
+the log is useful the second time something goes wrong, which is the point.
+
+**The schedule.** A task is something that comes round again: every so many
+print hours, every so many days, or both, whichever runs out first. It can
+cover one printer or all of them, and each printer keeps its own "last done".
+Print hours come from each printer's own lifetime totals, which is the honest
+clock for wear; days are for things that age regardless, like a desiccant
+pack. A new task counts from the day you add it, so a printer with two
+thousand hours on it is not instantly overdue; tick "never done yet" if it
+should be. When a task comes due on a printer, the printer card says so (tap
+it to open the Logbook on that printer), and if phone notifications are on
+you get one message. It won't nag: the next message comes only after you've
+marked it done and it comes due again. Done writes the maintenance into the
+log with your note and the print hours.
+
+A handful of suggested tasks are one click away when you add one. They are
+starting points, not your printer maker's numbers, and the form says so.
+
+Deliberately not in it: parts inventory, costs, work orders. It is a record
+and a reminder, not a maintenance department.
+
 ## New in 2.36 - a planner that keeps printers busy, and a calmer Models tab
 
 **The schedule wastes less.** Two things made the plan look wrong and run

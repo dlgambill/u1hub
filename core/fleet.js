@@ -378,9 +378,17 @@ async function fleetSnapshot() {
     const f = hub.CAPS_PROVIDED.get("dispatch.maintenance");
     if (f) maint = f() || {};
   } catch {}
+  // v2.37: upkeep due on each printer, from the logbook module (absent when it
+  // is off). { due, soon, next, nextStatus } or null when nothing is close.
+  let upkeep = {};
+  try {
+    const f = hub.CAPS_PROVIDED.get("logbook.cards");
+    if (f) upkeep = f() || {};
+  } catch {}
   return Promise.all((hub.PRINTERS || []).map((p, i) =>
     probeCached(p, i).then(r => ({ id: i, ptype: p.type || "u1", url: p.url || null, plug: (hub.FEATURES.power && p.plug) ? { type: p.plug.type } : null,
-      maintenance: maint[String(i)] ? { since: maint[String(i)].since, note: maint[String(i)].note || "" } : null, ...r }))));
+      maintenance: maint[String(i)] ? { since: maint[String(i)].since, note: maint[String(i)].note || "" } : null,
+      upkeep: upkeep[String(i)] || null, ...r }))));
 }
 
 

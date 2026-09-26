@@ -3274,6 +3274,100 @@ async function stopHub() {
 
     mockU1.state.printState = "standby"; mockU1.state.filename = ""; mockU1.state.printMessage = ""; mockU1.state.printDuration = 0;
     await settle();
+    // ---- LOG: the printer logbook and maintenance schedule (v2.37) ----------
+    // ezpitze (Reddit, 2026-09-26): "a log of issues solved on them, when,
+    // what and solution for future reference. And also a maintenance
+    // schedule/log ... with maybe notifications to actually do what and when."
+    // The pause and the error this block just raised through the mock are
+    // what the logbook should have written down by itself.
+    console.log("\n== LOG: printer logbook + maintenance schedule (v2.37) ==");
+    {
+      const lmod = require(path.join(REPO, "modules", "logbook.js"));
+      const D0 = Date.UTC(2026, 8, 26), DAYM = 86400000;
+      const t1 = { every_hours: 100, done: { "0": { at: D0 - 5 * DAYM, hours: 1000 } } };
+      ok(lmod.dueOf(t1, 0, 1050, D0).status === "ok" && lmod.dueOf(t1, 0, 1090, D0).status === "soon" && lmod.dueOf(t1, 0, 1100, D0).status === "due",
+        "dueOf: print hours - ok, coming up at 85%, due at the interval");
+      ok(lmod.dueOf(t1, 0, null, D0).status === "unknown" && lmod.dueOf(t1, 1, 1000, D0).status === "due",
+        "dueOf: hours never read is 'unknown', not a guess; a printer with no record has never had it done");
+      const t2 = { every_hours: 100, every_days: 7, done: { "0": { at: D0 - 8 * DAYM, hours: 1000 } } };
+      ok(lmod.dueOf(t2, 0, 1010, D0).status === "due" && lmod.dueOf(t2, 0, null, D0).status === "due", "dueOf: hours or days, whichever runs out first");
+
+      let lg = (await jget("/api/logbook")).body;
+      const fw = (lg.entries || []).filter(e => e.source === "firmware" && e.printer === U1ID);
+      ok(fw.some(e => e.kind === "issue" && /filament tangled/.test(e.what)) && fw.some(e => /not heating/.test(e.what)),
+        "a detector pause and a printer error were logged by themselves, with the firmware's words", fw.map(e => e.what));
+      const tangled = fw.filter(e => /filament tangled/.test(e.what)).length;
+
+      // The same reason again inside half an hour is one issue, not two.
+      mockU1.state.printState = "printing"; mockU1.state.filename = "again.gcode"; await settle();
+      mockU1.state.printState = "paused"; mockU1.state.exception = { id: 523, index: 0, code: 38, message: "detect filament tangled!", level: 2 }; await settle();
+      lg = (await jget("/api/logbook")).body;
+      ok((lg.entries || []).filter(e => e.source === "firmware" && e.printer === U1ID && /filament tangled/.test(e.what)).length === tangled, "the same pause reason twice in 30 minutes is one entry");
+      mockU1.state.printState = "standby"; mockU1.state.exception = null; mockU1.state.filename = ""; await settle();
+
+      // By hand, then the fix added later.
+      r = await jpost("/api/logbook/entries", { printer: U1ID, kind: "issue", what: "Clog on nozzle 2" });
+      ok(r.status === 200 && r.body.entry && r.body.entry.kind === "issue" && !r.body.entry.fix, "an issue logged by hand, fix still open", r.body);
+      const CLOG = r.body.entry.id;
+      r = await jpost("/api/logbook/entries/update", { id: CLOG, fix: "Cold pull, then a new nozzle" });
+      ok(r.status === 200 && r.body.entry.fix === "Cold pull, then a new nozzle" && r.body.entry.fixed_at > 0, "…and the fix added when it is known");
+      ok((await jpost("/api/logbook/entries", { printer: U1ID, what: "" })).status === 400 && (await jpost("/api/logbook/entries", { printer: 99, what: "x" })).status === 400,
+        "an entry needs a printer and something to say");
+
+      // Out of service and back: the log opens it and closes it.
+      r = await jpost("/api/dispatch/maintenance", { printer: U1ID, note: "Replacing the hotend" });
+      lg = (await jget("/api/logbook")).body;
+      const outage = (lg.entries || []).find(e => e.source === "maintenance-mode" && e.printer === U1ID && !e.back_at);
+      ok(outage && outage.what === "Replacing the hotend", "taking a printer out of service opens a logbook entry with the note", outage);
+      r = await jpost("/api/dispatch/maintenance", { printer: U1ID, down: false, fix: "New hotend, PID tuned" });
+      lg = (await jget("/api/logbook")).body;
+      const closed = (lg.entries || []).find(e => outage && e.id === outage.id);
+      ok(closed && closed.back_at >= closed.at && closed.fix === "New hotend, PID tuned", "…and bringing it back marks it back in service, with the fix when one is given", closed);
+
+      // Print hours from the printer's own totals.
+      mockU1.state.totalPrintTime = 100 * 3600;
+      lg = (await jget("/api/logbook?refresh=1")).body;
+      ok(lg.printers.find(p => p.idx === U1ID).hours === 100, "print hours come from the printer's Moonraker totals", lg.printers);
+
+      // A schedule: counts from now, comes due, shows on the card, pings once.
+      r = await jpost("/api/logbook/tasks", { title: "Clean the nozzle wiper", printer: "all", every_hours: 50 });
+      ok(r.status === 200 && r.body.task && r.body.task.printer === "all", "a task for every printer, every 50 print hours", r.body);
+      const TASK = r.body.task.id;
+      let st = (r.body.view.status || []).find(s => s.task_id === TASK && s.printer === U1ID);
+      ok(st && st.status === "ok" && st.since_hours === 0, "a new task counts from now - an old printer is not instantly overdue", st);
+      ok((await jpost("/api/logbook/tasks", { title: "No interval" })).status === 400, "a task needs an interval");
+      r = await jpost("/api/notify/settings", { url: NTFY, topic: "hub-harness", enabled: true, events: { maintenance: true } });
+      posts.length = 0;
+      mockU1.state.totalPrintTime = 155 * 3600;
+      lg = (await jget("/api/logbook?refresh=1")).body;
+      st = lg.status.find(s => s.task_id === TASK && s.printer === U1ID);
+      ok(st && st.status === "due" && Math.round(st.since_hours) === 55, "55 print hours later it is due", st);
+      await sleep(300);
+      ok(posts.some(p => /Clean the nozzle wiper is due/.test(p.body.title) && p.body.title.startsWith(u1name + ":")), "…the phone is told, naming the printer and the task", posts.map(p => p.body.title));
+      const pinged = posts.length;
+      await jget("/api/logbook?refresh=1"); await sleep(300);
+      ok(posts.length === pinged, "…once: not again until it has been done and come due again", posts.length - pinged);
+      const card = byPort((await jget("/api/fleet")).body || []);
+      ok(card.upkeep && card.upkeep.due === 1 && card.upkeep.next === "Clean the nozzle wiper", "the printer card carries what is due", card.upkeep);
+      r = await jpost("/api/logbook/tasks/done", { id: TASK, printer: U1ID, note: "Brushed and wiped" });
+      ok(r.status === 200 && r.body.status.status === "ok" && r.body.entry.kind === "maintenance" && r.body.entry.fix === "Brushed and wiped" && r.body.entry.hours === 155,
+        "Done resets that printer's clock and writes a maintenance entry with the print hours", r.body);
+      ok(!(byPort((await jget("/api/fleet")).body || []).upkeep), "…and the card's due line goes away");
+      r = await jpost("/api/logbook/tasks", { title: "Replace desiccant", printer: U1ID, every_days: 30, due_now: true });
+      ok(r.status === 200 && (r.body.view.status || []).find(s => s.task_id === r.body.task.id).status === "due", "'never done yet' makes a task due at once");
+      await jpost("/api/logbook/tasks/remove", { id: r.body.task.id });
+      ok((await jpost("/api/logbook/tasks/remove", { id: TASK })).status === 200 && (await jpost("/api/logbook/entries/remove", { id: CLOG })).status === 200, "tasks and entries can be removed");
+      ok(fs.existsSync(path.join(hubDir, "logbook.json")) && /logbook\.json/.test(fs.readFileSync(path.join(REPO, ".gitignore"), "utf8")), "the logbook is state beside config, and gitignored");
+      const html = await (await fetch(HUB + "/")).text();
+      const lui = fs.readFileSync(path.join(REPO, "public", "modules", "logbook-ui.js"), "utf8");
+      const appjs2 = fs.readFileSync(path.join(REPO, "public", "app.js"), "utf8");
+      const nui = fs.readFileSync(path.join(REPO, "public", "modules", "notify-ui.js"), "utf8");
+      ok(/\/modules\/logbook-ui\.js/.test(html) && /HubModules\.register\("logbook", \{ tab: "Logbook"/.test(lui) && /data-upkeep="\$\{p\.id\}"/.test(appjs2) && /\["maintenance", "Maintenance due/.test(nui),
+        "the Logbook tab is injected, the printer card draws the due line, and the notify settings have a Maintenance due switch");
+      await jpost("/api/notify/settings", { enabled: false });
+      mockU1.state.totalPrintTime = 0;
+    }
+
     ok(/\/modules\/notify-ui\.js/.test(await (await fetch(HUB + "/")).text()), "notify client script injected when on");
     if (ntfy.closeAllConnections) ntfy.closeAllConnections();
     await new Promise(r2 => ntfy.close(r2));

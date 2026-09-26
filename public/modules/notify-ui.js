@@ -25,7 +25,8 @@
 
   const EVENTS = [
     ["done", "Print finished"], ["paused", "Paused (with the firmware's reason)"], ["error", "Error"],
-    ["offline", "Printer unreachable"], ["online", "Printer back online"], ["started", "Print started"], ["cancelled", "Print cancelled"]
+    ["offline", "Printer unreachable"], ["online", "Printer back online"], ["started", "Print started"], ["cancelled", "Print cancelled"],
+    ["maintenance", "Maintenance due (Logbook)"]
   ];
 
   let ROOT = null, STATE = null;

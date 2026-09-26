@@ -25,7 +25,7 @@ fs.mkdirSync(DST, { recursive: true });
 // v2.28: models-index.json so the Models tab draws at once instead of walking
 // the share for minutes; advisor.json so cached AI answers show without a
 // paid call (the key itself rides in config.json, as it always has).
-for (const f of ["config.json", "dispatch.json", "spools.json", "slots.json", "resources.json", "models-index.json", "advisor.json", "margin.json", "models-attrs.json"]) {
+for (const f of ["config.json", "dispatch.json", "spools.json", "slots.json", "resources.json", "models-index.json", "advisor.json", "margin.json", "models-attrs.json", "models-links.json", "logbook.json"]) {
   const from = path.join(SRC, f);
   if (fs.existsSync(from)) fs.copyFileSync(from, path.join(DST, f));
 }

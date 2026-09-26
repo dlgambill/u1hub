@@ -1213,6 +1213,14 @@ function register(ctx) {
     // open pool and is honoured again on its return).
     PLACEMENT.clear();
     save();
+    // v2.37: the logbook records the outage and asks what fixed it on return.
+    // Emitted on hub.events rather than called, so Dispatch knows nothing of
+    // who listens; `fix` may ride along when a caller already has it.
+    if (ctx.events) {
+      try { ctx.events.emit("printer.maintenance", { type: "printer.maintenance", at: Date.now(), id: idx, printer: (fleet[idx] && fleet[idx].name) || String(idx + 1),
+        down, note: down ? D.maintenance[key].note : "", since: down ? D.maintenance[key].since : undefined, fix: down ? "" : String(b.fix || "").slice(0, 1000) }); }
+      catch (e) { ctx.hublog("warn", "dispatch: a printer.maintenance listener threw - " + e.message); }
+    }
     ctx.hublog("info", "dispatch: printer " + idx + " (" + ((fleet[idx] && fleet[idx].name) || idx) + ") " +
       (down ? "marked DOWN for maintenance" : "returned to service") + " — placements reset for a clean redistribution");
     // Hand back the replanned board, so the caller can see the redistribution

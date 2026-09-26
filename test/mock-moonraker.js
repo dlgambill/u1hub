@@ -151,6 +151,11 @@ function createMock(profile) {
       return;
     }
 
+    // v2.37: lifetime totals, which the logbook reads print hours from.
+    if (u.pathname === "/server/history/totals")
+      return send(200, { result: { job_totals: { total_jobs: state.history.length, total_time: state.totalPrintTime || 0,
+        total_print_time: state.totalPrintTime || 0, total_filament_used: 0, longest_job: 0 } } });
+
     // v2.33: the job history the Models tab's "most printed" order counts
     // from. Shape as Moonraker answers it: { result: { count, jobs } }.
     if (u.pathname === "/server/history/list") {

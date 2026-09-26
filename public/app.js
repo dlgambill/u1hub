@@ -1988,6 +1988,7 @@ function renderFleet(){
         p.online && (p.state==="printing"||p.state==="paused") ? " after this print" : ""
       }${p.maintenance.note ? ` — <span class="mnote">${esc(p.maintenance.note)}</span>` : ""}
         <span class="mnote">· the scheduler is routing around it</span></div>` : ""}
+      ${p.upkeep && (p.upkeep.due || p.upkeep.soon) ? `<div class="upkeepline" data-upkeep="${p.id}" title="Open the Logbook for ${esc(p.name)}"><span class="lgb-pill ${p.upkeep.due ? "due" : "soon"}">${p.upkeep.due ? "due" : "soon"}</span>${esc(p.upkeep.next || "")}${(p.upkeep.due + p.upkeep.soon) > 1 ? ` <span class="mnote">+${p.upkeep.due + p.upkeep.soon - 1} more</span>` : ""}</div>` : ""}
       ${p.online ? (camShouldShow(p.id)
         ? `<div class="camtile" data-cam="${p.id}">${CAMMODE==="demand"?`<button class="camclose" data-camclose="${p.id}" title="Hide camera">✕</button>`:""}</div>`
         : `<button class="camopen" data-camopen="${p.id}">📷 Live view</button>`) : ""}

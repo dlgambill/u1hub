@@ -84,7 +84,8 @@ const CLIENT_TABLE = {
   notify: "/modules/notify-ui.js",       // v2.24 ntfy card in Settings (no tab)
   advisor: "/modules/advisor-ui.js",     // v2.25 AI pre-flight: Settings block + job-card button (no tab)
   models: "/modules/models-ui.js",       // v2.26 Models tab (3MF library; read-only on touch, v2.27; ✦ Settings, v2.28)
-  margin: "/modules/margin-ui.js"        // v2.28 worth-printing line on the job card + Settings rates (no tab)
+  margin: "/modules/margin-ui.js",       // v2.28 worth-printing line on the job card + Settings rates (no tab)
+  logbook: "/modules/logbook-ui.js"      // v2.37 Logbook tab: issues, fixes, maintenance schedule
   // (named -ui deliberately: the server module is modules/dispatch.js, and two
   //  same-named files in different folders is a foot-gun during deploys)
 };

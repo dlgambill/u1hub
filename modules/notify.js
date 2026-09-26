@@ -25,7 +25,8 @@ const DEFAULTS = Object.freeze({
   url: "https://ntfy.sh",
   topic: "",
   token: "",
-  events: { done: true, paused: true, error: true, offline: true, online: false, started: false, cancelled: false }
+  // maintenance: v2.37, sent by the logbook (not a fleet edge) when a scheduled task comes due
+  events: { done: true, paused: true, error: true, offline: true, online: false, started: false, cancelled: false, maintenance: true }
 });
 const TIMEOUT_MS = 8000;
 

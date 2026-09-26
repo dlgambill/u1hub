@@ -43,6 +43,10 @@ const MODULE_TABLE = {
   // v2.28: "worth printing?" - three numbers on the job card from the file's
   // own grams and time. Pure arithmetic and two settings; provides margin.quote.
   margin: require("../modules/margin.js"),
+  // v2.37: the printer logbook and maintenance schedule. Listens on hub.events
+  // (pauses/errors with a reason, maintenance mode), uses notify.send at call
+  // time, provides logbook.cards for the fleet snapshot's `upkeep` field.
+  logbook: require("../modules/logbook.js"),
   // v2.27: SF3D timelapse upload. Listens on hub.events ("print.done"),
   // pulls the printer's own rendered clip and hands it to the SF3D edge
   // function. No route, no UI - it only reacts to events dispatch already
