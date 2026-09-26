@@ -32,7 +32,8 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { spawn } = require("child_process");
-const { zipEntryContent } = require("./slicing.js");   // pure helper (inflate); the slicing module itself need not be on
+const { zipEntryContent } = require("./slicing.js");
+const U1C = require("./u1convert.js");                  // v2.38: Convert to U1 (pure; the route below does the IO)   // pure helper (inflate); the slicing module itself need not be on
 
 const INDEX_TTL_MS = 10 * 60 * 1000;
 const MAX_DEPTH = 4;
@@ -456,7 +457,9 @@ function register(ctx) {
     return {
       folder: path.resolve(String(c.folder || sl.srcFolder || path.join(ctx.baseDir, "models"))),
       orcaExe: String(sl.orcaExe || "C:\\Program Files\\Snapmaker_Orca\\snapmaker-orca.exe"),
-      wrappers: Array.isArray(c.wrappers) ? c.wrappers : []
+      wrappers: Array.isArray(c.wrappers) ? c.wrappers : [],
+      u1Template: c.u1Template ? String(c.u1Template) : null,
+      slicerTemplate: String(sl.template || "./slicer-template.3mf")
     };
   };
   const THUMB_DIR = path.join(ctx.baseDir, "thumbs", "models");
@@ -662,7 +665,8 @@ function register(ctx) {
       sort, seed, printed,
       creators: creatorsOf(all),
       items: list.slice(offset, offset + limit),
-      orcaExe: c.orcaExe, orca_found: fs.existsSync(c.orcaExe)
+      orcaExe: c.orcaExe, orca_found: fs.existsSync(c.orcaExe),
+      u1_template: (await u1Template()).path, u1_template_set: c.u1Template
     });
   });
 
@@ -750,11 +754,74 @@ function register(ctx) {
     res.json({ ok: true, rel });
   });
 
+  // ---- v2.38: Convert to U1 (issue #5) --------------------------------------
+  // Writes "<name> (U1).3mf" beside the original: the designer's process
+  // (prime tower, walls, infill, supports...) on the U1's printer and
+  // filament presets. The rules are in u1convert.js. The original is never
+  // touched and an existing (U1) copy is never overwritten.
+  // Template: models.u1Template when set (and only that), else
+  // u1_template.3mf at the top of the models folder, else the Slice tab's
+  // template. Looked up at most once a minute for the list; fresh on convert.
+  let TPL = { at: 0, path: null, tried: [] };
+  async function u1Template(force) {
+    if (!force && Date.now() - TPL.at < 60000) return TPL;
+    const c = conf();
+    const tried = c.u1Template ? [path.resolve(ctx.baseDir, c.u1Template)]
+      : [path.join(c.folder, "u1_template.3mf"), path.resolve(ctx.baseDir, c.slicerTemplate)];
+    let found = null;
+    for (const p of tried) if (await fs.promises.stat(p).then(st => st.isFile(), () => false)) { found = p; break; }
+    TPL = { at: Date.now(), path: found, tried };
+    return TPL;
+  }
+  app.post("/api/models/convert", async (req, res) => {
+    const rel = String((req.body || {}).file || "");
+    const from = safePath(rel);
+    if (!from) return res.status(404).json({ error: "not in the models folder" });
+    const c = conf();
+    const t = await u1Template(true);
+    if (!t.path) return res.status(409).json({ error: c.u1Template
+      ? "No U1 template at " + t.tried[0] + ". Fix the path under ⚙ Folder, or clear it to use u1_template.3mf in the models folder."
+      : "No U1 template yet. In Snapmaker Orca, pick the Snapmaker U1 and the filaments you usually load, save any small project as u1_template.3mf in " + c.folder + " (or set its path under ⚙ Folder), then convert again.", template: null, tried: t.tried });
+    const newRel = U1C.outName(rel);
+    const to = safePath(newRel);
+    if (!to) return res.status(400).json({ error: "that name cannot be written" });
+    if (await fs.promises.stat(to).then(() => true, () => false))
+      return res.status(409).json({ error: "Already converted - " + newRel.split("/").pop() + " is next to it. Open that one, or delete it to convert again.", exists: true, rel: newRel });
+    let src, tpl;
+    try { [src, tpl] = await Promise.all([fs.promises.readFile(from), fs.promises.readFile(t.path)]); }
+    catch (e) { return res.status(e.code === "ENOENT" ? 404 : 500).json({ error: "could not read " + (e.path === t.path ? "the template" : "the file") + ": " + e.message }); }
+    const prof = await U1C.profiles(c.orcaExe);
+    let r;
+    try { r = U1C.convert(src, tpl, { keys: prof.keys, names: prof.names }); }
+    catch (e) { return res.status(422).json({ error: e.message }); }
+    if (r.already) return res.json({ ok: true, already: true, rel, printer: r.printer });
+    try { await fs.promises.writeFile(to, r.buffer, { flag: "wx" }); }
+    catch (e) { return res.status(e.code === "EEXIST" ? 409 : 500).json({ error: e.code === "EEXIST" ? "Already converted - " + newRel.split("/").pop() + " is next to it." : "could not write the U1 copy: " + e.message, rel: newRel }); }
+    // The designer set on the original is the copy's designer too.
+    if (ATTRS[rel] && ATTRS[rel].designer) { ATTRS[newRel] = { designer: ATTRS[rel].designer, at: Date.now() }; saveAttrs(); }
+    let item = null;
+    if (INDEX) {
+      const next = { rel: newRel, ...split(newRel), size: r.buffer.length, mtime: Date.now() };
+      INDEX.items = INDEX.items.filter(it => it.rel !== newRel).concat([next]);
+      INDEX.items.sort((a, b) => a.creator.localeCompare(b.creator) || a.model.localeCompare(b.model) || a.name.localeCompare(b.name));
+      INDEX.creators = creatorsOf(INDEX.items);
+      saveIndex();
+      item = decorate(next);
+    }
+    hublog("info", "models: converted to U1: " + rel + " -> " + newRel + " (" + r.carried.length + " process settings kept, preset " + r.process.id + " " + r.process.how + ", profiles " + prof.source + ")");
+    res.json({
+      ok: true, rel: newRel, from: rel, item, printer: r.printer, process: r.process,
+      kept: r.kept, carried: r.carried, skipped: r.skipped,
+      mismatched: r.mismatched, over4: r.over4, remapped: r.remapped, notes: r.notes, changed: r.changed,
+      template: t.path, profiles: prof.source
+    });
+  });
+
   // v2.27.1: a blank folder field no longer clears the setting. The form
   // drew blank inputs while the list was still loading, and a Save pressed
   // then wiped the folder back to the default (2026-09-22, access.log:
   // two saves, list gone). Blank = keep; { clear: true } is the way to reset.
-  app.post("/api/models/settings", (req, res) => {
+  app.post("/api/models/settings", async (req, res) => {
     const b = req.body || {};
     const cur = (ctx.cfg.models && typeof ctx.cfg.models === "object") ? ctx.cfg.models : {};
     const next = { ...cur };
@@ -767,10 +834,18 @@ function register(ctx) {
       if (x) sl.orcaExe = x; else if (b.clear === true) delete sl.orcaExe;
       ctx.cfg.slicer = sl;
     }
+    // v2.38: the U1 template for Convert to U1. Blank keeps; clear resets.
+    if ("u1Template" in b) {
+      const x = String(b.u1Template || "").trim();
+      if (x) next.u1Template = x; else if (b.clear === true) delete next.u1Template;
+      ctx.cfg.models = next;
+    }
     ctx.saveConfig();
     refresh();
+    TPL.at = 0;
     const c = conf();
-    res.json({ ok: true, folder: c.folder, folder_found: fs.existsSync(c.folder), orcaExe: c.orcaExe, orca_found: fs.existsSync(c.orcaExe) });
+    const t = await u1Template(true);
+    res.json({ ok: true, folder: c.folder, folder_found: fs.existsSync(c.folder), orcaExe: c.orcaExe, orca_found: fs.existsSync(c.orcaExe), u1_template: t.path, u1_template_set: c.u1Template });
   });
 
   // Thumbnail: the plate PNG the designer saved inside the file, cached on

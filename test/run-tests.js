@@ -3645,6 +3645,115 @@ async function stopHub() {
       ok(/@media \(pointer: coarse\) \{ \.mdl-act2, \.mdl-edit(, \.mdl-more)? \{ display: none !important/.test(mui2), "…and the second row hides on touch like the first");
       ok(/models-attrs\.json/.test(fs.readFileSync(path.join(REPO, ".gitignore"), "utf8")), "models-attrs.json is state and gitignored");
     }
+    // v2.38: Convert to U1 (issue #5). A MakerWorld file keeps the designer's
+    // process (prime tower, walls, shells, brim) on the U1's printer and
+    // filament presets; the source printer's tuning, scripts and presets
+    // never cross over. Pure checks first, then the route end to end.
+    {
+      const U1C = require(path.join(REPO, "modules", "u1convert.js"));
+      const SLc = require(path.join(REPO, "modules", "slicing.js"));
+      const shaC = b => require("crypto").createHash("sha256").update(b).digest("hex");
+      const names = ["0.20mm Standard @Snapmaker U1 (0.4 nozzle)", "0.12mm Fine @Snapmaker U1 (0.4 nozzle)", "fdm_process_common"];
+      ok(U1C.resolveProcess("0.20mm Standard @Snapmaker U1 (0.4 nozzle)", names, "Snapmaker U1 (0.4 nozzle)").how === "exact", "resolveProcess: an installed name is kept");
+      ok(U1C.resolveProcess("0.20 Standard @Snapmaker U1 (0.4 nozzle)", names, "Snapmaker U1 (0.4 nozzle)").id === "0.20mm Standard @Snapmaker U1 (0.4 nozzle)", "resolveProcess: OrcaSlicer 2.2's '0.20 Standard' becomes Snapmaker Orca's '0.20mm Standard' (the spike's first pass lost every setting to this)");
+      ok(U1C.resolveProcess("My Tuned @Snapmaker U1 (0.4 nozzle)", names, "Snapmaker U1 (0.4 nozzle)").how === "closest installed", "resolveProcess: an unknown name falls back to the installed Standard for the same printer and nozzle");
+      ok(U1C.resolveProcess("x", [], "y").id === "x", "resolveProcess: with no profile list the template's id is kept");
+      ok(U1C.BUILTIN_KEYS.length > 150 && U1C.BUILTIN_KEYS.includes("prime_tower_width") && U1C.BUILTIN_KEYS.includes("wall_loops"), "built-in process key list (for a Hub with no Orca install to read)");
+      ok(U1C.NEVER.has("post_process") && U1C.NEVER.has("filename_format"), "post_process and filename_format are never carried (a download must not bring a script that runs on export)");
+      ok(U1C.outName("A/B/Guardian.3mf") === "A/B/Guardian (U1).3mf", "the copy is '<name> (U1).3mf' beside the original");
+      ok(U1C.families(["enable_prime_tower", "prime_tower_width", "wall_loops", "top_shell_layers", "brim_width", "zzz_other"]).join(",") === "prime tower,walls,top and bottom shells,brim and skirt,other", "families: the carried keys said the way a person would");
+      ok(U1C.families(["fuzzy_skin_thickness", "wall_loops", "prime_tower_width"], { fuzzy_skin: "none", enable_prime_tower: "1" }).join(",") === "prime tower,walls", "families: fuzzy skin distances with fuzzy skin off are not something the designer kept");
+      const builtin = await U1C.profiles(path.join(tmp, "nowhere", "snapmaker-orca.exe"));
+      ok(builtin.source === "built-in" && builtin.keys.size === U1C.BUILTIN_KEYS.length, "profiles: no install next to the exe means the built-in list");
+
+      // A fake Snapmaker Orca install: only its profile folder matters.
+      const fakeOrca = path.join(tmp, "fake-orca");
+      const pdir = path.join(fakeOrca, "resources", "profiles", "Snapmaker", "process");
+      fs.mkdirSync(pdir, { recursive: true });
+      fs.writeFileSync(path.join(pdir, "0.20mm Standard @Snapmaker U1 (0.4 nozzle).json"), JSON.stringify({ type: "process", name: "0.20mm Standard @Snapmaker U1 (0.4 nozzle)", inherits: "fdm_process_common", enable_prime_tower: "0", prime_tower_width: "20", wall_loops: "2", top_shell_layers: "4", brim_width: "0", outer_wall_speed: ["150"], sparse_infill_density: "15%", support_filament: "0", post_process: [], filename_format: "x" }));
+      fs.writeFileSync(path.join(pdir, "fdm_process_common.json"), JSON.stringify({ type: "process", name: "fdm_process_common", layer_height: "0.2", seam_position: "aligned" }));
+      const tplPs = { printer_model: "Snapmaker U1", printer_settings_id: "Snapmaker U1 (0.4 nozzle)", print_settings_id: "0.20 Standard @Snapmaker U1 (0.4 nozzle)",
+        enable_prime_tower: "0", prime_tower_width: "20", wall_loops: "2", top_shell_layers: "4", brim_width: "0", outer_wall_speed: ["150"], nozzle_temperature: ["210"],
+        sparse_infill_density: "25%", support_filament: "0", layer_height: "0.2", seam_position: "aligned", post_process: [], filename_format: "{input_filename_base}.gcode",
+        filament_colour: ["#FF0000FF"], filament_type: ["PLA"], filament_settings_id: ["SF3D PLA"], different_settings_to_system: ["", "", ""] };
+      const tplPath = path.join(tmp, "my-u1-template.3mf");
+      fs.writeFileSync(tplPath, buildZip([{ name: "Metadata/project_settings.config", data: Buffer.from(JSON.stringify(tplPs)) }, { name: "3D/3dmodel.model", data: Buffer.from("<model/>") }]));
+      const srcPs = { printer_model: "Bambu Lab X1 Carbon", printer_settings_id: "Bambu Lab X1 Carbon 0.4 nozzle", print_settings_id: "0.20mm Standard @BBL X1C",
+        enable_prime_tower: "1", prime_tower_width: "35", wall_loops: "3", top_shell_layers: "7", brim_width: "3", outer_wall_speed: ["200"], nozzle_temperature: ["220"],
+        sparse_infill_density: "25%", support_filament: "6", layer_height: "0.2", seam_position: "back", post_process: ["C:\\evil.exe"], filename_format: "{bambu}.gcode", bambu_only_thing: "1",
+        filament_colour: ["#D57E0B", "#FFFFFF", "#FAE9B4", "#000000", "#FF00FF"], filament_type: ["PLA", "PETG", "PLA", "PLA", "PLA"], filament_settings_id: ["Bambu PLA Basic @BBL X1C"] };
+      const geo = Buffer.from("<model><!-- painted geometry --></model>");
+      mk("MW Maker/Guardian/Guardian.3mf", [
+        { name: "3D/3dmodel.model", data: geo }, { name: "Metadata/plate_1.png", data: PNG },
+        { name: "Metadata/project_settings.config", data: Buffer.from(JSON.stringify(srcPs)) },
+        { name: "Metadata/model_settings.config", data: model([{ name: "Body", extruder: 1 }, { name: "Crest", extruder: 6 }]) },
+        { name: "Metadata/slice_info.config", data: Buffer.from('<config><header><header_item key="printer_model_id" value="C12"/></header></config>') },
+        { name: "Metadata/filament_settings_1.config", data: Buffer.from("{}") }, { name: "Metadata/process_settings_1.config", data: Buffer.from("{}") }
+      ]);
+      const srcAbs = path.join(mroot, "MW Maker", "Guardian", "Guardian.3mf");
+      const srcSha = shaC(fs.readFileSync(srcAbs));
+      await jget("/api/models?refresh=1");
+      for (let i = 0; i < 20; i++) { r = await jget("/api/models?q=" + encodeURIComponent("*guardian*")); if (!r.body.refreshing && r.body.total) break; await sleep(150); }
+      ok(r.body.total === 1, "the MakerWorld file is on the shelf", r.body.items && r.body.items.map(i => i.rel));
+
+      r = await jpost("/api/models/settings", { folder: mroot, orcaExe: path.join(fakeOrca, "snapmaker-orca.exe"), u1Template: path.join(tmp, "no-template-here.3mf") });
+      ok(r.status === 200 && r.body.u1_template === null && r.body.u1_template_set === path.join(tmp, "no-template-here.3mf"), "settings: the U1 template path is saved and reported missing", r.body);
+      r = await jpost("/api/models/convert", { file: "MW Maker/Guardian/Guardian.3mf" });
+      ok(r.status === 409 && r.body.error.includes("no-template-here.3mf") && !r.body.exists, "convert: a configured template that is not there is a 409 naming the path (only that path is tried)", r.body);
+      r = await jpost("/api/models/convert", { file: "../config.json" });
+      ok(r.status === 404, "convert: a path outside the folder is refused");
+      r = await jpost("/api/models/settings", { folder: mroot, u1Template: tplPath });
+      ok(r.status === 200 && r.body.u1_template === tplPath, "settings: the template is found", r.body);
+      r = await jpost("/api/models/convert", { file: "MW Maker/Guardian/Guardian.3mf" });
+      const outRel = "MW Maker/Guardian/Guardian (U1).3mf", outAbs = path.join(mroot, "MW Maker", "Guardian", "Guardian (U1).3mf");
+      ok(r.status === 200 && r.body.ok && r.body.rel === outRel && fs.existsSync(outAbs), "convert: writes '<name> (U1).3mf' beside the original", r.body);
+      ok(shaC(fs.readFileSync(srcAbs)) === srcSha, "…the original is untouched");
+      ok(r.body.printer.from === "Bambu Lab X1 Carbon" && r.body.printer.to === "Snapmaker U1" && r.body.profiles === "installed", "…reports the printer it came from and that it read the installed profiles", r.body.printer);
+      ok(r.body.process.id === "0.20mm Standard @Snapmaker U1 (0.4 nozzle)" && r.body.process.how === "mm inserted", "…and resolved the template's process name against them", r.body.process);
+      const kept = r.body.kept || [];
+      ok(kept.includes("prime tower") && kept.includes("walls") && kept.includes("top and bottom shells") && kept.includes("brim and skirt") && kept.includes("seam"), "…says what it kept from the designer", kept);
+      ok(r.body.mismatched.length === 1 && r.body.mismatched[0].slot === 2 && r.body.mismatched[0].was === "PETG" && r.body.over4 === 5 && r.body.remapped === 1 && r.body.notes.some(n => /support_filament/.test(n)), "…and what it could not keep: a PETG slot, a fifth filament, an object on filament 6, support on filament 6", r.body);
+      const oe = SLc.zipRead(fs.readFileSync(outAbs));
+      const on = new Map(oe.map(e => [e.name, e]));
+      const ops = JSON.parse(SLc.zipEntryContent(on.get("Metadata/project_settings.config")).toString("utf8"));
+      ok(ops.printer_model === "Snapmaker U1" && ops.printer_settings_id === "Snapmaker U1 (0.4 nozzle)" && ops.print_settings_id === "0.20mm Standard @Snapmaker U1 (0.4 nozzle)", "copy: printer and process presets are the U1's", { pm: ops.printer_model, ps: ops.print_settings_id });
+      ok(ops.enable_prime_tower === "1" && ops.prime_tower_width === "35" && ops.wall_loops === "3" && ops.top_shell_layers === "7" && ops.brim_width === "3" && ops.seam_position === "back", "copy: the designer's prime tower, walls, shells, brim and seam", ops);
+      ok(JSON.stringify(ops.outer_wall_speed) === '["150"]' && JSON.stringify(ops.nozzle_temperature) === '["210"]', "copy: speeds and temperatures stay the U1's (tuning for the X1C does not cross over)");
+      ok(JSON.stringify(ops.post_process) === "[]" && ops.filename_format === "{input_filename_base}.gcode" && !("bambu_only_thing" in ops), "copy: no post-process script, no filename format, no keys Snapmaker Orca does not know");
+      ok(ops.support_filament === "0", "copy: a support filament past slot 4 goes back to default");
+      ok(JSON.stringify(ops.filament_colour) === JSON.stringify(["#D57E0B", "#FFFFFF", "#FAE9B4", "#000000"]) && JSON.stringify(ops.filament_type) === JSON.stringify(["PLA", "PLA", "PLA", "PLA"]) && ops.filament_settings_id.length === 4 && ops.filament_settings_id.every(x => x === "SF3D PLA"), "copy: the designer's colors (first four) on the template's filament presets and types", { c: ops.filament_colour, t: ops.filament_type });
+      const dirty = String(ops.different_settings_to_system[0]).split(";");
+      ok(dirty.includes("prime_tower_width") && dirty.includes("wall_loops") && !dirty.includes("sparse_infill_density") && ops.different_settings_to_system.length === 6, "copy: Orca's own-values list names what was carried and nothing that matched", ops.different_settings_to_system);
+      ok(!on.has("Metadata/filament_settings_1.config") && !on.has("Metadata/process_settings_1.config"), "copy: stale embedded filament and process presets stripped");
+      ok(/value="Snapmaker U1"/.test(SLc.zipEntryContent(on.get("Metadata/slice_info.config")).toString("utf8")), "copy: printer id in slice_info patched");
+      const oms = SLc.zipEntryContent(on.get("Metadata/model_settings.config")).toString("utf8");
+      ok(!/key="extruder" value="6"/.test(oms) && (oms.match(/key="extruder" value="1"/g) || []).length === 2, "copy: the object on filament 6 is on filament 1");
+      const srcE = new Map(SLc.zipRead(fs.readFileSync(srcAbs)).map(e => [e.name, e]));
+      ok(shaC(on.get("3D/3dmodel.model").raw) === shaC(srcE.get("3D/3dmodel.model").raw) && on.has("Metadata/plate_1.png"), "copy: geometry and painting pass through byte for byte, thumbnail kept");
+      r = await jget("/api/models?q=" + encodeURIComponent("*(U1)*"));
+      ok(r.body.total === 1 && r.body.items[0].rel === outRel, "the copy is on the shelf at once, no rescan", r.body.items.map(i => i.rel));
+      r = await jpost("/api/models/convert", { file: "MW Maker/Guardian/Guardian.3mf" });
+      ok(r.status === 409 && r.body.exists === true && r.body.rel === outRel, "convert twice: 409, never over the first copy, and it names the copy to open", r.body);
+      r = await jpost("/api/models/convert", { file: outRel });
+      ok(r.status === 200 && r.body.already === true && !fs.existsSync(path.join(mroot, "MW Maker", "Guardian", "Guardian (U1) (U1).3mf")), "convert a U1 project: nothing to do, nothing written", r.body);
+      const tplBad = path.join(tmp, "not-u1-template.3mf");
+      fs.writeFileSync(tplBad, buildZip([{ name: "Metadata/project_settings.config", data: Buffer.from(JSON.stringify({ printer_model: "Bambu Lab A1" })) }]));
+      let threw = null; try { U1C.convert(fs.readFileSync(srcAbs), fs.readFileSync(tplBad), {}); } catch (e) { threw = e.message; }
+      ok(threw && /not the Snapmaker U1/.test(threw), "convert: a template that is not a U1 project is refused, saying so", threw);
+      threw = null; try { U1C.convert(buildZip([{ name: "3D/3dmodel.model", data: geo }]), fs.readFileSync(tplPath), {}); } catch (e) { threw = e.message; }
+      ok(threw && /not a project 3MF/.test(threw), "convert: a plain mesh 3MF has no project to convert, saying so", threw);
+      const mcode = fs.readFileSync(path.join(REPO, "modules", "models.js"), "utf8");
+      const route = mcode.slice(mcode.indexOf('app.post("/api/models/convert"'), mcode.indexOf("// v2.27.1: a blank folder field"));
+      ok(route.length > 500 && !/Sync\(/.test(route) && !/fs\.\w+Sync/.test(fs.readFileSync(path.join(REPO, "modules", "u1convert.js"), "utf8")), "convert does no synchronous file IO (the share rule)");
+      const mui3 = fs.readFileSync(path.join(REPO, "public", "modules", "models-ui.js"), "utf8");
+      ok(/data-convert=/.test(mui3) && /\/api\/models\/convert/.test(mui3) && /id="mdl-u1t"/.test(mui3), "the card's ⋯ row has Convert to U1, and ⚙ Folder has the template path");
+      // Leave the shelf as the later blocks expect it.
+      await jpost("/api/models/delete", { file: outRel });
+      await jpost("/api/models/delete", { file: "MW Maker/Guardian/Guardian.3mf" });
+      r = await jpost("/api/models/settings", { folder: mroot, u1Template: "", clear: true, orcaExe: path.join(tmp, "no-such-orca.exe") });
+      ok(r.status === 200 && r.body.u1_template_set === null && r.body.folder === mroot, "settings: clear resets the template to the default lookup and keeps the folder", r.body);
+      try { fs.rmSync(path.join(mroot, "MW Maker"), { recursive: true, force: true }); } catch {}
+    }
     // v2.33: sort orders and "most printed". Danny (2026-09-24): "Can I get
     // some sort options here... alphabetical, oldest, newest, most printed,
     // random". The print counts come from the printers' own Moonraker job

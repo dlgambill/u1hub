@@ -19,6 +19,10 @@
 // Name.3mf, the convention), Attributes (set the designer and name the Hub
 // should use for it, then the same rename offer) and Delete (permanent, one
 // confirm). All three confirm inline on the card - no browser dialogs.
+// v2.38, first in that row: Convert to U1 (issue #5) - writes "<name>
+// (U1).3mf" beside the file with the designer's prime tower, walls, infill
+// and supports kept and the U1's printer and filament presets, then says
+// what it kept and offers Open in Orca on the copy.
 "use strict";
 (function () {
   let EL = null, DATA = null, CREATOR = "", Q = "", OFFSET = 0, BUSY = false, SESS = [], SESS_TIMER = 0, SETTINGS = null;
@@ -179,7 +183,7 @@
   // (It did, and a Save pressed on the blanks wiped the folder - 2026-09-22.)
   function renderCfg() {
     const box = EL.querySelector("#mdl-cfg");
-    if (box.querySelector("#mdl-folder") && (document.activeElement === box.querySelector("#mdl-folder") || document.activeElement === box.querySelector("#mdl-orca"))) return;
+    if (box.querySelector("#mdl-folder") && [box.querySelector("#mdl-folder"), box.querySelector("#mdl-orca"), box.querySelector("#mdl-u1t")].includes(document.activeElement)) return;
     const folder = DATA && DATA.folder ? DATA.folder : "";
     const orca = DATA && DATA.orcaExe ? DATA.orcaExe : (SETTINGS && SETTINGS.orcaExe ? SETTINGS.orcaExe : "");
     box.innerHTML =
@@ -187,16 +191,18 @@
       '<input class="field" id="mdl-folder" placeholder="' + (folder ? "" : "loading…") + '" value="' + esc(folder) + '">' +
       '<label>Snapmaker Orca <span class="hint">the program the Open button launches, on this computer</span></label>' +
       '<input class="field" id="mdl-orca" placeholder="C:\\Program Files\\Snapmaker_Orca\\snapmaker-orca.exe" value="' + esc(orca) + '">' +
+      '<label>U1 template <span class="hint">for Convert to U1: a project saved in Snapmaker Orca with the U1 and your usual filaments; blank uses u1_template.3mf at the top of the folder' + (DATA && DATA.u1_template ? " (found: " + esc(DATA.u1_template) + ")" : " (none found yet)") + '</span></label>' +
+      '<input class="field" id="mdl-u1t" placeholder="' + esc(folder ? folder.replace(/[\\/]+$/, "") + "\\u1_template.3mf" : "u1_template.3mf") + '" value="' + esc(DATA && DATA.u1_template_set || "") + '">' +
       '<div class="row" style="margin-top:8px; gap:8px"><button class="btn primary" id="mdl-save" style="font-size:12px; padding:5px 12px">Save</button><span class="pstatus" id="mdl-cfgmsg"></span></div>';
     box.querySelector("#mdl-save").addEventListener("click", async () => {
       const fv = box.querySelector("#mdl-folder").value.trim();
       if (!fv) { const m = box.querySelector("#mdl-cfgmsg"); m.className = "pstatus err"; m.textContent = "Enter the folder path (it was left blank)."; return; }
-      const r = await jpost("/api/models/settings", { folder: fv, orcaExe: box.querySelector("#mdl-orca").value });
+      const r = await jpost("/api/models/settings", { folder: fv, orcaExe: box.querySelector("#mdl-orca").value, u1Template: box.querySelector("#mdl-u1t").value });
       const m = box.querySelector("#mdl-cfgmsg");
       if (!r.ok) { m.className = "pstatus err"; m.textContent = r.d.error || "Could not save"; return; }
       SETTINGS = r.d;
       m.className = "pstatus " + (r.d.folder_found ? "ok" : "err");
-      m.textContent = (r.d.folder_found ? "Folder found. " : "Folder not found: " + r.d.folder + ". ") + (r.d.orca_found ? "Orca found." : "Orca not found at " + r.d.orcaExe + ".");
+      m.textContent = (r.d.folder_found ? "Folder found. " : "Folder not found: " + r.d.folder + ". ") + (r.d.orca_found ? "Orca found. " : "Orca not found at " + r.d.orcaExe + ". ") + (r.d.u1_template ? "U1 template found." : "No U1 template yet.");
       CREATOR = ""; OFFSET = 0;
       setTimeout(() => load(), 800);
     });
@@ -248,7 +254,7 @@
   function card(it) {
     const q = "/api/models/thumb?file=" + encodeURIComponent(it.rel) + "&v=" + Math.round(it.mtime || 0);
     return '<div class="mdl-card' + (it.conventional ? " conv" : "") + '" data-rel="' + esc(it.rel) + '">' +
-      '<button class="btn ghost mdl-more" data-more="' + esc(it.rel) + '" title="Rename, attributes, delete" aria-label="More">⋯</button>' +
+      '<button class="btn ghost mdl-more" data-more="' + esc(it.rel) + '" title="Convert to U1, rename, attributes, delete" aria-label="More">⋯</button>' +
       '<div class="mdl-thumb"><img loading="lazy" src="' + q + '" alt="" onerror="this.replaceWith(Object.assign(document.createElement(\'span\'),{className:\'nothumb\',textContent:\'no preview in file\'}))"></div>' +
       '<div class="mdl-body">' +
       '<div class="mdl-name" title="' + esc(it.rel) + '">' + esc(it.name) + "</div>" +
@@ -258,6 +264,7 @@
       (window.HUB_FEATURES && window.HUB_FEATURES.advisor === false ? "" : '<button class="btn ghost" data-suggest="' + esc(it.rel) + '" title="Have Claude read this file\'s geometry and the designer\'s profile and suggest the slicer settings for your printer">✦ Settings</button>') +
       '</div>' +
       '<div class="mdl-act2">' +
+      '<button class="btn ghost" data-convert="' + esc(it.rel) + '" title="Write a copy for the Snapmaker U1 beside this file, keeping the designer\'s prime tower, walls, infill and supports">Convert to U1</button>' +
       '<button class="btn ghost" data-rename="' + esc(it.rel) + '" title="' + (it.conventional ? "Already filed as Designer\\Name\\Designer - Name.3mf" : "Move to Designer\\Name\\Designer - Name.3mf") + '"' + (it.conventional ? " disabled" : "") + '>Rename</button>' +
       '<button class="btn ghost" data-attrs="' + esc(it.rel) + '" title="Set or change the designer and name">Attributes</button>' +
       '<button class="btn ghost danger" data-del="' + esc(it.rel) + '" title="Delete this file from the folder">Delete</button>' +
@@ -343,6 +350,48 @@
     if (DATA) { DATA.items = DATA.items.filter(x => x.rel !== rel); DATA.total = Math.max(0, DATA.total - 1); DATA.total_all = Math.max(0, DATA.total_all - 1); }
     if (ADVFILE === rel) { const adv = EL.querySelector("#mdl-adv"); adv.className = "mdl-adv"; adv.innerHTML = ""; ADVFILE = null; }
     EL.querySelector("#mdl-count").textContent = DATA.total_all + " file" + (DATA.total_all === 1 ? "" : "s");
+  }
+
+  // ---- v2.38: Convert to U1 ----------------------------------------------------
+  const small = 'style="font-size:11.5px; padding:4px 10px"', tiny = 'style="font-size:11px; padding:3px 8px"';
+  async function doConvert(rel) {
+    const box = editBox(rel); if (!box) return;
+    box.className = "mdl-edit show";
+    box.innerHTML = '<div class="msg">Converting…</div>';
+    const r = await jpost("/api/models/convert", { file: rel });
+    const close = '<button class="btn ghost" data-cancel="' + esc(rel) + '" ' + tiny + '>Close</button>';
+    const d = r.d || {};
+    if (!r.ok) {
+      box.innerHTML = '<div class="msg err">' + esc(d.error || "Could not convert it") + "</div>" +
+        '<div class="row">' + (d.exists && d.rel ? '<button class="btn primary" data-open="' + esc(d.rel) + '" ' + small + ">Open the U1 copy in Orca</button>" : "") +
+        (r.status === 409 && !d.exists ? '<button class="btn primary" data-showcfg="1" ' + small + ">⚙ Folder</button>" : "") + close + "</div>";
+      return;
+    }
+    if (d.already) {
+      box.innerHTML = '<div class="msg">This one is already a Snapmaker U1 project - open it as it is.</div><div class="row"><button class="btn primary" data-open="' + esc(rel) + '" ' + small + ">Open in Orca</button>" + close + "</div>";
+      return;
+    }
+    const warn = [];
+    for (const m of d.mismatched || []) warn.push("Filament " + m.slot + " was " + esc(m.was) + " in the original; the copy uses your " + esc(m.now) + " preset. Pick " + esc(m.was) + " for that slot in Orca if you are printing it in " + esc(m.was) + ".");
+    if (d.over4) warn.push("The original paints with " + d.over4 + " filaments; the U1 has 4. Colors past the fourth need re-assigning in Orca.");
+    if (d.remapped) warn.push(d.remapped + " object" + (d.remapped === 1 ? " was" : "s were") + " set to a filament past 4 and now use" + (d.remapped === 1 ? "s" : "") + " filament 1.");
+    for (const n of d.notes || []) warn.push(esc(n) + ".");
+    const kept = (d.kept || []).length ? esc(d.kept.join(", ")) : "nothing that differs from your U1 profile";
+    box.innerHTML =
+      '<div class="msg">✓ Wrote <b>' + esc(String(d.rel).split("/").pop()) + "</b> beside it.</div>" +
+      '<div class="msg" title="' + esc((d.carried || []).join(", ")) + '">Kept from the designer: ' + kept + ".</div>" +
+      '<div class="msg">Speeds, temperatures, retraction and cooling: your U1 profile' + (d.process && d.process.id ? " (" + esc(d.process.id) + ")" : "") + ".</div>" +
+      warn.map(w => '<div class="msg" style="color:var(--warn,#F5A524)">' + w + "</div>").join("") +
+      '<div class="row"><button class="btn primary" data-open="' + esc(d.rel) + '" ' + small + ">Open the U1 copy in Orca</button>" + close + "</div>";
+    // The copy joins the grid right after the original.
+    if (d.item && DATA && !cardOf(d.rel)) {
+      const i = DATA.items.findIndex(x => x.rel === rel);
+      DATA.items.splice(i + 1, 0, d.item);
+      DATA.total++; DATA.total_all++;
+      const c = cardOf(rel);
+      if (c) { c.insertAdjacentHTML("afterend", card(d.item)); lazyInfo(); }
+      EL.querySelector("#mdl-count").textContent = DATA.total_all + " file" + (DATA.total_all === 1 ? "" : "s");
+    }
   }
 
   // ---- ✦ Settings: the 3MF suggester (v2.28) ----------------------------------
@@ -449,6 +498,9 @@
     if (d.printer) bits.push("for " + d.printer);
     h += '<span class="k" title="' + esc((d.objects || []).map(o => o.name).join(", ")) + '">' + esc(bits.join(" · ") || "no project data") + "</span>";
     box.innerHTML = h;
+    // v2.38: a U1 project has nothing to convert.
+    const cv = box.closest(".mdl-card") && box.closest(".mdl-card").querySelector("[data-convert]");
+    if (cv && d.printer === "Snapmaker U1") { cv.disabled = true; cv.title = "Already a Snapmaker U1 project"; }
   }
 
   async function onGridClick(e) {
@@ -458,6 +510,8 @@
     // v2.36: Rename / Attributes / Delete live behind ⋯ - three buttons on
     // every card was 180 extra buttons a page for things done now and then.
     if (t && t.dataset.more != null) { const c = cardOf(t.dataset.more); if (c) { const open = c.classList.toggle("more"); if (!open) closeEdit(t.dataset.more); } return; }
+    if (t && t.dataset.convert != null) { closeEdit(t.dataset.convert); doConvert(t.dataset.convert); return; }
+    if (t && t.dataset.showcfg != null) { EL.querySelector("#mdl-cfg").classList.add("show"); EL.querySelector("#mdl-cfg").scrollIntoView({ block: "nearest" }); return; }
     if (t && t.dataset.rename != null) { closeEdit(t.dataset.rename); askRename(t.dataset.rename); return; }
     if (t && t.dataset.attrs != null) { closeEdit(t.dataset.attrs); openAttrs(t.dataset.attrs); return; }
     if (t && t.dataset.del != null) { closeEdit(t.dataset.del); askDelete(t.dataset.del); return; }

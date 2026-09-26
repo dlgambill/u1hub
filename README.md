@@ -64,7 +64,10 @@ got wrong and offers the same move, and Delete removes a file for good after
 one confirm. Sort it by designer, name, newest, oldest, random, or most
 printed - that last one counts the completed jobs in your printers' own
 history against the files they were sliced from, and says how many it could
-match rather than guessing.
+match rather than guessing. Convert to U1 (behind the ⋯ on a card) writes a
+U1 copy of a MakerWorld or other Bambu project beside it, keeping the
+designer's prime tower, walls, infill and supports on your U1's printer and
+filament presets.
 
 ![Models: the shelf behind the library, with the designer's own plate renders](docs/models.png)
 

@@ -769,4 +769,4 @@ function register(ctx) {
                  ", template " + (fs.existsSync(scfg().template) ? "found" : "NOT FOUND"));
 }
 
-module.exports = { register, u1ify, detect3mf, cloneInstances, zipRead, zipWrite, zipEntryContent, padFilamentArrays };
+module.exports = { register, u1ify, detect3mf, cloneInstances, zipRead, zipWrite, zipEntryContent, padFilamentArrays, makeEntry };

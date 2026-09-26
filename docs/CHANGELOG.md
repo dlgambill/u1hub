@@ -77,6 +77,37 @@ printers, and nothing leaves your network unless you turn remote access on.
 
 ---
 
+## New in 2.38 - Convert to U1
+
+Asked for in issue #5: bring a MakerWorld project over to the U1 without
+losing what the designer set up. Opening a Bambu project in Snapmaker Orca
+and switching the printer throws the designer's process away; the prime
+tower, walls, top shells, infill and supports all go back to U1 defaults,
+which is usually exactly the part that made the model print well.
+
+**Convert to U1** is the first button behind the ⋯ on a Models card. It
+writes a copy next to the original, `Name (U1).3mf`, and never touches the
+original or overwrites a copy that is already there. The copy is a U1
+project: the printer and filament presets come from a U1 template you save
+once in Snapmaker Orca, so temperatures and speeds are right for your
+machine. What the designer decided about the model comes across: layer
+height, walls, shells, infill, supports, brim, prime tower, seam, bridges,
+ironing, fuzzy skin. What was tuning for their printer does not: speeds,
+accelerations, temperatures, flow, retraction, cooling. Nor does anything
+that could run on your computer; a post-processing script in a downloaded
+file is dropped. The designer's colors stay on the filament slots, the
+painting and geometry pass through byte for byte, and the card tells you
+what it kept and anything it could not (a PETG slot where your template
+has PLA, a fifth color, an object on a filament past four).
+
+The template is `u1_template.3mf` at the top of the models folder, or any
+path you set under ⚙ Folder. Save one from Snapmaker Orca with the U1 and
+the filaments you usually load.
+
+Checked by hand in Snapmaker Orca on two MakerWorld files: prime tower
+width 35, brim 3, three walls, seven top shells, colors kept, and no
+"printer not found".
+
 ## New in 2.37 - a logbook for every printer
 
 Asked for on Reddit: "a log of issues solved on them, when, what and
