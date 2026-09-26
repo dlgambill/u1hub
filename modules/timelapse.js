@@ -39,8 +39,9 @@
 //      function, which PUTs to R2 and inserts the sf3d_timelapses row.
 // "print.cancelled" / "print.error" stop the capture and throw the frames
 // away - an abandoned print isn't worth a timelapse of. A Hub restart
-// mid-print picks capture back up (fewer frames than a full print, but a
-// short timelapse beats none) - see the boot catch-up below.
+// mid-print RESUMES capture into the same frame directory it already had
+// going, rather than starting over - see the CAPTURE_STATE comment and the
+// boot catch-up below for why that matters on a farm that restarts often.
 //
 // gcode_filename is still Danny's explicit requirement (2026-09-21): it must
 // match a product's sf3d_product_enrichment.gcode_files entries character
@@ -91,6 +92,13 @@ const MIN_CAPTURE_FRAMES = 8;           // fewer than this and there's no
                                          // rather than post a near-static clip
 const FRAMES_DIR_NAME = "timelapse-frames";   // per-job frame directories
 const PENDING_DIR_NAME = "timelapse-pending"; // assembled-but-not-yet-uploaded .mp4s
+const CAPTURE_STATE_FILE = "timelapse-capture-state.json"; // resume point for
+                                         // an in-progress capture, so a Hub
+                                         // restart mid-print continues the
+                                         // SAME frame directory instead of
+                                         // abandoning it - see the 2026-09-26
+                                         // note below register()'s boot
+                                         // catch-up for why this exists
 const FRAME_GLOB = "frame_%06d.jpg";
 const ORPHAN_FRAMES_MAX_AGE_MS = 24 * 60 * 60 * 1000; // a frame dir left over
                                          // from a crash is never going to
@@ -270,6 +278,64 @@ function register(ctx) {
     try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch {}
   }
 
+  // ---- Capture resume state (2026-09-26) ----
+  // 2026-09-26: Danny reported a real captured-and-uploaded timelapse that
+  // looked completely static - every sampled frame identical. Root cause:
+  // the Hub had restarted several times that day (unrelated feature work,
+  // each restart bumping the version) while that exact print was running.
+  // Every restart's boot catch-up (below) saw the printer was still mid-job
+  // and did what it always did - started a BRAND NEW capture directory from
+  // frame_000001, discarding whatever had already been captured. The
+  // orphaned directories from each abandoned attempt were still sitting on
+  // disk, timestamped right at each restart. The video that finally got
+  // uploaded only held the frames from the LAST restart to completion - a
+  // 27-minute tail end of what was probably a much longer print, by which
+  // point the parts already looked finished. A short timelapse beating none
+  // (the original boot catch-up's reasoning) doesn't hold when it happens
+  // on every single restart of a farm that gets restarted several times a
+  // day - it adds up to "almost every video is just the tail end."
+  //
+  // The fix: persist enough state after every captured frame that a restart
+  // can tell "this printer is still printing the SAME file I was already
+  // capturing" and continue writing into the SAME directory, instead of
+  // always starting over. Written locally (not the X: share) - same
+  // tradeoff as timelapse-queue.json.
+  const captureStatePath = path.join(ctx.baseDir, CAPTURE_STATE_FILE);
+  function loadCaptureState() {
+    try { return JSON.parse(fs.readFileSync(captureStatePath, "utf8")) || {}; }
+    catch { return {}; }
+  }
+  let CAPTURE_STATE = loadCaptureState(); // printer name -> {dir, filename, frameIdx, lastLayer, startedAtMs}
+
+  let STATE_SAVE_FALLBACK = false;
+  function saveCaptureState() {
+    const data = JSON.stringify(CAPTURE_STATE, null, 2);
+    const tmp = captureStatePath + ".tmp";
+    if (!STATE_SAVE_FALLBACK) {
+      try { fs.writeFileSync(tmp, data); fs.renameSync(tmp, captureStatePath); return; }
+      catch (e) {
+        STATE_SAVE_FALLBACK = true;
+        ctx.hublog("warn", "timelapse: atomic capture-state save failed (" + e.code + " " + e.message +
+          ") - falling back to a direct write for the rest of this run.");
+      }
+    }
+    fs.writeFileSync(captureStatePath, data);
+    try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch {}
+  }
+  function persistCaptureState(state) {
+    CAPTURE_STATE[state.printer] = {
+      dir: state.dir, filename: state.filename, frameIdx: state.frameIdx,
+      lastLayer: state.lastLayer, startedAtMs: state.startedAtMs,
+    };
+    saveCaptureState();
+  }
+  function clearCaptureStateEntry(printerName) {
+    if (Object.prototype.hasOwnProperty.call(CAPTURE_STATE, printerName)) {
+      delete CAPTURE_STATE[printerName];
+      saveCaptureState();
+    }
+  }
+
   // ---- Chamber-camera frame capture ----
   const CAPTURE = new Map(); // printer name -> capture state
 
@@ -344,21 +410,32 @@ function register(ctx) {
     if (!isFirst && layer <= state.lastLayer) return;
     state.lastLayer = layer;
     const frame = await grabFrame(state.base);
-    if (!frame) return;
-    const idx = state.frameIdx + 1;
-    try {
-      fs.writeFileSync(path.join(state.dir, frameFileName(idx)), frame);
-      state.frameIdx = idx;
-    } catch (e) {
-      ctx.hublog("warn", "timelapse: could not save a captured frame for " + state.printer + " - " + (e && e.message || e));
+    if (frame) {
+      const idx = state.frameIdx + 1;
+      try {
+        fs.writeFileSync(path.join(state.dir, frameFileName(idx)), frame);
+        state.frameIdx = idx;
+      } catch (e) {
+        ctx.hublog("warn", "timelapse: could not save a captured frame for " + state.printer + " - " + (e && e.message || e));
+      }
     }
+    // Persist even when the frame grab itself failed - the layer advanced
+    // either way, and a restart right after a missed frame should not
+    // re-request the same already-passed layer forever.
+    persistCaptureState(state);
   }
 
   // Idempotent: a duplicate "print.started" for a printer already being
   // captured (shouldn't happen - core/events.js only emits it on a real
   // non-printing -> printing edge - but costs nothing to guard) is ignored
   // rather than starting a second, competing capture into a new directory.
-  function capStart(printerName, filename) {
+  //
+  // `resume` (2026-09-26), when given, continues an EXISTING frame
+  // directory left behind by a Hub restart instead of creating a fresh one -
+  // see the capture-resume-state comment above CAPTURE_STATE for why this
+  // matters. It carries {dir, frameIdx, lastLayer, startedAtMs} as saved by
+  // persistCaptureState(); only the boot catch-up passes it.
+  function capStart(printerName, filename, resume) {
     if (CAPTURE.has(printerName)) return;
     const p = findPrinter(printerName);
     if (!p) {
@@ -366,25 +443,37 @@ function register(ctx) {
       return;
     }
     const base = String(p.url).replace(/\/+$/, "");
-    const safe = String(printerName).replace(/[^A-Za-z0-9_-]/g, "_");
-    const dir = path.join(framesRoot, safe + "_" + Date.now());
-    try { fs.mkdirSync(dir, { recursive: true }); }
-    catch (e) {
-      ctx.hublog("error", "timelapse: could not create a frame directory for " + printerName + " - " + (e && e.message || e));
-      return;
+    let dir, frameIdx, lastLayer, startedAtMs;
+    if (resume) {
+      ({ dir, frameIdx, lastLayer, startedAtMs } = resume);
+    } else {
+      const safe = String(printerName).replace(/[^A-Za-z0-9_-]/g, "_");
+      dir = path.join(framesRoot, safe + "_" + Date.now());
+      try { fs.mkdirSync(dir, { recursive: true }); }
+      catch (e) {
+        ctx.hublog("error", "timelapse: could not create a frame directory for " + printerName + " - " + (e && e.message || e));
+        return;
+      }
+      frameIdx = 0; lastLayer = undefined; startedAtMs = Date.now();
     }
     const state = {
       printer: printerName, filename, base, dir,
-      frameIdx: 0, lastLayer: undefined, startedAtMs: Date.now(),
+      frameIdx, lastLayer, startedAtMs,
       ws: null, active: true, pollTimer: null,
     };
     CAPTURE.set(printerName, state);
+    persistCaptureState(state);
     capOpenSocket(state);
     state.pollTimer = setInterval(() => {
       capPollOnce(state).catch((e) => ctx.hublog("warn", "timelapse: capture poll failed for " + printerName + " - " + (e && e.message || e)));
     }, CAPTURE_POLL_MS);
     if (state.pollTimer.unref) state.pollTimer.unref();
-    ctx.hublog("info", "timelapse: capture started for " + printerName + "/" + filename);
+    if (resume) {
+      ctx.hublog("info", "timelapse: resumed capture for " + printerName + "/" + filename +
+        " after a Hub restart (" + frameIdx + " frame(s) already captured)");
+    } else {
+      ctx.hublog("info", "timelapse: capture started for " + printerName + "/" + filename);
+    }
   }
 
   // Stops polling and tears down the socket; returns the (now-detached)
@@ -689,11 +778,21 @@ function register(ctx) {
   }
 
   ctx.events.on("print.started", (ev) => { capStart(ev.printer, ev.filename); });
-  ctx.events.on("print.cancelled", (ev) => discardFrames(capStop(ev.printer)));
-  ctx.events.on("print.error", (ev) => discardFrames(capStop(ev.printer)));
+  ctx.events.on("print.cancelled", (ev) => {
+    discardFrames(capStop(ev.printer));
+    clearCaptureStateEntry(ev.printer);
+  });
+  ctx.events.on("print.error", (ev) => {
+    discardFrames(capStop(ev.printer));
+    clearCaptureStateEntry(ev.printer);
+  });
 
   ctx.events.on("print.done", async (ev) => {
     const state = capStop(ev.printer);
+    // Whatever happens next (assemble or discard), there is no ongoing
+    // capture left to resume into - clear the resume point now rather than
+    // leaving a stale entry a future restart might try to match against.
+    clearCaptureStateEntry(ev.printer);
     if (!state) {
       ctx.hublog("info", "timelapse: " + ev.printer + " finished " + ev.filename + " but no capture was running for it - nothing to assemble");
       return;
@@ -727,16 +826,55 @@ function register(ctx) {
 
   // Boot catch-up: a Hub restart mid-print already missed that print's
   // "print.started" edge - no new event is coming for it. Give the fleet
-  // poller (core/events.js) time to take its first snapshot, then start
-  // capture for anything already printing/paused. Starting mid-print means
-  // fewer frames than a full capture, but a short timelapse beats none.
+  // poller (core/events.js) time to take its first snapshot, then either
+  // RESUME a capture already in progress before the restart, or start a
+  // fresh one for anything printing/paused that we have no record of.
+  //
+  // 2026-09-26: this used to always start fresh, on the theory that a short
+  // timelapse beats none. That reasoning breaks down on a Hub that restarts
+  // several times a day (this farm does, from unrelated feature work) - it
+  // meant almost every video was just the tail end of its print, sometimes
+  // so late the object already looked finished. See the CAPTURE_STATE
+  // comment above for the real incident this came from.
   const bootCatchup = setTimeout(async () => {
     try {
       const fleet = await ctx.fleet();
-      for (const p of fleet || []) {
-        if (p && p.online && (p.state === "printing" || p.state === "paused") && p.filename) {
-          capStart(p.name, p.filename);
+      const printingNow = new Map(
+        (fleet || [])
+          .filter((p) => p && p.online && (p.state === "printing" || p.state === "paused") && p.filename)
+          .map((p) => [p.name, p])
+      );
+
+      // Resolve every persisted entry first: resume it if the SAME file is
+      // still printing on that printer, otherwise it's stale (the print
+      // finished, was cancelled, or changed during the downtime) and its
+      // orphaned directory is cleaned up now rather than waiting a day for
+      // the age-based sweep above.
+      //
+      // Skip any printer this process is ALREADY capturing live - a normal
+      // "print.started" earlier in this same run put it there, and it is
+      // never stale just because this 6-second timer happens to fire after
+      // it. Caught in testing: without this guard, boot catch-up could
+      // delete the frame directory out from under its own in-progress
+      // capture the very first time it ran, on every single boot.
+      for (const [printerName, entry] of Object.entries(CAPTURE_STATE)) {
+        if (CAPTURE.has(printerName)) continue;
+        const p = printingNow.get(printerName);
+        if (p && p.filename === entry.filename && entry.dir && fs.existsSync(entry.dir)) {
+          printingNow.delete(printerName); // handled by the resume below
+          capStart(printerName, entry.filename, entry);
+        } else {
+          if (entry.dir) { try { fs.rmSync(entry.dir, { recursive: true, force: true }); } catch {} }
+          delete CAPTURE_STATE[printerName];
         }
+      }
+      saveCaptureState();
+
+      // Anything still printing with no matching persisted entry (the
+      // common case: a print that started and finished entirely between
+      // restarts never touches this at all) starts a brand new capture.
+      for (const p of printingNow.values()) {
+        capStart(p.name, p.filename);
       }
     } catch (e) {
       ctx.hublog("warn", "timelapse: boot catch-up failed - " + (e && e.message || e));
