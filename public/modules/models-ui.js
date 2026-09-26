@@ -49,7 +49,7 @@
       // v2.27: coarse pointers (phones/tablets) keep the tab, lose the actions
       // that only do something at the Hub console itself.
       "@media (pointer: coarse) { .mdl-act, #mdl-sess, #mdl-cfgbtn { display: none !important; } }",
-      "@media (pointer: coarse) { .mdl-act2, .mdl-edit { display: none !important; } }",
+      "@media (pointer: coarse) { .mdl-act2, .mdl-edit, .mdl-more { display: none !important; } }",
       ".mdl-wrap{display:grid; grid-template-columns: 220px minmax(0,1fr); gap:14px; margin-top:12px;}",
       ".mdl-rail{background:var(--panel); border:1px solid var(--line); border-radius:var(--r-lg,12px); padding:10px; align-self:start; position:sticky; top:12px; max-height:calc(100vh - 40px); overflow:auto;}",
       ".mdl-rail button{display:flex; width:100%; justify-content:space-between; gap:8px; background:transparent; border:none; color:var(--ink-dim); font:inherit; font-size:12.5px; text-align:left; padding:6px 8px; border-radius:var(--r-sm,6px); cursor:pointer;}",
@@ -76,7 +76,13 @@
       // v2.30: the second row of card actions (rename to the convention,
       // attributes, delete) and the inline editor / confirm they open. No
       // browser dialogs: a confirm is a second click on the same card.
-      ".mdl-act2{display:flex; gap:6px; margin-top:-1px; flex-wrap:wrap;}",
+      ".mdl-act2{display:none; gap:6px; margin-top:-1px; flex-wrap:wrap;}",
+      ".mdl-card.more .mdl-act2{display:flex;}",
+      ".mdl-card{position:relative;}",
+      ".mdl-card .mdl-more{position:absolute; top:8px; right:8px; z-index:2; padding:2px 8px; font-size:13px; line-height:1.2; letter-spacing:1px; background:color-mix(in srgb, var(--panel) 82%, transparent); opacity:.75;}",
+      ".mdl-card:hover .mdl-more, .mdl-card.more .mdl-more, .mdl-card .mdl-more:focus-visible{opacity:1;}",
+      ".mdl-card.more .mdl-more{color:var(--ink); border-color:var(--ink-faint);}",
+      ".mdl-sub .grp{font-size:9.5px; padding:0 5px; border:1px solid var(--line); border-radius:4px; color:var(--ink-dim);}",
       ".mdl-act2 .btn{font-size:11px; padding:3px 8px; color:var(--ink-dim);}",
       ".mdl-act2 .btn.danger{color:var(--bad,#e5484d); border-color:color-mix(in srgb, var(--bad,#e5484d) 45%, var(--line));}",
       ".mdl-edit{display:none; flex-direction:column; gap:6px; margin-top:4px; padding:8px; border:1px solid color-mix(in srgb, var(--signal) 40%, var(--line)); border-radius:var(--r-sm,6px); background:var(--panel-2);}",
@@ -131,7 +137,7 @@
     EL = el; style();
     el.innerHTML =
       '<div class="sechead"><h2>Models</h2><span class="count" id="mdl-count"></span></div>' +
-      '<p class="subnote">Project files (3MF) you have not sliced yet, organized by designer. Open one in Snapmaker Orca on this computer, slice it, save the gcode into the library, and it shows up here to select or send to Dispatch. Nothing on this tab prints anything.</p>' +
+      '<p class="subnote">3MF projects you have not sliced yet. Open one in Orca, save the gcode, and it lands in the library.</p>' +
       '<div id="mdl-sess"></div>' +
       '<div class="mdl-adv" id="mdl-adv"></div>' +
       '<div class="mdl-cfg" id="mdl-cfg"></div>' +
@@ -220,7 +226,7 @@
       : (d.total_all + " file" + (d.total_all === 1 ? "" : "s") + (d.refreshing ? " · rescanning…" : "") + (d.unreachable ? " · folder not reachable right now, showing the last scan" : ""));
     const rail = EL.querySelector("#mdl-rail");
     rail.innerHTML = '<button class="' + (CREATOR ? "" : "on") + '" data-c=""><span>All designers</span><span class="n">' + d.total_all + "</span></button>" +
-      d.creators.map(c => '<button class="' + (CREATOR === c.name ? "on" : "") + '" data-c="' + esc(c.name) + '"><span>' + esc(c.name || "(no folder)") + '</span><span class="n">' + c.count + "</span></button>").join("");
+      d.creators.map(c => { const v = c.name || "__none__"; return '<button class="' + (CREATOR === v ? "on" : "") + '" data-c="' + esc(v) + '"><span>' + esc(c.name || "(no folder)") + '</span><span class="n">' + c.count + "</span></button>"; }).join("");
     rail.querySelectorAll("button").forEach(b => b.addEventListener("click", () => { CREATOR = b.dataset.c; OFFSET = 0; load(); }));
     const grid = EL.querySelector("#mdl-grid");
     const items = (prependItems || []).concat(d.items);
@@ -242,10 +248,11 @@
   function card(it) {
     const q = "/api/models/thumb?file=" + encodeURIComponent(it.rel) + "&v=" + Math.round(it.mtime || 0);
     return '<div class="mdl-card' + (it.conventional ? " conv" : "") + '" data-rel="' + esc(it.rel) + '">' +
+      '<button class="btn ghost mdl-more" data-more="' + esc(it.rel) + '" title="Rename, attributes, delete" aria-label="More">⋯</button>' +
       '<div class="mdl-thumb"><img loading="lazy" src="' + q + '" alt="" onerror="this.replaceWith(Object.assign(document.createElement(\'span\'),{className:\'nothumb\',textContent:\'no preview in file\'}))"></div>' +
       '<div class="mdl-body">' +
       '<div class="mdl-name" title="' + esc(it.rel) + '">' + esc(it.name) + "</div>" +
-      '<div class="mdl-sub" title="' + (it.conventional ? "filed the way the convention wants it" : esc(it.rel)) + '">' + (it.prints != null ? '<span class="prints" title="completed prints of gcode sliced from this file, from the printers\' own job history">printed ' + it.prints + "×</span> · " : "") + esc(it.creator || "") + (it.model && it.model !== it.name ? " · " + esc(it.model) : "") + " · " + mb(it.size) + "</div>" +
+      '<div class="mdl-sub" title="' + (it.conventional ? "filed the way the convention wants it" : esc(it.rel)) + '">' + (it.prints != null ? '<span class="prints" title="completed prints of gcode sliced from this file, from the printers\' own job history">printed ' + it.prints + "×</span> · " : "") + (it.group ? '<span class="grp" title="format folder">' + esc(it.group) + "</span> " : "") + esc(it.creator || "") + (it.model && it.model !== it.name ? " · " + esc(it.model) : "") + " · " + mb(it.size) + "</div>" +
       '<div class="mdl-chips" data-info="' + esc(it.rel) + '"><span class="k">…</span></div>' +
       '<div class="mdl-act"><button class="btn primary" data-open="' + esc(it.rel) + '"' + (DATA && DATA.orca_found === false ? ' title="Snapmaker Orca not found - set its path under ⚙ Folder"' : "") + '>Open in Orca</button>' +
       (window.HUB_FEATURES && window.HUB_FEATURES.advisor === false ? "" : '<button class="btn ghost" data-suggest="' + esc(it.rel) + '" title="Have Claude read this file\'s geometry and the designer\'s profile and suggest the slicer settings for your printer">✦ Settings</button>') +
@@ -299,7 +306,7 @@
     const c = cardOf(rel);
     if (c && it) {
       c.querySelector(".mdl-name").textContent = it.name;
-      c.querySelector(".mdl-sub").textContent = (it.prints != null ? "printed " + it.prints + "× · " : "") + (it.creator || "") + (it.model && it.model !== it.name ? " · " + it.model : "") + " · " + mb(it.size);
+      c.querySelector(".mdl-sub").textContent = (it.prints != null ? "printed " + it.prints + "× · " : "") + (it.group ? it.group + " · " : "") + (it.creator || "") + (it.model && it.model !== it.name ? " · " + it.model : "") + " · " + mb(it.size);
       // New attributes can move the file's proper place: the ✓ and the Rename button follow.
       c.classList.toggle("conv", !!it.conventional);
       const rb = c.querySelector("[data-rename]"); if (rb) rb.disabled = !!it.conventional;
@@ -448,6 +455,9 @@
     const sg = e.target.closest("[data-suggest]");
     if (sg) { openSuggest(sg.dataset.suggest); return; }
     const t = e.target.closest("button");
+    // v2.36: Rename / Attributes / Delete live behind ⋯ - three buttons on
+    // every card was 180 extra buttons a page for things done now and then.
+    if (t && t.dataset.more != null) { const c = cardOf(t.dataset.more); if (c) { const open = c.classList.toggle("more"); if (!open) closeEdit(t.dataset.more); } return; }
     if (t && t.dataset.rename != null) { closeEdit(t.dataset.rename); askRename(t.dataset.rename); return; }
     if (t && t.dataset.attrs != null) { closeEdit(t.dataset.attrs); openAttrs(t.dataset.attrs); return; }
     if (t && t.dataset.del != null) { closeEdit(t.dataset.del); askDelete(t.dataset.del); return; }

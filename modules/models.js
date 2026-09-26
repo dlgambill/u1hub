@@ -126,14 +126,47 @@ function nameMatcher(q) {
 // rel "Creator/Model/file.3mf" -> { creator, model, name }
 // v2.30: a file at the root named the way the convention names it,
 // "Designer - Title.3mf", reads its designer from the name.
-function split(rel) {
-  const parts = rel.split("/");
+// v2.36: FORMAT FOLDERS. Danny's shelf has top-level folders that group by
+// format, not by maker - "U1" (projects already set up for the U1) and
+// "prusa-format" (Prusa-lineage projects), each holding designer folders of
+// its own. Read as designers they were the two biggest "designers" on the
+// rail (145 and 420 files), and they swamped the random order. A format
+// folder is recognized by name (a printer or "<x>-format") or because two or
+// more of its subfolders are also top-level designers; config.models.wrappers
+// can name more. Inside one, the designer is the next folder down, and the
+// format folder rides along as the item's `group`.
+const WRAP_RE = /^(?:(?:u\d{1,2}|x1c?|x1e|p1[sp]|p2s|a1|a1 ?mini|h2d|mk3s?|mk4s?|core ?one|sv0\d\w*|k1\w*|prusa|bambu|orca|snapmaker|creality)(?:[-_ ]?(?:format|files|projects|ready|3mf))?|[\w ]+[-_ ](?:format|3mfs?))$/i;
+let WRAP = new Set();   // lowercased top-level folder names that are format folders
+function detectWrappers(rels, extra) {
+  const top = new Map();
+  for (const r of rels) {
+    const p = String(r).split("/");
+    if (p.length < 3) continue;
+    if (!top.has(p[0])) top.set(p[0], new Set());
+    top.get(p[0]).add(p[1].toLowerCase());
+  }
+  const names = new Set([...top.keys()].map(t => t.toLowerCase()));
+  const out = new Set((Array.isArray(extra) ? extra : []).map(x => String(x).toLowerCase()).filter(Boolean));
+  for (const [t, subs] of top) {
+    if (WRAP_RE.test(t)) { out.add(t.toLowerCase()); continue; }
+    let hits = 0;
+    for (const sub of subs) if (sub !== t.toLowerCase() && names.has(sub)) hits++;
+    if (hits >= 2) out.add(t.toLowerCase());
+  }
+  return out;
+}
+function setWrappers(set) { WRAP = set instanceof Set ? set : new Set(); }
+function split(rel, wrap) {
+  const W = wrap || WRAP;
+  let parts = rel.split("/");
+  let group = "";
+  if (parts.length >= 3 && W.has(parts[0].toLowerCase())) { group = parts[0]; parts = parts.slice(1); }
   const name = parts[parts.length - 1].replace(/\.3mf$/i, "");
-  if (parts.length >= 3) return { creator: parts[0], model: parts[1], name };
-  if (parts.length === 2) return { creator: parts[0], model: name, name };
+  if (parts.length >= 3) return { creator: parts[0], model: parts[1], name, group };
+  if (parts.length === 2) return { creator: parts[0], model: name, name, group };
   const m = /^(.+?) - (.+)$/.exec(name);
-  if (m) return { creator: m[1].trim(), model: m[2].trim(), name };
-  return { creator: "", model: name, name };
+  if (m) return { creator: m[1].trim(), model: m[2].trim(), name, group };
+  return { creator: "", model: name, name, group };
 }
 
 // ---- the naming convention (v2.30) ------------------------------------------
@@ -158,10 +191,13 @@ function identity(rel, attrs) {
   // s.model is the model folder for a filed 3MF, the title parsed from
   // "Designer - Title" for a loose one, else the file's own name.
   const title = cleanPart(a.name || (parts.length >= 3 || s.creator ? s.model : s.name));
-  return { designer, title };
+  return { designer, title, group: s.group || "" };
 }
-function conventionRel(designer, title) {
-  return designer + "/" + title + "/" + designer + " - " + title + ".3mf";
+// A file inside a format folder is filed inside that folder: Rename tidies
+// "prusa-format/ZOU3D/Baby Ness/x.3mf" to "prusa-format/ZOU3D/Baby Ness/ZOU3D
+// - Baby Ness.3mf", it never drags a Prusa project out beside the Bambu one.
+function conventionRel(designer, title, group) {
+  return (group ? group + "/" : "") + designer + "/" + title + "/" + designer + " - " + title + ".3mf";
 }
 
 // Everything the card shows, read from inside the zip. Pure; exported for the harness.
@@ -224,11 +260,65 @@ const SORTS = ["designer", "name", "newest", "oldest", "printed", "random"];
 // mulberry32: a small seeded generator, so "random" gives the SAME order to
 // every page of one shuffle (the client sends the seed back with each page)
 // and a fresh order when the seed changes.
-function seededShuffle(list, seed) {
+function rngOf(seed) {
   let a = (Number(seed) >>> 0) || 1;
-  const rnd = () => { a |= 0; a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  return () => { a |= 0; a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+}
+function shuffleWith(rnd, list) {
   const out = list.slice();
   for (let i = out.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); const x = out[i]; out[i] = out[j]; out[j] = x; }
+  return out;
+}
+function seededShuffle(list, seed) { return shuffleWith(rngOf(seed), list); }
+// v2.36: RANDOM, BROWSED. A plain shuffle of 2,555 files is a shuffle of
+// whatever is most numerous: one page of 60 had Poke Prints 4 times and
+// ZOU3D 5 times, variants of one model side by side, and the two format
+// folders everywhere. Now it deals the way a person would browse:
+//   * every MODEL once before any model twice - the k-th variant of each
+//     model goes in the k-th pass, so a model with eight colorways does not
+//     eat eight cards of the first page;
+//   * within a pass, never the same designer twice in a row when anyone else
+//     is left, each next designer drawn in proportion to what they have left,
+//     so big designers still show up as often as their share, just not in runs.
+// Same seed, same order, so Show more pages through one deal.
+function spreadShuffle(list, seed) {
+  const rnd = rngOf(seed);
+  const models = new Map();
+  for (const it of list) {
+    const k = (it.group || "") + "/" + (it.creator || "") + "/" + (it.model || it.name);
+    if (!models.has(k)) models.set(k, []);
+    models.get(k).push(it);
+  }
+  const waves = [];
+  for (const m of shuffleWith(rnd, [...models.values()]))
+    shuffleWith(rnd, m).forEach((it, i) => (waves[i] = waves[i] || []).push(it));
+  const out = [];
+  for (const w of waves) {
+    const buckets = new Map();
+    for (const it of w) { const c = it.creator || ""; if (!buckets.has(c)) buckets.set(c, []); buckets.get(c).push(it); }
+    let last = out.length ? (out[out.length - 1].creator || "") : null;
+    // Could the rest still be laid out with no designer twice in a row if
+    // `pick` went next? Only the biggest remaining designer can make it
+    // impossible: it needs someone else between each of its cards.
+    const feasibleAfter = (pick, left) => {
+      let mx = null, mn = 0;
+      for (const [c, a] of buckets) { const n = a.length - (c === pick ? 1 : 0); if (n > mn) { mn = n; mx = c; } }
+      const rest = left - 1 - mn;
+      return mx === pick ? mn <= rest : mn <= rest + 1;
+    };
+    for (let left = w.length; left > 0; left--) {
+      let pool = [...buckets].filter(([c, a]) => a.length && c !== last && feasibleAfter(c, left));
+      // Repeats unavoidable (one designer owns most of what is left): draw
+      // the biggest other than the last, so the rest are spent as spacers
+      // instead of used up early.
+      if (!pool.length) { const alt = [...buckets].filter(([c, a]) => a.length && c !== last).sort((x, y) => y[1].length - x[1].length)[0]; if (alt) pool = [alt]; }
+      if (!pool.length) pool = [...buckets].filter(([, a]) => a.length);
+      let r = rnd() * pool.reduce((n, [, a]) => n + a.length, 0), pick = pool[pool.length - 1];
+      for (const e of pool) { r -= e[1].length; if (r < 0) { pick = e; break; } }
+      out.push(pick[1].pop());
+      last = pick[0];
+    }
+  }
   return out;
 }
 
@@ -316,6 +406,7 @@ function printCounts(items, jobs, links) {
   const noise = new Set();
   for (const it of items) {
     if (it.creator) noise.add(normName(it.creator));
+    if (it.group) noise.add(normName(it.group));          // v2.36: a format folder's name is never a model's
     if (perModel.get(it.creator + "/" + it.model) >= COLLECTION_MIN) noise.add(normName(it.model));
   }
   noise.delete("");
@@ -352,7 +443,7 @@ function sortItems(list, sort, opt) {
     case "newest": return list.slice().sort((a, b) => (b.mtime || 0) - (a.mtime || 0) || byName(a, b));
     case "oldest": return list.slice().sort((a, b) => (a.mtime || 0) - (b.mtime || 0) || byName(a, b));
     case "printed": { const c = o.counts || new Map(); return list.slice().sort((a, b) => (c.get(b.rel) || 0) - (c.get(a.rel) || 0) || byName(a, b)); }
-    case "random": return seededShuffle(list, o.seed);
+    case "random": return spreadShuffle(list, o.seed);
     default: return list;
   }
 }
@@ -364,7 +455,8 @@ function register(ctx) {
     const sl = (ctx.cfg && typeof ctx.cfg.slicer === "object" && ctx.cfg.slicer) || {};
     return {
       folder: path.resolve(String(c.folder || sl.srcFolder || path.join(ctx.baseDir, "models"))),
-      orcaExe: String(sl.orcaExe || "C:\\Program Files\\Snapmaker_Orca\\snapmaker-orca.exe")
+      orcaExe: String(sl.orcaExe || "C:\\Program Files\\Snapmaker_Orca\\snapmaker-orca.exe"),
+      wrappers: Array.isArray(c.wrappers) ? c.wrappers : []
     };
   };
   const THUMB_DIR = path.join(ctx.baseDir, "thumbs", "models");
@@ -381,7 +473,10 @@ function register(ctx) {
   const INDEX_FILE = path.join(ctx.baseDir, "models-index.json");
   try {
     const j = JSON.parse(fs.readFileSync(INDEX_FILE, "utf8"));
-    if (j && Array.isArray(j.items) && j.folder) INDEX = { ...j, at: 0 };   // at:0 = stale, refresh soon
+    if (j && Array.isArray(j.items) && j.folder) {
+      INDEX = { ...j, at: 0 };   // at:0 = stale, refresh soon
+      setWrappers(detectWrappers(INDEX.items.map(it => it.rel), conf().wrappers));
+    }
   } catch {}
   const saveIndex = () => { try { fs.writeFileSync(INDEX_FILE, JSON.stringify({ folder: INDEX.folder, dirMtime: INDEX.dirMtime, items: INDEX.items, creators: INDEX.creators, truncated: !!INDEX.truncated, saved: Date.now() })); } catch {} };
   // v2.30: attributes a person typed (designer, name), keyed by rel, kept
@@ -440,9 +535,10 @@ function register(ctx) {
   // convention target and whether the file already sits there.
   function decorate(it) {
     const a = ATTRS[it.rel];
+    const sp = split(it.rel);                      // v2.36: live split (format folders), not the one saved with the index
     const id = identity(it.rel, a);
-    const target = id.designer && id.title ? conventionRel(id.designer, id.title) : null;
-    return { ...it, creator: a && a.designer ? cleanPart(a.designer) : it.creator, name: a && a.name ? cleanPart(a.name) : it.name,
+    const target = id.designer && id.title ? conventionRel(id.designer, id.title, id.group) : null;
+    return { ...it, ...sp, creator: a && a.designer ? cleanPart(a.designer) : sp.creator, name: a && a.name ? cleanPart(a.name) : sp.name,
              attrs: a ? { designer: a.designer || "", name: a.name || "" } : null, target, conventional: !!target && target === it.rel };
   }
   function creatorsOf(items) {
@@ -483,6 +579,10 @@ function register(ctx) {
       return INDEX;
     }
     await rec(c.folder, "", 0);
+    // v2.36: which top-level folders are format folders is a fact about the
+    // whole shelf, so it is known only after the walk; re-split with it.
+    setWrappers(detectWrappers(items.map(it => it.rel), c.wrappers));
+    for (let i = 0; i < items.length; i++) items[i] = { ...items[i], ...split(items[i].rel) };
     items.sort((a, b) => a.creator.localeCompare(b.creator) || a.model.localeCompare(b.model) || a.name.localeCompare(b.name));
     const cmap = new Map();
     for (const it of items) cmap.set(it.creator, (cmap.get(it.creator) || 0) + 1);
@@ -535,8 +635,11 @@ function register(ctx) {
     // v2.30: attributes ride over the folders before anything filters or counts.
     const all = ix.items.map(decorate);
     let list = all;
-    if (creator) list = list.filter(it => it.creator === creator);
-    if (q.q) list = list.filter(it => match(it.creator + "/" + it.model + "/" + it.name));
+    // v2.36: "__none__" is the loose files. It used to be "", which is also
+    // "no filter", so the (no folder) row lit up with All designers and
+    // clicking it showed everything.
+    if (creator) list = list.filter(it => it.creator === (creator === "__none__" ? "" : creator));
+    if (q.q) list = list.filter(it => match((it.group ? it.group + "/" : "") + it.creator + "/" + it.model + "/" + it.name));
     // v2.33: order. "random" answers with the seed it used so the next page
     // of the same shuffle can ask for it back; "printed" carries the count on
     // each item and says how many printers' history it comes from.
@@ -583,7 +686,7 @@ function register(ctx) {
     const rel = String(req.query.file || "");
     if (!safePath(rel)) return res.status(404).json({ error: "not in the models folder" });
     const id = identity(rel, ATTRS[rel]);
-    const target = id.designer && id.title ? conventionRel(id.designer, id.title) : null;
+    const target = id.designer && id.title ? conventionRel(id.designer, id.title, id.group) : null;
     res.json({ file: rel, designer: id.designer, title: id.title, target, already: target === rel, missing: [!id.designer ? "designer" : null, !id.title ? "name" : null].filter(Boolean) });
   });
   // POST /api/models/rename { file } - move to <Designer>/<Title>/<Designer> - <Title>.3mf
@@ -593,7 +696,7 @@ function register(ctx) {
     if (!from) return res.status(404).json({ error: "not in the models folder" });
     const id = identity(rel, ATTRS[rel]);
     if (!id.designer || !id.title) return res.status(400).json({ error: "Set the " + (!id.designer ? "designer" : "name") + " first (Attributes), then rename" });
-    const newRel = conventionRel(id.designer, id.title);
+    const newRel = conventionRel(id.designer, id.title, id.group);
     if (newRel === rel) return res.json({ ok: true, rel, unchanged: true });
     const to = safePath(newRel);
     if (!to) return res.status(400).json({ error: "that designer or name cannot be a folder name" });
@@ -730,34 +833,60 @@ function register(ctx) {
   // 2026-08-29: Snapmaker Orca opens a 3MF passed as its one argument).
   let SEQ = 0;
   const SESSIONS = new Map();
-  app.post("/api/models/open", (req, res) => {
+  app.post("/api/models/open", async (req, res) => {
     const b = req.body || {};
     const p = safePath(b.file);
-    if (!p || !fs.existsSync(p)) return res.status(404).json({ error: "not in the models folder: " + String(b.file || "") });
+    if (!p || !(await fs.promises.stat(p).then(() => true, () => false))) return res.status(404).json({ error: "not in the models folder: " + String(b.file || "") });
     const c = conf();
     if (!fs.existsSync(c.orcaExe)) return res.status(503).json({ error: "Snapmaker Orca not found at " + c.orcaExe + " - set the path in Settings → Models" });
     const slug = String(b.type || "u1");
     let gdir; try { gdir = ctx.gcodeFolderFor(slug); } catch { gdir = null; }
-    const snap = () => { try { return new Map(fs.readdirSync(gdir).filter(f => /\.gcode$/i.test(f)).map(f => { try { return [f, fs.statSync(path.join(gdir, f)).mtimeMs]; } catch { return [f, 0]; } })); } catch { return new Map(); } };
-    const before = gdir ? snap() : new Map();
+    // v2.35.1: the snapshot is async and rare. It used to be readdirSync plus
+    // one statSync per gcode every 3 s for the half hour a session watches.
+    // Over SMB a stat is tens of ms, so a 356-file library cost ~14 s of
+    // blocked event loop per tick, every tick: the whole Hub answered
+    // /api/version in 7 s and looked dead (profiled live 2026-09-26, 97% of
+    // samples in stat). Now one async stat of the folder per tick, a listing
+    // only when the folder's mtime moved (a new file moves it; a rewrite in
+    // place does not), and a parallel async sweep at most every 20 s to
+    // catch the rewrite. Nothing here blocks the loop.
+    const snap = async () => {
+      if (!gdir) return new Map();
+      let names; try { names = (await fs.promises.readdir(gdir)).filter(f => /\.gcode$/i.test(f)); } catch { return new Map(); }
+      const mt = await Promise.all(names.map(f => fs.promises.stat(path.join(gdir, f)).then(st => st.mtimeMs, () => 0)));
+      return new Map(names.map((f, i) => [f, mt[i]]));
+    };
+    const dirStamp = () => gdir ? fs.promises.stat(gdir).then(st => st.mtimeMs, () => 0) : Promise.resolve(0);
+    const before = await snap();
+    let dirMtime = await dirStamp();
     try { spawn(c.orcaExe, [p], { detached: true, stdio: "ignore" }).unref(); }
     catch (e) { return res.status(500).json({ error: "could not launch Orca: " + e.message }); }
     const sid = ++SEQ;
     const s = { id: sid, file: String(b.file), type: slug, state: "watching", launchedAt: Date.now(), newGcode: null };
     SESSIONS.set(sid, s);
-    const iv = setInterval(() => {
-      if (Date.now() - s.launchedAt > 1800000) { s.state = "timeout"; clearInterval(iv); return; }
-      if (!gdir) return;
-      for (const [name, mtime] of snap()) {
-        if (!before.has(name) || before.get(name) !== mtime) {
-          s.state = "done"; s.newGcode = name; s.doneAt = Date.now(); clearInterval(iv);
-          LINKS[name] = s.file; saveLinks();   // v2.33: "most printed" counts this gcode toward this file
-          // The library snapshot re-walks on its own: a new file changes the
-          // folder's mtime, which listLibrary checks on the next request.
-          hublog("info", "models: Orca saved " + name + " (from " + s.file + ")");
-          return;
+    let lastSweep = Date.now(), busy = false;
+    const iv = setInterval(async () => {
+      if (busy) return;
+      busy = true;
+      try {
+        if (Date.now() - s.launchedAt > 1800000) { s.state = "timeout"; clearInterval(iv); return; }
+        if (!gdir) return;
+        const dm = await dirStamp();
+        const sweep = Date.now() - lastSweep > 20000;
+        if (dm === dirMtime && !sweep) return;
+        dirMtime = dm;
+        if (sweep) lastSweep = Date.now();
+        for (const [name, mtime] of await snap()) {
+          if (!before.has(name) || before.get(name) !== mtime) {
+            s.state = "done"; s.newGcode = name; s.doneAt = Date.now(); clearInterval(iv);
+            LINKS[name] = s.file; saveLinks();   // v2.33: "most printed" counts this gcode toward this file
+            // The library snapshot re-walks on its own: a new file changes the
+            // folder's mtime, which listLibrary checks on the next request.
+            hublog("info", "models: Orca saved " + name + " (from " + s.file + ")");
+            return;
+          }
         }
-      }
+      } finally { busy = false; }
     }, 3000);
     if (iv.unref) iv.unref();
     hublog("info", "models: opened in Orca: " + s.file);
@@ -787,4 +916,4 @@ function register(ctx) {
   ctx.provide("models.info", (ps, ms) => infoFromParts(ps, ms));
 }
 
-module.exports = { register, infoFromEntries, infoFromParts, pickThumb, nameMatcher, split, zipOpen, withZip, identity, conventionRel, cleanPart, SORTS, normName, stripNoise, creditFor, printCounts, sortItems, seededShuffle };
+module.exports = { register, infoFromEntries, infoFromParts, pickThumb, nameMatcher, split, zipOpen, withZip, identity, conventionRel, cleanPart, SORTS, normName, stripNoise, creditFor, printCounts, sortItems, seededShuffle, spreadShuffle, detectWrappers, setWrappers };

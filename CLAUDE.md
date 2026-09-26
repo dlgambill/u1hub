@@ -164,7 +164,7 @@ writes). `scripts/check-core.js` syntax-checks the root plus every core file.
 
 ## Harness
 
-`npm test` → **886 checks**, expect **886 passed, 0 failed**. A red harness
+`npm test` → **907 checks**, expect **907 passed, 0 failed**. A red harness
 blocks everything.
 
 Takes ~2.5 min over SMB. Run it with `scripts/run-harness.cmd` and poll
@@ -202,6 +202,13 @@ around freely, writes included, with nothing reaching the install. Prefer it to
 restarting 4545: that instance is dispatching nine printers, and a restart is
 the user's call, not the agent's. `scripts/restart-4545.cmd` exists for when they
 do ask.
+
+**When the Hub "feels dead" but the port answers**, do not guess: `node
+scripts/loopprof.js <pid> 15` attaches the inspector to the live process and
+prints what the event loop spent 15 s on. 2026-09-26 it was 97% `stat` from a
+timer doing `statSync` on every gcode on the share (MISTAKES.md). Grep for
+`readSync\|readFileSync\|statSync\|readdirSync\|openSync\|existsSync` in
+`core modules` and justify every hit on a share path; a timer is a handler.
 
 **Files on `X:` cannot be written with tmp+rename** — the share refuses
 rename-over-existing, silently. `modules/dispatch.js` `save()` documents the

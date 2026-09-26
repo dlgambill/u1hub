@@ -24,11 +24,74 @@ Running log of things that broke, why, and the rule that stops a repeat.
 | Staging vs git clone drift | 2 incidents | rule 3 |
 | Claimed done without opening the artifact | 1 | *watch this one* — a summary is not evidence |
 | Bridge / tooling sharp edges | 6 incidents | *not a law* — reference block, "Working over the bridge" |
+| Synchronous fs on the share (read, stat or list) from a handler or a timer | 2 incidents | 2026-09-14 rule; grep `readSync\|readFileSync\|statSync\|readdirSync\|openSync\|existsSync` and justify every hit on a share path |
 
 Bridge quirks are operating facts, not judgment failures; a rule that says
 "remember these four things" is a lookup table wearing a rule's clothes.
 
 ---
+
+## 2026-09-26 - The plan contradicted itself on one screen and nothing compared the two halves
+
+**What happened:** Danny: "jobs appearing multiple times and the schedule
+not being very efficient." Two defects, both visible on one timeline. The
+running bar for U1's 91%-done plate read "until 10:23 PM Sunday" and ran
+under the Leopard Gecko planned after it, while the planner itself had U1
+free at 4:32 AM: `running[].est_end` was read from `l.cursor` after
+placement had advanced it past the queued work (v2.15). And the walk that
+looks for a block a job "fits" in had no bound and saw a wall at every
+23:59, so U1 and U4 sat idle ~19 h waiting for Sunday 00:00; on weekday
+hours it would have idled a printer 2.5 days.
+
+**Root cause:** Two outputs of one function (`running` and `slots`) were
+each checked, never checked against each other; the harness asserted that
+a running bar existed, not that it ended before the next job on its lane.
+The walk's comment said overrunning "should be a consequence, never a
+preference" - true - and then paid any price in idle time to avoid it.
+
+**Consequence:** A confusing board for weeks, and printers idle for most of
+a day at a time on any job longer than what was left of the day.
+
+**Rule:** When one response carries two views of the same machine, check
+them against each other (PLAN36: running end <= next slot start on the same
+printer). Any "wait for a better start" rule needs a stated price ceiling;
+here it is the first start's bed-clear moment. Placement logic is now
+`pickStart()`, pure, driven by a synthetic week in the harness.
+
+## 2026-09-26 - "Why is the node dead?" - the Orca watcher stat'ed every gcode on the share, synchronously, every 3 seconds
+
+**What happened:** Danny: "Why is the node dead?" It was not dead: PID
+up, port listening, and `/api/version` answering in 7.2 s. access.log had
+`/api/fleet` at 75 s and `/api/files` at 20 s. A 15 s CPU profile of the
+live process (inspector attached with `process._debugProcess`, script
+`scripts/_loopprof.js`) put 97% of samples in `stat`, from
+`modules/models.js` - the "Open in Orca" session watcher. Since 2.26 it
+took a snapshot every 3 s with `readdirSync` plus one `statSync` per gcode
+in `X:\gcode`. Over SMB a stat is tens of ms; 356 files is ~14 s of
+blocked loop per tick, and the tick is 3 s, for the half hour a session
+watches. Danny had opened a sylveon plate from the Models tab. From
+outside, the Hub was down.
+
+**Root cause:** The 2026-09-14 rule below says no synchronous filesystem
+call may touch the share "from inside a request handler or a timer". The
+watcher is a timer. It was written nine days before that rule and never
+re-read against it, and the grep the rule prescribes lists `readSync`,
+`readFileSync`, `statSync`, `openSync` - it was never run, because a stat
+"is not a read". The harness cannot see it: its gcode folder is local
+disk, where 356 stats cost 20 ms.
+
+**Consequence:** Every use of Open in Orca froze the farm's dashboard for
+up to 30 minutes, on every device, since 2.26. Reported as "the node is
+dead"; would have read as a crash to anyone else.
+
+**Rule:** Same rule, second incident (cluster "sync fs on the share": 2).
+The watcher now stats the folder once per tick (async), lists only when
+the folder's mtime moves, and sweeps at most every 20 s, in parallel, off
+the loop. The grep now includes `readdirSync`, and `scripts/_loopprof.js`
+stays in the repo as `scripts/loopprof.js`: when the Hub "feels dead" but
+the port answers, profile it for 15 s before guessing. A share is a
+network; every sync call on it is a stall of unbounded length, whether it
+reads, stats or lists.
 
 ## 2026-09-23 - 2.29 shipped a phone that cut every printer card off at the right edge
 

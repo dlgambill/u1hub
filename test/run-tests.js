@@ -3548,7 +3548,7 @@ async function stopHub() {
       const mui2 = fs.readFileSync(path.join(REPO, "public", "modules", "models-ui.js"), "utf8");
       ok(/data-rename=/.test(mui2) && /data-attrs=/.test(mui2) && /data-del=/.test(mui2) && /\/api\/models\/rename/.test(mui2) && /\/api\/models\/delete/.test(mui2) && /\/api\/models\/attrs/.test(mui2), "the card has Rename, Attributes and Delete wired to the routes");
       ok(!/\bconfirm\(/.test(mui2) && !/\balert\(/.test(mui2.replace(/alert\(r\.d\.error/g, "")), "…confirms inline on the card, no browser dialogs for the destructive ones");
-      ok(/@media \(pointer: coarse\) \{ \.mdl-act2, \.mdl-edit \{ display: none !important/.test(mui2), "…and the second row hides on touch like the first");
+      ok(/@media \(pointer: coarse\) \{ \.mdl-act2, \.mdl-edit(, \.mdl-more)? \{ display: none !important/.test(mui2), "…and the second row hides on touch like the first");
       ok(/models-attrs\.json/.test(fs.readFileSync(path.join(REPO, ".gitignore"), "utf8")), "models-attrs.json is state and gitignored");
     }
     // v2.33: sort orders and "most printed". Danny (2026-09-24): "Can I get
@@ -3588,6 +3588,36 @@ async function stopHub() {
       ok(r1 === r2 && [7, 8, 9, 10, 11].some(sd => mmod.sortItems(pitems, "random", { seed: sd }).map(i => i.rel).join() !== r1), "sortItems: the same seed deals the same order, another seed another one");
 
       await jpost("/api/models/settings", { folder: mroot });
+      // v2.36: format folders, the browsing random, and the loose-files filter.
+      // Danny (2026-09-26): "make the models tab less clunky... improve the random".
+      {
+        const rels = ["U1/Poke Prints/Wooper.3mf", "U1/Poke Prints/Umbreon.3mf", "prusa-format/ZOU3D/Baby Ness/Baby_Ness.3mf",
+          "prusa-format/Cinderwing3D/turtle.3mf", "prusa-format/MatMire Makes/Opossum/x.3mf", "ZOU3D/Spider/Spider.3mf",
+          "Cinderwing3D/Tiny Horse/h.3mf", "MatMire Makes/Gecko/g.3mf", "Kirsten M/Griffin/g.3mf", "loose.3mf"];
+        const W = mmod.detectWrappers(rels, []);
+        ok(W.has("u1") && W.has("prusa-format") && W.size === 2, "format folders are recognized: U1 by name, prusa-format by name and by holding other designers' folders; real designers are not", [...W]);
+        ok(mmod.detectWrappers(["Studio/Alpha/a.3mf", "Studio/Beta/b.3mf", "Alpha/x/y.3mf"], []).size === 0, "one subfolder that shares a designer's name does not make a designer a format folder");
+        ok(mmod.detectWrappers(["Keep/Thing/a.3mf"], ["Keep"]).has("keep"), "config.models.wrappers can name more");
+        const s1 = mmod.split("prusa-format/ZOU3D/Baby Ness/Baby_Ness.3mf", W), s2 = mmod.split("U1/Poke Prints/Wooper.3mf", W);
+        ok(s1.creator === "ZOU3D" && s1.model === "Baby Ness" && s1.group === "prusa-format" && s2.creator === "Poke Prints" && s2.group === "U1", "inside a format folder the designer is the next folder down, and the format folder rides along as the group", { s1, s2 });
+        ok(mmod.conventionRel("ZOU3D", "Baby Ness", "prusa-format") === "prusa-format/ZOU3D/Baby Ness/ZOU3D - Baby Ness.3mf", "Rename keeps a file inside its format folder");
+        // Random: every model once before any twice; no designer twice in a row when it can be helped.
+        const items = [];
+        for (const d of ["Alpha", "Beta", "Gamma"]) for (let m = 0; m < 4; m++) for (let v = 0; v < 3; v++) items.push({ rel: d + "/M" + m + "/" + v + ".3mf", creator: d, model: "M" + m, name: "v" + v, group: "" });
+        let everyModelFirst = true, noRuns = true;
+        for (const seed of [1, 2, 3, 42, 777]) {
+          const o = mmod.spreadShuffle(items, seed);
+          if (new Set(o.slice(0, 12).map(i => i.creator + "/" + i.model)).size !== 12) everyModelFirst = false;
+          for (let i = 1; i < o.length; i++) if (o[i].creator === o[i - 1].creator) noRuns = false;
+        }
+        ok(everyModelFirst, "random deals every model once before any model's second variant");
+        ok(noRuns, "random never puts the same designer twice in a row when the mix allows it");
+        ok(JSON.stringify(mmod.spreadShuffle(items, 9).map(i => i.rel)) === JSON.stringify(mmod.spreadShuffle(items, 9).map(i => i.rel)), "…and the same seed is the same deal");
+        r = await jget("/api/models?creator=__none__");
+        ok(r.status === 200 && r.body.items.every(i => i.creator === ""), "the (no folder) filter shows only loose files, not everything", r.body.items.map(i => i.rel));
+        const mui4 = fs.readFileSync(path.join(REPO, "public", "modules", "models-ui.js"), "utf8");
+        ok(/c\.name \|\| "__none__"/.test(mui4) && /data-more=/.test(mui4) && /\.mdl-act2\{display:none;/.test(mui4) && /\.mdl-card\.more \.mdl-act2\{display:flex;\}/.test(mui4), "the rail sends (no folder) as its own filter, and Rename / Attributes / Delete sit behind ⋯ on each card");
+      }
       // Ages, set on every file so the order is not left to the moment each
       // fixture was written: the dragon is the oldest, the sheep the newest.
       const ago = d => new Date(Date.now() - d * 86400000);
@@ -3654,6 +3684,15 @@ async function stopHub() {
       let sess = null;
       for (let i = 0; i < 50; i++) { await sleep(200); const q = await jget("/api/models/sessions"); sess = (q.body.sessions || []).find(x => x.id === r.body.session.id); if (sess && sess.state === "done") break; }
       ok(sess && sess.state === "done" && sess.newGcode === "Harness Link Probe.gcode", "…and sees the new gcode land", sess);
+      // v2.35.1: the watcher must not touch the gcode folder synchronously.
+      // The harness's folder is local disk, where a sync sweep is 20 ms and
+      // invisible; on the SMB share it was 14 s per 3 s tick and the Hub
+      // "died" (MISTAKES.md 2026-09-26). So the check is on the source.
+      {
+        const mjs = fs.readFileSync(path.join(REPO, "modules", "models.js"), "utf8");
+        const openBody = mjs.slice(mjs.indexOf('app.post("/api/models/open"'), mjs.indexOf('app.get("/api/models/sessions"')).replace(/\/\/.*$/gm, "");   // code only; the comment names the old calls
+        ok(openBody.length > 200 && !/readdirSync|statSync|existsSync\(p\)/.test(openBody) && /fs\.promises\.readdir\(gdir\)/.test(openBody) && /fs\.promises\.stat\(gdir\)/.test(openBody), "the Orca watcher reads the gcode folder asynchronously - one stat of the folder per tick, a listing only when it moved");
+      }
       const lf = path.join(hubDir, "models-links.json");
       ok(fs.existsSync(lf) && JSON.parse(fs.readFileSync(lf, "utf8")).links["Harness Link Probe.gcode"] === "3D Tinys Prints/Baby Sheep/Tinys_Sheep_Colored.3mf", "the gcode is linked to the file it came from, in models-links.json");
       mockSv.state.history.push({ filename: "Harness Link Probe.gcode", status: "completed", start_time: 1700040000, print_duration: 100 }, { filename: "Harness Link Probe.gcode", status: "completed", start_time: 1700050000, print_duration: 100 });
@@ -3701,6 +3740,96 @@ async function stopHub() {
     const appjs = fs.readFileSync(path.join(REPO, "public", "app.js"), "utf8");
     ok(/if\(rec\.busy && Date\.now\(\)-rec\.busyAt < CAM_BUSY_MAX_MS\) return;/.test(appjs) && /back\.onload=\(\)=>\{ rec\.busy=false;/.test(appjs) && /back\.onerror=\(\)=>\{ rec\.busy=false;/.test(appjs), "the client ticker skips a tile whose last frame has not loaded or failed yet, with a cap so a lost event cannot stall it for good");
     ok(/document\.body\.dataset\.view = v;/.test(appjs) && /body\[data-view="dash"\] \.main[^{]*\{max-width:1760px;\}/.test(fs.readFileSync(path.join(REPO, "public", "gold.css"), "utf8")), "the dashboard may use a wide screen: four U1s fit in one row on a 4K monitor (issue #4, second ask)");
+  }
+
+  console.log("\n== PLAN36: the planner stops idling printers (v2.36) ==");
+  {
+    // Danny (2026-09-26): "jobs appearing multiple times and the schedule not
+    // being very efficient". Two causes, both pinned here.
+    //
+    // 1. Where a job starts on a lane. Driven through pickStart() with a
+    //    synthetic week, so no check here depends on the hour it runs
+    //    (rule 7; the planner's earlier clock-dependent checks went red at
+    //    23:50, 23:02 and 22:49).
+    const { pickStart } = require(path.join(REPO, "modules", "dispatch.js"));
+    const M = 60000, DAY = 1440 * M;
+    // A week as windows per day [startMin, endMin], day 0 = Sunday. An end of
+    // 1440 runs to midnight and joins the next day's 00:00 window.
+    const mkCal = (week, est) => {
+      const winsOf = ms => week[Math.floor(ms / DAY) % 7] || [];
+      const modOf = ms => (ms % DAY) / M;
+      const dayStart = ms => Math.floor(ms / DAY) * DAY;
+      const inWin = ms => winsOf(ms).find(w => modOf(ms) >= w[0] && modOf(ms) < w[1]);
+      const nextStart = ms => {
+        for (let t = ms, g = 0; g < 60; g++) {
+          if (inWin(t)) return t;
+          const later = winsOf(t).find(w => w[0] > modOf(t));
+          t = later ? dayStart(t) + later[0] * M : dayStart(t) + DAY;
+        }
+        return null;
+      };
+      const close = ms => {
+        let w = inWin(ms); if (!w) return null;
+        let d = dayStart(ms);
+        for (let g = 0; g < 14; g++) {
+          if (w[1] < 1440) return d + w[1] * M;
+          const nxt = (week[Math.floor((d + DAY) / DAY) % 7] || [])[0];
+          if (!nxt || nxt[0] !== 0) return d + DAY;
+          d += DAY; w = nxt;
+        }
+        return d + w[1] * M;
+      };
+      return {
+        attendedAt: ms => !!inWin(ms),
+        readyAfter: end => { const c = nextStart(end); return (c === null ? end : c) + 5 * M; },
+        fitsStrict: ms => { const c = close(ms); const e = ms + est * M; return c !== null && e <= c ? e : null; },
+        nextBlock: ms => { const later = winsOf(ms).find(w => w[0] > modOf(ms)); return nextStart(later ? dayStart(ms) + later[0] * M : dayStart(ms) + DAY); }
+      };
+    };
+    const at = (day, h, m) => day * DAY + ((h * 60) + (m || 0)) * M;
+    // Danny's real week: Sun 00-24, Mon 06-24, Tue-Thu 16-24, Fri 06-24, Sat 00-24.
+    const danny = [[[0, 1440]], [[360, 1440]], [[960, 1440]], [[960, 1440]], [[960, 1440]], [[360, 1440]], [[0, 1440]]];
+    let p = pickStart(at(2, 16), 13 * 60, false, mkCal(danny, 13 * 60));
+    ok(p && p.start === at(2, 16), "a 13-hour job ready Tuesday 16:00 starts then, not Friday 06:00 (the old walk idled the printer 2.5 days to 'fit')", p && (p.start - at(2, 16)) / 3600000 + " h late");
+    p = pickStart(at(6, 4, 33), 1338, false, mkCal(danny, 1338));
+    ok(p && p.start === at(6, 4, 33), "a 22-hour job ready Saturday 04:33 starts then: Sat 00-23:59 and Sun 00-23:59 are one block, not two with a wall at midnight", p && (p.start - at(6, 4, 33)) / 3600000 + " h late");
+    const split = [0, 1, 2, 3, 4, 5, 6].map(() => [[480, 540], [1020, 1410]]);
+    p = pickStart(at(1, 8), 62, false, mkCal(split, 62));
+    ok(p && p.start === at(1, 17), "a 62-minute job still waits for the evening block rather than straddle the gap - waiting is free while the bed would be blocked anyway", p && new Date(p.start).toISOString());
+    p = pickStart(at(1, 17), 300, false, mkCal(split, 300));
+    ok(p && p.start === at(1, 17), "a job that ends in NEXT morning's window is a good fit, not an overrun to avoid");
+    const shape = [0, 1, 2, 3, 4, 5, 6].map(() => [[420, 540], [1020, 1320]]);
+    ok(pickStart(at(1, 7), 600, true, mkCal(shape, 600)) === null, "strict (finish must be attended, same block): a 10-hour job with 2- and 5-hour blocks is still honestly unplannable");
+    p = pickStart(at(6, 4, 33), 1338, true, mkCal(danny, 1338));
+    ok(p && p.start === at(6, 4, 33), "strict: across the joined weekend block a 22-hour job fits", p && (p.start - at(6, 4, 33)) / 3600000);
+    // A later fitting start past the first start's bed-clear moment is refused.
+    const wk = [0, 1, 2, 3, 4, 5, 6].map(d => d === 5 ? [[360, 1440]] : [[960, 1440]]);
+    p = pickStart(at(2, 16), 13 * 60, false, mkCal(wk, 13 * 60));
+    ok(p && p.start === at(2, 16), "never wait past the moment the earliest start's bed could have been cleared (Wed 16:05 here), whatever fits later");
+
+    // 2. What the timeline draws for the print already running. The running
+    //    bar's end used to be read off the lane's planning cursor AFTER
+    //    placement, so it ran to the end of the queued work and the queued
+    //    job drew on top of it: "jobs appearing multiple times".
+    await jpost("/api/dispatch/settings", { attended: { start: "00:00", end: "23:59" }, weekend: { start: "00:00", end: "23:59" } });
+    await jpost("/api/dispatch/maintenance", { printer: 1 });
+    mockU1.state.printState = "printing"; mockU1.state.filename = "occupier-not-a-job.gcode";
+    // The Hub sees the printer through its fleet poll, not the mock's memory.
+    const p0State = async () => { const fl = (await jget("/api/fleet")).body || []; return String((fl[0] && (fl[0].status || fl[0].state)) || "").toLowerCase(); };
+    for (let i = 0; i < 60 && !/print/.test(await p0State()); i++) await sleep(250);
+    r = await jpost("/api/dispatch/jobs", { file: "single.gcode", type: "u1", qty: 1 });
+    const OCC = r.body.job && r.body.job.id;
+    let plan = (await jget("/api/dispatch/plan")).body;
+    const run0 = (plan.running || []).find(x => x.printer === 0);
+    const next0 = (plan.slots || []).filter(s => s.printer === 0 && !s.unplannable).sort((a, b) => a.est_start - b.est_start)[0];
+    ok(run0 && next0, "(fixture) printer 0 is printing and the queued job is planned after it", { run0: !!run0, next0: !!next0 });
+    ok(run0 && next0 && run0.est_end <= next0.est_start, "the running print's end is when IT ends, never the end of the work queued behind it", run0 && next0 && { runEnd: new Date(run0.est_end).toISOString(), nextStart: new Date(next0.est_start).toISOString() });
+    const p0 = (plan.printers || []).find(x => x.idx === 0), p1 = (plan.printers || []).find(x => x.idx === 1);
+    ok(p0 && p0.busy === true && p1 && p1.busy === false, "printers[].busy means printing now, not 'has planned work'", { p0: p0 && p0.busy, p1: p1 && p1.busy });
+    await jpost("/api/dispatch/jobs/remove", { id: OCC });
+    await jpost("/api/dispatch/maintenance", { printer: 1, down: false });
+    mockU1.state.printState = "standby"; mockU1.state.filename = "";
+    for (let i = 0; i < 60 && /print/.test(await p0State()); i++) await sleep(250);
   }
 
   console.log("\n== SUG: the 3MF settings suggester (v2.28) ==");

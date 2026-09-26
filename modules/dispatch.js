@@ -148,6 +148,46 @@ function feasibility(slots, target, now) {
   };
 }
 
+// ---- where on a lane a job starts (v2.36) -----------------------------------
+// Pure, so the harness can drive it with a synthetic calendar instead of the
+// wall clock. The calendar is passed in as functions:
+//   nextBlock(ms)  - the start of the next attended block after the one ms is in
+//   fitsStrict(ms) - end time if the job fits wholly inside ms's block, else null
+//   attendedAt(ms) - someone is around at ms
+//   readyAfter(ms) - when the machine can take its next job after a print ends at ms
+//
+// Before v2.36 the walk hopped forward block by block until the job fit
+// inside one, with no limit. With weekday hours of 16:00-24:00, a 13-hour
+// job ready Tuesday 16:00 ends Wednesday 05:00, so it hopped to Friday 06:00:
+// two and a half days of idle printer to avoid a print sitting finished on
+// the bed for eleven hours. Now:
+//   * a start is a good fit if the job ENDS while someone is around - in its
+//     own block or any later one - not only inside the block it started in;
+//   * a later, better-fitting start is taken only while the machine would
+//     have been blocked anyway: never past the moment the bed of the
+//     earliest start could have been cleared. Waiting until then is free;
+//     waiting past it is idle printer time.
+// Strict (finish_policy "attended" / needs_finish) is unchanged: it must fit
+// wholly inside one block, however long that takes.
+function pickStart(first, estMin, strict, cal) {
+  if (first === null) return null;
+  const dur = estMin * 60000;
+  const firstReady = cal.readyAfter(first + dur);
+  let start = first;
+  for (let hop = 0; hop < 30 && start !== null; hop++) {
+    if (strict) {
+      const e = cal.fitsStrict(start);
+      if (e !== null) return { start, end: e, hops: hop };
+    } else {
+      if (hop > 0 && start > firstReady) break;
+      const end = start + dur;
+      if (cal.fitsStrict(start) !== null || cal.attendedAt(end)) return { start, end, hops: hop };
+    }
+    start = cal.nextBlock(start);
+  }
+  return strict ? null : { start: first, end: first + dur, hops: 0, overruns: true };
+}
+
 function register(ctx) {
   const FILE = path.join(ctx.baseDir, "dispatch.json");
 
@@ -353,6 +393,12 @@ function register(ctx) {
 
   // ---- window math ----------------------------------------------------------
   const hm = s => { const m = /^(\d{1,2}):(\d{2})$/.exec(String(s || "")); return m ? (+m[1]) * 60 + (+m[2]) : null; };
+  // v2.36: a window that ends at 23:59 ends at MIDNIGHT. Every day on the
+  // farm reads "00:00-23:59" and the settings form cannot say 24:00, so the
+  // planner saw a one-minute wall at every midnight: a 22-hour job starting
+  // Saturday morning "did not fit" and waited for Sunday 00:00, idling the
+  // printer 19 hours (field, 2026-09-26).
+  const wEnd = w => { const e = hm(w.end); return e >= 1439 ? 1440 : e; };
   const validHm = s => hm(s) !== null && hm(s) >= 0 && hm(s) < 1440;
   // A day is a LIST of windows: real days have gaps ("home 8-11, out, back
   // 5-10"). Legacy {start,end} days read as a single window. Function
@@ -378,7 +424,7 @@ function register(ctx) {
       const nextDay = () => new Date(dt.getFullYear(), dt.getMonth(), dt.getDate() + 1, 0, 0).getTime();
       if (!wins.length) { t = nextDay(); continue; }          // day off / no windows
       const mod = dt.getHours() * 60 + dt.getMinutes();
-      const inside = wins.find(w => mod >= hm(w.start) && mod < hm(w.end));
+      const inside = wins.find(w => mod >= hm(w.start) && mod < wEnd(w));
       if (inside) return t;                                   // already inside a window
       const later = wins.find(w => hm(w.start) > mod);         // a later window today
       if (later) { t = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate(), 0, hm(later.start)).getTime(); continue; }
@@ -399,13 +445,34 @@ function register(ctx) {
   function fitEnd(startMs, estMin, strict) {
     const end = startMs + estMin * 60000;
     if (!strict) return end;
-    const dt = new Date(startMs);
-    const mod = dt.getHours() * 60 + dt.getMinutes();
-    const w = dayWindows(dayWindow(startMs)).find(x => mod >= hm(x.start) && mod < hm(x.end));
-    if (!w) return null;
-    const closeMs = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate(), 0, hm(w.end)).getTime();
+    const closeMs = blockClose(startMs);
+    if (closeMs === null) return null;
     return end <= closeMs ? end : null;
   }
+  // v2.36: when the attended block containing ms closes. A window that runs
+  // to midnight continues into the next day's window when that one opens at
+  // 00:00 - "Sat 00:00-23:59, Sun 00:00-23:59" is one block, not two. An
+  // away block cuts it. null when ms is not attended.
+  function blockClose(ms) {
+    if (inAway(ms)) return null;
+    let dt = new Date(ms);
+    let mod = dt.getHours() * 60 + dt.getMinutes();
+    let w = dayWindows(dayWindow(ms)).find(x => mod >= hm(x.start) && mod < wEnd(x));
+    if (!w) return null;
+    for (let guard = 0; guard < 14; guard++) {
+      const close = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate(), 0, wEnd(w)).getTime();
+      const cut = (D.settings.away || []).filter(a => a && a.from > ms && a.from < close).map(a => a.from);
+      if (cut.length) return Math.min(...cut);
+      if (wEnd(w) < 1440) return close;
+      const nd = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate() + 1);
+      const first = dayWindows(dayWindow(nd.getTime()))[0];
+      if (!first || hm(first.start) !== 0 || inAway(nd.getTime())) return close;
+      dt = nd; w = first;
+    }
+    return new Date(dt.getFullYear(), dt.getMonth(), dt.getDate(), 0, wEnd(w)).getTime();
+  }
+  // Someone is around at ms: inside a window and not in an away block.
+  const attendedAt = ms => nextStart(ms) === ms;
   // When can this printer realistically take its NEXT job? The bed must be
   // cleared by a human first, so a print that ends while you're out blocks the
   // machine until your next attended window. Modeling that honestly is the
@@ -415,6 +482,18 @@ function register(ctx) {
     const clear = nextStart(endMs);                 // first attended moment at/after the end
     return (clear === null ? endMs : clear) + BED_CLEAR_BUFFER_MIN * 60000;
   }
+  // The start of the next attended block after the one ms is in (a later
+  // window today, else tomorrow's first).
+  function nextBlock(ms) {
+    const d0 = new Date(ms);
+    const mod = d0.getHours() * 60 + d0.getMinutes();
+    const later = dayWindows(dayWindow(ms)).find(w => hm(w.start) > mod);
+    return later
+      ? nextStart(new Date(d0.getFullYear(), d0.getMonth(), d0.getDate(), 0, hm(later.start)).getTime())
+      : nextStart(new Date(d0.getFullYear(), d0.getMonth(), d0.getDate() + 1, 0, 0).getTime());
+  }
+  // The live calendar, in the shape pickStart() takes.
+  const CAL = est => ({ nextBlock, readyAfter, attendedAt, fitsStrict: ms => fitEnd(ms, est, true) });
 
   // Attended windows as absolute intervals, for the guide to shade closed
   // hours behind the blocks (v2.15). The CLIENT must not re-derive this: it
@@ -428,7 +507,7 @@ function register(ctx) {
       const dt = new Date(t);
       for (const w of dayWindows(dayWindow(t))) {
         const s = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate(), 0, hm(w.start)).getTime();
-        const e = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate(), 0, hm(w.end)).getTime();
+        const e = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate(), 0, wEnd(w)).getTime();
         if (e > fromMs && s < toMs) spans.push({ from: s, to: e });
       }
       t = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate() + 1).getTime();
@@ -727,27 +806,9 @@ function register(ctx) {
           // Flooring at that job's start instead would let the two overlap on
           // different machines, which is exactly the situation being escaped.
           const floor = jobEnds.get(job.after) || 0;
-          let start = nextStart(Math.max(l.cursor, now, floor));
-          let realEnd = null, firstStart = start, firstEnd = null;
-          for (let hop = 0; hop < 30 && start !== null; hop++) {
-            const fits = fitEnd(start, est, true);          // does it fit this block?
-            if (firstEnd === null) { firstStart = start; firstEnd = start + est * 60000; }
-            if (fits !== null) { realEnd = fits; break; }
-            const d0 = new Date(start);
-            const wins = dayWindows(dayWindow(start));
-            const mod = d0.getHours() * 60 + d0.getMinutes();
-            const later = wins.find(w => hm(w.start) > mod);
-            start = later
-              ? nextStart(new Date(d0.getFullYear(), d0.getMonth(), d0.getDate(), 0, hm(later.start)).getTime())
-              : nextStart(new Date(d0.getFullYear(), d0.getMonth(), d0.getDate() + 1, 0, 0).getTime());
-          }
-          if (realEnd === null && !strict) {
-            // Nothing it fits inside within two weeks - it's simply a long
-            // print. Start it at the earliest attended moment and let it run.
-            start = firstStart; realEnd = firstEnd;
-          }
-          const realStart = start;
-          if (realStart === null || realEnd === null) continue;
+          const picked = pickStart(nextStart(Math.max(l.cursor, now, floor)), est, strict, CAL(est));
+          if (!picked) continue;
+          const realStart = picked.start, realEnd = picked.end;
           const swaps = swapsFor(job.colors, l.fp);
           // SCORING (fixed v2.11): finish time first, swaps as a weighted
           // tiebreak. Scoring swaps FIRST packed jobs onto already-used lanes
@@ -867,7 +928,12 @@ function register(ctx) {
         file: fname || (held && held.file) || null,
         job_id: held ? held.id : null,
         tracked: !!held,                 // false = running, but Dispatch doesn't own it
-        est_end: l.cursor,
+        // v2.36: busyUntil, NOT cursor. Placement advances l.cursor past every
+        // job it puts on this lane, so reading it here reported the END OF THE
+        // QUEUED WORK as the running print's end: U1 at 91% drew "until 10:23
+        // PM Sunday" under the Leopard Gecko planned after it, and the same
+        // job appeared twice on one lane (field, 2026-09-26).
+        est_end: l.busyUntil,
         eta_unknown: !!l.note || undefined,
         paused: l.paused || undefined,
         // A print still running on a machine that is on its way down. The UI
@@ -888,7 +954,7 @@ function register(ctx) {
              schedule_mode: D.settings.schedule_mode,
              locked, locked_at: locked && D.frozen ? D.frozen.locked_at : undefined,
              new_since_lock: newSinceLock,
-             printers: lanes.map(l => ({ idx: l.idx, name: l.name, busy: !!l.note || l.cursor > now,
+             printers: lanes.map(l => ({ idx: l.idx, name: l.name, busy: !!l.note || !!l.busyUntil,   // v2.36: printing now, not "has planned work" (cursor moved)
                maintenance: l.maint ? { since: l.maint.since, note: l.maint.note || "" } : null })) };
   }
 
@@ -1466,4 +1532,4 @@ function register(ctx) {
   ctx.provide("dispatch.maintenance", () => D.maintenance);
 }
 
-module.exports = { register };
+module.exports = { register, pickStart };

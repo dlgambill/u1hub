@@ -77,6 +77,48 @@ printers, and nothing leaves your network unless you turn remote access on.
 
 ---
 
+## New in 2.36 - a planner that keeps printers busy, and a calmer Models tab
+
+**The schedule wastes less.** Two things made the plan look wrong and run
+slow. First, when a job didn't fit inside the attended block it would
+start in, the planner kept walking forward to the next block where it did
+fit, with no limit - and it treated every "00:00-23:59" day as its own
+block with a one-minute wall at midnight. On a real Saturday that parked a
+22-hour job until Sunday midnight and left the printer empty for 19 hours.
+With weekday hours of 4 PM to midnight, a 13-hour job ready Tuesday
+evening would have waited until Friday morning. Now a day that runs to
+11:59 PM runs to midnight and joins the next, a job that finishes while
+you're around counts as a good fit whichever window it finishes in, and
+the planner only waits for a better start while the printer would be
+blocked anyway - never past the moment you could have cleared the bed
+from starting it right away. Waiting until then costs nothing; waiting
+past it is idle printer time. Jobs that must finish while you're there
+(the per-job option, or the strict setting) work exactly as before.
+
+**No more jobs drawn twice.** The bar for a print already running took its
+end time from the planner's working cursor after it had placed the queued
+work on that printer, so a plate at 91% showed "until 10:23 PM Sunday",
+stretched under the job planned after it. It now ends when that print
+ends, and the next job starts right after it on the timeline.
+
+**The Models tab.** Folders that group files by format rather than by
+maker - your `U1` and `prusa-format` folders - are recognized as such
+(by name, or because they hold other designers' folders; the setting
+`models.wrappers` can name more). Inside one, the designer is the next
+folder down, the format folder shows as a small tag on the card, and
+Rename keeps the file inside it. Random now deals every model once before
+any model's second variant, and never shows the same designer twice in a
+row when anyone else is left. Rename, Attributes and Delete moved behind a
+⋯ in each card's corner, the intro is one line, and "(no folder)" filters
+to the loose files instead of lighting up with All designers.
+
+**Fixed: Open in Orca froze the Hub.** The watcher that notices your new
+gcode checked every file in the gcode folder, synchronously, every three
+seconds for half an hour. On a network share that blocked the Hub for
+about 14 seconds of every 3, so after pressing Open in Orca the dashboard
+looked dead on every device until the watch timed out. It now checks the
+folder once per tick in the background and lists it only when it changed.
+
 ### 2.35 - four cameras on a 4K screen (issue #4)
 
 Dave Hart reported that with four U1 cards streaming video, everything -
