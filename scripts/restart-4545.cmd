@@ -13,6 +13,15 @@ REM leaves its stack somewhere readable instead of in a vanished window.
 REM
 REM Restarting does NOT stop anything on the printers: Klipper runs the prints,
 REM the Hub watches and dispatches. In-flight jobs are re-adopted on boot.
+REM
+REM 2026-09-28: when the Hub is installed as the U1PrintHub Windows service
+REM (C:\Users\Danny\code\services), restart THE SERVICE. Killing its node by
+REM port would make the service restart it while this script starts a second
+REM copy, and one of them dies on EADDRINUSE. Needs an elevated shell.
+powershell -NoProfile -Command "$s=Get-Service U1PrintHub -ErrorAction SilentlyContinue; if($s -and $s.StartType -ne 'Disabled'){exit 0}else{exit 1}" && (
+  powershell -NoProfile -Command "Restart-Service U1PrintHub -Force; 'restarted service U1PrintHub'"
+  goto :wait
+)
 powershell -NoProfile -Command "$p=(Get-NetTCPConnection -LocalPort 4545 -State Listen -ErrorAction SilentlyContinue).OwningProcess; if($p){ $p | Select-Object -Unique | ForEach-Object { Stop-Process -Id $_ -Force; 'stopped ' + $_ } } else { 'nothing was listening on 4545' }"
 timeout /t 2 /nobreak >nul
 REM 2026-09-09: the Hub runs from the git clone on C: (staging on X: retired);
@@ -25,6 +34,7 @@ REM cmd got a visible black console titled with the node command line; a
 REM person closing that window closes the Hub. Found the day the old X: exe
 REM ended up on 4545 six minutes after the logon task had put the real one there.
 powershell -NoProfile -Command "$si=New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ ShowWindow=[uint16]0 }; $r=Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine='cmd /c node %HUBDIR%\server.js >> %HUBDIR%\hub-console.log 2>&1'; CurrentDirectory='%HUBDIR%'; ProcessStartupInformation=$si }; if($r.ReturnValue -eq 0){ 'started detached, pid ' + $r.ProcessId } else { 'WMI create FAILED rv=' + $r.ReturnValue }"
+:wait
 for /l %%i in (1,1,40) do (
   ping -n 2 127.0.0.1 >nul
   curl -s -o nul http://127.0.0.1:4545/api/version && goto :up
