@@ -32,6 +32,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { spawn } = require("child_process");
+const { launchOnDesktop } = require("./desktop.js");   // v2.39.1: Orca on the desktop when the Hub is a service
 const { zipEntryContent } = require("./slicing.js");
 const U1C = require("./u1convert.js");                  // v2.38: Convert to U1 (pure; the route below does the IO)   // pure helper (inflate); the slicing module itself need not be on
 
@@ -934,7 +935,7 @@ function register(ctx) {
     const dirStamp = () => gdir ? fs.promises.stat(gdir).then(st => st.mtimeMs, () => 0) : Promise.resolve(0);
     const before = await snap();
     let dirMtime = await dirStamp();
-    try { spawn(c.orcaExe, [p], { detached: true, stdio: "ignore" }).unref(); }
+    try { await launchOnDesktop(c.orcaExe, p); }
     catch (e) { return res.status(500).json({ error: "could not launch Orca: " + e.message }); }
     const sid = ++SEQ;
     const s = { id: sid, file: String(b.file), type: slug, state: "watching", launchedAt: Date.now(), newGcode: null };

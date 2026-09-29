@@ -55,6 +55,7 @@ const os = require("os");
 const path = require("path");
 const zlib = require("zlib");
 const { spawn } = require("child_process");
+const { launchOnDesktop } = require("./desktop.js");   // v2.39.1: Orca on the desktop when the Hub is a service
 
 // ---- crc32 (zlib.crc32 needs Node ≥22.2; table fallback keeps pkg happy) ----
 const crc32 = typeof zlib.crc32 === "function"
@@ -711,7 +712,7 @@ function register(ctx) {
   // Track active "waiting for gcode" sessions keyed by session id.
   const ORCA_SESSIONS = new Map();
 
-  app.post("/api/slice/open-in-orca", (req, res) => {
+  app.post("/api/slice/open-in-orca", async (req, res) => {
     const file = String((req.body || {}).file || "");
     const p = safe3mf(file);
     if (!p || !fs.existsSync(p)) return res.status(404).json({ error: "not in library: " + file });
@@ -728,7 +729,7 @@ function register(ctx) {
     const before = snapFiles();
 
     try {
-      spawn(exe, [p], { detached: true, stdio: "ignore" }).unref();
+      await launchOnDesktop(exe, p);
     } catch (e) {
       return res.status(500).json({ error: "could not launch Orca: " + e.message });
     }
