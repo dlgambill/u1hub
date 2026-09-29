@@ -14,7 +14,7 @@
 //      that costs anything. Offline looks exactly like "no update known".
 //   2. The check is a plain GET of a static JSON file. No version, no install
 //      id, no query string, no headers beyond what fetch sends by default —
-//      Danny gets no telemetry out of this and users are told so. If that ever
+//      The author gets no telemetry out of this and users are told so. If that ever
 //      changes it stops being a version check and becomes analytics, which is a
 //      different feature with a different consent conversation.
 //   3. It is one checkbox to turn off, and off means no outbound request is

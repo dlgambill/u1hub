@@ -12,7 +12,7 @@
 function register(ctx) {
   // ---- Smart power control: switch a printer's plug on/off + read draw -------
   // Each printer MAY carry a typed `plug` descriptor in config.json:
-  //   "plug": { "type":"shelly", "ip":"192.168.12.235" }                  // metered on/off
+  //   "plug": { "type":"shelly", "ip":"192.168.1.235" }                  // metered on/off
   //   "plug": { "type":"url", "on":"http://x/on", "off":"http://x/off" }  // any local-HTTP plug, on/off only
   // Hardware-verified on a Shelly Plug US Gen4 (model S4PL-00116US, gen 4):
   //   GET /rpc/Shelly.GetDeviceInfo  -> reachable, auth-optional (auth_en:false)

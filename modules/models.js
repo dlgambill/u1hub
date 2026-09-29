@@ -34,7 +34,8 @@ const crypto = require("crypto");
 const { spawn } = require("child_process");
 const { launchOnDesktop } = require("./desktop.js");   // v2.39.1: Orca on the desktop when the Hub is a service
 const { zipEntryContent } = require("./slicing.js");
-const U1C = require("./u1convert.js");                  // v2.38: Convert to U1 (pure; the route below does the IO)   // pure helper (inflate); the slicing module itself need not be on
+const U1C = require("./u1convert.js");                  // v2.38: Convert to U1 (pure; the route below does the IO)
+const { qtyFromName } = require("./margin.js");         // v2.40: the "x24" plate count, read one way everywhere
 
 const INDEX_TTL_MS = 10 * 60 * 1000;
 const MAX_DEPTH = 4;
@@ -128,7 +129,7 @@ function nameMatcher(q) {
 // rel "Creator/Model/file.3mf" -> { creator, model, name }
 // v2.30: a file at the root named the way the convention names it,
 // "Designer - Title.3mf", reads its designer from the name.
-// v2.36: FORMAT FOLDERS. Danny's shelf has top-level folders that group by
+// v2.36: FORMAT FOLDERS. A real shelf has top-level folders that group by
 // format, not by maker - "U1" (projects already set up for the U1) and
 // "prusa-format" (Prusa-lineage projects), each holding designer folders of
 // its own. Read as designers they were the two biggest "designers" on the
@@ -172,7 +173,7 @@ function split(rel, wrap) {
 }
 
 // ---- the naming convention (v2.30) ------------------------------------------
-// Danny keeps his library as <Designer>\<Title>\<Designer> - <Title>.3mf: the
+// A tidy library is kept as <Designer>\<Title>\<Designer> - <Title>.3mf: the
 // folder layout this tab is built on, and the file name he wants on the file
 // itself so it still says whose it is when it travels alone. "Rename" moves a
 // file to exactly that; the designer and title come from the folders, or from
@@ -495,8 +496,116 @@ function register(ctx) {
   // "Most printed" trusts these before it guesses from names.
   const LINKS_FILE = path.join(ctx.baseDir, "models-links.json");
   let LINKS = {};
-  try { LINKS = JSON.parse(fs.readFileSync(LINKS_FILE, "utf8")).links || {}; } catch {}
-  const saveLinks = () => { try { fs.writeFileSync(LINKS_FILE, JSON.stringify({ links: LINKS }, null, 2)); } catch {} };
+  // v2.40: { [gcodeBasename]: { verified, at, type, manual? } } - riding
+  // beside LINKS rather than folded into it, so every existing reader of
+  // LINKS[name] as a bare rel string (printCounts, the rename remap below)
+  // keeps working untouched.
+  let LINKS_META = {};
+  try {
+    const j = JSON.parse(fs.readFileSync(LINKS_FILE, "utf8"));
+    LINKS = j.links || {};
+    LINKS_META = j.meta || {};
+  } catch {}
+  const saveLinks = () => { try { fs.writeFileSync(LINKS_FILE, JSON.stringify({ links: LINKS, meta: LINKS_META }, null, 2)); } catch {} };
+  // v2.40: the bug behind corrupted links found 2026-09-24
+  // ("Leopard Gecko - ArtFlex x26.gcode" linked to a Cat 3MF, etc.) was the
+  // open-session watcher trusting whichever gcode changed FIRST in the shared
+  // folder, with no check that it was actually the file just opened. The fix
+  // below (see /api/models/open) name-matches every candidate; this runs the
+  // same check once at boot against whatever the old code already wrote, and
+  // drops anything that fails it rather than carrying a plausible-looking lie
+  // forward. Nothing here touches the file on disk - only which shelf item a
+  // gcode is credited to.
+  {
+    let dropped = 0;
+    for (const [gname, rel] of Object.entries(LINKS)) {
+      const id = identity(rel, ATTRS[rel]);
+      const hits = id.title
+        ? creditFor(gname, [{ key: rel, norm: normName(id.title), name: normName(id.title).replace(/ /g, "") }],
+                    id.designer ? [normName(id.designer)] : [])
+        : [];
+      if (hits.length) LINKS_META[gname] = { verified: true, at: (LINKS_META[gname] && LINKS_META[gname].at) || Date.now(), type: (LINKS_META[gname] && LINKS_META[gname].type) || "u1" };
+      else { delete LINKS[gname]; delete LINKS_META[gname]; dropped++; }
+    }
+    if (dropped) {
+      hublog("info", "models: dropped " + dropped + " gcode link(s) that don't name-match their 3MF - " +
+        "an older version could link the wrong file when two prints finished slicing at once. " +
+        "Relink the real ones by hand from the Models tab.");
+      saveLinks();
+    }
+  }
+
+  // ---- v2.40: print requests (from 3MF Explorer) -----------------------------
+  // Someone marks a 3MF "for print" in 3MF Explorer; Explorer's own server
+  // (not their browser - see the token check below) forwards it here keyed by
+  // the file's absolute path. The models folder is the one shelf both tools
+  // read, so path.relative gives this module's own `rel` directly - no fuzzy
+  // cross-referencing between the two apps' different ideas of a file's name.
+  // The sha256 Explorer already knows rides along for the record (a rename on
+  // either side doesn't strand it), but is not required to make the match.
+  const REQUESTS_FILE = path.join(ctx.baseDir, "models-requests.json");
+  let REQUESTS = {};
+  try { REQUESTS = JSON.parse(fs.readFileSync(REQUESTS_FILE, "utf8")).requests || {}; } catch {}
+  const saveRequests = () => { try { fs.writeFileSync(REQUESTS_FILE, JSON.stringify({ requests: REQUESTS }, null, 2)); } catch {} };
+
+  // A shared secret so 3mf-explorer's server can call the endpoint below
+  // without a Hub login session (the two apps run on the same machine but
+  // share no cookie jar). Generated once, kept in config.json under models -
+  // NOT echoed by /api/config (settings.js's publicCfg() is a fixed field
+  // list and never includes the models block) - and the owner copies the same
+  // value into 3mf-explorer/config.json's `hub.token`.
+  function explorerToken() {
+    try {
+      const c = (ctx.cfg.models && typeof ctx.cfg.models === "object") ? ctx.cfg.models : {};
+      if (c.explorerToken) return c.explorerToken;
+      const t = crypto.randomBytes(24).toString("hex");
+      ctx.cfg.models = { ...c, explorerToken: t };
+      ctx.saveConfig();
+      return t;
+    } catch (e) { hublog("warn", "models: could not persist an explorerToken - " + e.message); return null; }
+  }
+  const EXPLORER_TOKEN = explorerToken();
+
+  // If `rel` has a pending request AND a gcode link (just-made or already on
+  // file), push the Dispatch job and mark the request dispatched. Called from
+  // both directions - after a new request (the link may already exist) and
+  // after a new/changed link (a request may already be waiting on it) - so
+  // the order the request and the slicing happen in doesn't matter.
+  //
+  // What gets queued is ONE print of that gcode. The "x24" in
+  // "Penguin - Designer x24.gcode" is how many pieces are on that one plate
+  // (the same number Worth printing divides by); it is recorded on the
+  // request as `pieces`, not turned into 24 prints. The first cut of this
+  // (unreleased) queued N prints - a request for one plate of 24 penguins
+  // would have printed 576.
+  //
+  // Never throws: it runs from a timer and from routes, and Dispatch's file
+  // lookup can fail on a busy share (EBUSY seen live 2026-09-29, which came
+  // up as an unhandled rejection).
+  function maybeAutoDispatch(rel, gname) {
+    try { return autoDispatch(rel, gname); }
+    catch (e) { hublog("warn", "models: print request for " + rel + " could not be queued yet - " + (e && e.message || e)); return null; }
+  }
+  function autoDispatch(rel, gname) {
+    const req = REQUESTS[rel];
+    if (!req || req.status !== "requested") return null;
+    const create = ctx.use("dispatch.createJob");
+    if (!create) return null;                              // Dispatch module off
+    const g = (gname && LINKS[gname] === rel) ? gname : Object.keys(LINKS).find(k => LINKS[k] === rel);
+    if (!g) return null;
+    const type = (LINKS_META[g] && LINKS_META[g].type) || "u1";
+    const pieces = qtyFromName(g);                           // null when the name has no count
+    const r = create({ file: g, type, qty: 1, needs_finish: false });
+    if (r.error) {
+      hublog("warn", "models: print request for " + rel + " matched " + g + " but Dispatch refused it - " + r.error);
+      return null;
+    }
+    req.status = "dispatched"; req.gcode = g; req.job_id = r.job.id; req.qty = 1; req.pieces = pieces; req.dispatchedAt = Date.now();
+    saveRequests();
+    hublog("info", "models: print request " + rel + " -> queued 1 print of " + g + (pieces ? " (" + pieces + " pieces)" : "") + " (job " + r.job.id + ")");
+    return r.job;
+  }
+
   // v2.33: the printers' job history, one answer kept per printer. Moonraker
   // holds the history on the printer; the Hub asks each one (3.5 s, in
   // parallel) and keeps the last good list, so a printer that is off for the
@@ -543,7 +652,8 @@ function register(ctx) {
     const id = identity(it.rel, a);
     const target = id.designer && id.title ? conventionRel(id.designer, id.title, id.group) : null;
     return { ...it, ...sp, creator: a && a.designer ? cleanPart(a.designer) : sp.creator, name: a && a.name ? cleanPart(a.name) : sp.name,
-             attrs: a ? { designer: a.designer || "", name: a.name || "" } : null, target, conventional: !!target && target === it.rel };
+             attrs: a ? { designer: a.designer || "", name: a.name || "" } : null, target, conventional: !!target && target === it.rel,
+             requested: REQUESTS[it.rel] || null };   // v2.40: print requests from 3MF Explorer
   }
   function creatorsOf(items) {
     const cmap = new Map();
@@ -638,11 +748,40 @@ function register(ctx) {
     const creator = q.creator ? String(q.creator) : null;
     // v2.30: attributes ride over the folders before anything filters or counts.
     const all = ix.items.map(decorate);
+    // v2.40: a request for a file the walk never lists (anything under a "_"
+    // folder, e.g. _repair - SKIP_DIR hides those so half-sorted
+    // files stay off the tab) still gets a card under Requested. Built
+    // straight from the request and kept out of normal browsing and the
+    // designer list; thumb/open/link all go through safePath, which allows it.
+    const onShelf = new Set(ix.items.map(it => it.rel));
+    // Stats are async and only taken when the Requested view asks (no sync
+    // fs on the share in a handler - the Hub rule since 2.26.2).
+    const offReqs = Object.values(REQUESTS).filter(r => !onShelf.has(r.rel));
+    const wantOff = String(q.requested || "") === "1" && !creator;
+    const offStats = wantOff ? await Promise.all(offReqs.map(r => { const p = safePath(r.rel); return p ? fs.promises.stat(p).catch(() => null) : null; })) : [];
+    const offShelf = !wantOff ? [] : offReqs.map((r, i) => {
+      const st = offStats[i];
+      const sp = split(r.rel);
+      // a designer of "_repair" is just the holding folder's name - show none
+      // Explorer's values come from 3MF metadata: undo HTML escaping, and a
+      // "Folder\Sub\Name" title keeps only its last part.
+      const unesc = s => String(s || "").replace(/&amp;/g, "&").replace(/&apos;/g, "'").replace(/&quot;/g, '"');
+      const d = r.designer && !String(r.designer).startsWith("_") ? unesc(r.designer) : "";
+      const t = unesc(r.title).split(/[\\/]/).pop().trim();
+      return { rel: r.rel, ...sp, creator: d ? cleanPart(d) : "",
+               model: t ? cleanPart(t) : sp.model, size: st ? st.size : 0, mtime: st ? st.mtimeMs : 0,
+               attrs: null, target: null, conventional: false, requested: r, off_shelf: true, missing: !st };
+    });
     let list = all;
     // v2.36: "__none__" is the loose files. It used to be "", which is also
     // "no filter", so the (no folder) row lit up with All designers and
     // clicking it showed everything.
     if (creator) list = list.filter(it => it.creator === (creator === "__none__" ? "" : creator));
+    // v2.40: the "Requested" filter/badge - what was marked in 3MF
+    // Explorer. "1" shows anything with a request (pending or already
+    // dispatched); requested_total below covers the badge even while some
+    // other filter is narrowing `list`.
+    if (String(q.requested || "") === "1") list = list.filter(it => !!it.requested).concat(offShelf);
     if (q.q) list = list.filter(it => match((it.group ? it.group + "/" : "") + it.creator + "/" + it.model + "/" + it.name));
     // v2.33: order. "random" answers with the seed it used so the next page
     // of the same shuffle can ask for it back; "printed" carries the count on
@@ -664,6 +803,7 @@ function register(ctx) {
       indexed_at: ix.at, refreshing: !!WALKING, truncated: !!ix.truncated,
       total_all: all.length, total: list.length, offset, limit,
       sort, seed, printed,
+      requested_total: all.filter(it => it.requested).length + offReqs.length,   // v2.40 (+ requests off the shelf)
       creators: creatorsOf(all),
       items: list.slice(offset, offset + limit),
       orcaExe: c.orcaExe, orca_found: fs.existsSync(c.orcaExe),
@@ -734,7 +874,7 @@ function register(ctx) {
     hublog("info", "models: renamed " + rel + " -> " + newRel);
     res.json({ ok: true, rel: newRel, from: rel, item });
   });
-  // POST /api/models/delete { file } - permanent, Danny's call (2026-09-23),
+  // POST /api/models/delete { file } - permanent (owner's call, 2026-09-23),
   // behind the client's own confirm. Only ever a .3mf under the folder.
   app.post("/api/models/delete", async (req, res) => {
     const rel = String((req.body || {}).file || "");
@@ -940,6 +1080,9 @@ function register(ctx) {
     const sid = ++SEQ;
     const s = { id: sid, file: String(b.file), type: slug, state: "watching", launchedAt: Date.now(), newGcode: null };
     SESSIONS.set(sid, s);
+    // v2.40: what this 3MF is called, so a saved gcode can be checked against
+    // it rather than trusted on arrival order - see the fix note just below.
+    const id0 = identity(String(b.file), ATTRS[String(b.file)]);
     let lastSweep = Date.now(), busy = false;
     const iv = setInterval(async () => {
       if (busy) return;
@@ -952,16 +1095,39 @@ function register(ctx) {
         if (dm === dirMtime && !sweep) return;
         dirMtime = dm;
         if (sweep) lastSweep = Date.now();
-        for (const [name, mtime] of await snap()) {
-          if (!before.has(name) || before.get(name) !== mtime) {
-            s.state = "done"; s.newGcode = name; s.doneAt = Date.now(); clearInterval(iv);
-            LINKS[name] = s.file; saveLinks();   // v2.33: "most printed" counts this gcode toward this file
-            // The library snapshot re-walks on its own: a new file changes the
-            // folder's mtime, which listLibrary checks on the next request.
-            hublog("info", "models: Orca saved " + name + " (from " + s.file + ")");
-            return;
-          }
+        // v2.40 FIX: this used to link whichever gcode changed FIRST in the
+        // shared folder - fine alone in the folder, wrong the moment a
+        // second print finishes slicing (or a printer drops a completed
+        // file there) during the same half-hour window. That's exactly how
+        // models-links.json ended up with "Leopard Gecko" pointing at a Cat
+        // 3MF (found 2026-09-28). Now every name that changed this tick is
+        // scored against the opened 3MF's own title (the same
+        // normName/creditFor match "most printed" already trusts, with the
+        // designer stripped as noise so "Title - Designer x24.gcode" still
+        // hits); the best match wins. Only when nothing matches does it fall
+        // back to the old first-changed guess - flagged unverified so the
+        // UI can say so and the manual link tool (below) can fix it.
+        const changed = [];
+        for (const [name, mtime] of await snap()) if (!before.has(name) || before.get(name) !== mtime) changed.push(name);
+        if (!changed.length) return;
+        let best = null;
+        for (const name of changed) {
+          const hits = id0.title
+            ? creditFor(name, [{ key: name, norm: normName(id0.title), name: normName(id0.title).replace(/ /g, "") }],
+                        id0.designer ? [normName(id0.designer)] : [])
+            : [];
+          if (hits.length) { best = name; break; }
         }
+        const name = best || changed[0];
+        s.state = "done"; s.newGcode = name; s.doneAt = Date.now(); s.verified = !!best; clearInterval(iv);
+        LINKS[name] = s.file;                              // v2.33: "most printed" counts this gcode toward this file
+        LINKS_META[name] = { verified: !!best, at: Date.now(), type: slug };
+        saveLinks();
+        // The library snapshot re-walks on its own: a new file changes the
+        // folder's mtime, which listLibrary checks on the next request.
+        hublog("info", "models: Orca saved " + name + " (from " + s.file + ")" +
+          (best ? "" : " [unverified - " + changed.length + " file(s) changed in " + gdir + ", none matched the title]"));
+        maybeAutoDispatch(s.file, name);                    // v2.40: print-request pipeline
       } finally { busy = false; }
     }, 3000);
     if (iv.unref) iv.unref();
@@ -974,6 +1140,90 @@ function register(ctx) {
     res.json({ sessions: [...SESSIONS.values()].sort((a, b) => b.launchedAt - a.launchedAt) });
   });
   app.post("/api/models/sessions/dismiss", (req, res) => { SESSIONS.delete(Number((req.body || {}).id)); res.json({ ok: true }); });
+
+  // ---- v2.40: print-request intake (3mf-explorer -> here) --------------------
+  // POST /api/models/print-request { path, sha256?, designer?, title? } - a
+  // server-to-server call from 3mf-explorer's own Node process, not a person's
+  // browser (Explorer holds the Hub token in ITS config.json and sends it as
+  // X-U1-Token; a Hub login session works too, for testing by hand).
+  app.post("/api/models/print-request", async (req, res) => {
+    const tok = req.headers["x-u1-token"];
+    if (tok !== EXPLORER_TOKEN && !ctx.isAuthed(req)) return res.status(401).json({ error: "bad or missing token" });
+    const b = req.body || {};
+    const abs = String(b.path || "").trim();
+    if (!abs) return res.status(400).json({ error: "needs { path }" });
+    const c = conf();
+    const rel = path.relative(c.folder, abs).split(path.sep).join("/");
+    if (!safePath(rel)) return res.status(404).json({ error: "not on the shelf this Hub reads (" + c.folder + "): " + abs });
+    if (!(await fs.promises.stat(abs).then(() => true, () => false))) return res.status(404).json({ error: "file not found: " + abs });
+    const id = identity(rel, ATTRS[rel]);
+    // The same file marked again after it moved (library reorg,
+    // rename) - drop the still-pending request filed under its old place.
+    const sha = String(b.sha256 || "");
+    if (sha) for (const k of Object.keys(REQUESTS)) {
+      if (k !== rel && REQUESTS[k].sha256 === sha && REQUESTS[k].status === "requested") delete REQUESTS[k];
+    }
+    REQUESTS[rel] = {
+      rel, sha256: String(b.sha256 || "") || (REQUESTS[rel] && REQUESTS[rel].sha256) || "",
+      designer: String(b.designer || id.designer || ""), title: String(b.title || id.title || ""),
+      requestedAt: Date.now(), status: "requested"
+    };
+    saveRequests();
+    hublog("info", "models: print request for " + rel + " (from 3MF Explorer)");
+    const job = maybeAutoDispatch(rel);                     // a link may already exist
+    res.json({ ok: true, rel, request: REQUESTS[rel], dispatched: !!job, job: job || null });
+  });
+  // The pairing token, for the ⚙ Folder panel: paste it into 3MF Explorer's
+  // config.json hub.token. Behind the Hub login like every other route.
+  app.get("/api/models/pairing", (req, res) => {
+    res.json({ token: EXPLORER_TOKEN || null, url: req.protocol + "://" + req.get("host") });
+  });
+  app.get("/api/models/print-requests", (req, res) => {
+    res.json({ requests: Object.values(REQUESTS).sort((a, b) => b.requestedAt - a.requestedAt), explorer_token_set: !!EXPLORER_TOKEN });
+  });
+  // Clear a request (printed, or marked by mistake) without touching the link.
+  app.post("/api/models/print-request/clear", (req, res) => {
+    const rel = String((req.body || {}).file || "");
+    if (!REQUESTS[rel]) return res.status(404).json({ error: "no request for " + rel });
+    delete REQUESTS[rel];
+    saveRequests();
+    res.json({ ok: true, rel });
+  });
+
+  // ---- v2.40: the manual gcode <-> 3MF link tool ------------------------------
+  // GET /api/models/gcodes?type= - every gcode in that type's folder, and
+  // whether it already links somewhere, so the tab can offer "link this one."
+  app.get("/api/models/gcodes", async (req, res) => {
+    const slug = String(req.query.type || "u1");
+    let gdir; try { gdir = ctx.gcodeFolderFor(slug); } catch { gdir = null; }
+    if (!gdir) return res.json({ type: slug, folder: null, files: [] });
+    let names = [];
+    try { names = (await fs.promises.readdir(gdir)).filter(f => /\.gcode$/i.test(f)); } catch {}
+    const files = names.map(name => ({
+      name, linked: LINKS[name] || null,
+      verified: LINKS[name] ? !!(LINKS_META[name] && LINKS_META[name].verified) : null
+    })).sort((a, b) => a.name.localeCompare(b.name));
+    res.json({ type: slug, folder: gdir, files });
+  });
+  // POST /api/models/link { gcode, file, type? } - one gcode at a time, since
+  // one 3MF can need several (a multi-part model prints as separate gcode
+  // files - "Buzz Lightyear Body/Head/Jetpack" - so call this once per part).
+  // { gcode } alone (no `file`) removes that gcode's link.
+  app.post("/api/models/link", (req, res) => {
+    const b = req.body || {};
+    const gname = String(b.gcode || "").trim();
+    if (!gname) return res.status(400).json({ error: "needs { gcode }" });
+    const rel = String(b.file || "").trim();
+    if (!rel) { delete LINKS[gname]; delete LINKS_META[gname]; saveLinks(); return res.json({ ok: true, gcode: gname, unlinked: true }); }
+    if (!safePath(rel)) return res.status(404).json({ error: "not in the models folder: " + rel });
+    const slug = String(b.type || (LINKS_META[gname] && LINKS_META[gname].type) || "u1");
+    LINKS[gname] = rel;
+    LINKS_META[gname] = { verified: true, at: Date.now(), type: slug, manual: true };
+    saveLinks();
+    hublog("info", "models: manually linked " + gname + " -> " + rel);
+    const job = maybeAutoDispatch(rel, gname);
+    res.json({ ok: true, gcode: gname, rel, dispatched: !!job, job: job || null, request: REQUESTS[rel] || null });
+  });
 
   // Warm the index shortly after boot; the first click should not pay for the walk.
   const t = setTimeout(() => { refresh(); }, 4000);

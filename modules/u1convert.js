@@ -10,7 +10,7 @@
 //
 // This is the other half: keep what the designer decided, change what the
 // printer decides.
-//   - Printer and filament side: from the U1 template (a project Danny saved
+//   - Printer and filament side: from the U1 template (a project saved
 //     in Snapmaker Orca for the U1). Those are the presets Orca must find.
 //   - Process side: from the source, but only keys Snapmaker Orca's own
 //     process profiles define (read from the install, a built-in list when
@@ -51,7 +51,7 @@ const U1 = "Snapmaker U1";
 const SLOTS = 4;
 
 // Process keys of Snapmaker Orca 2.x (union over resources/profiles/
-// Snapmaker/process/*.json, Danny's install, 2026-09-26). Used when the
+// Snapmaker/process/*.json, a real install, 2026-09-26). Used when the
 // install cannot be read - a Hub in Docker, or Orca somewhere else.
 const BUILTIN_KEYS = [
   "adaptive_layer_height bottom_shell_layers bottom_shell_thickness bottom_solid_infill_flow_ratio",

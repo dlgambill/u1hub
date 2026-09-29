@@ -77,6 +77,58 @@ printers, and nothing leaves your network unless you turn remote access on.
 
 ---
 
+## New in 2.40 - print requests, timelapses in a folder, and 3MF Explorer
+
+**Print requests from 3MF Explorer.** 3MF Explorer, the model-library app
+that until now only ran on one farm's own computer, ships alongside the Hub
+from this release on, as its own download. Pair it with the Hub once (Models,
+then ⚙ Folder shows the address and token to copy) and anyone browsing the
+library can select a model and press Mark for print. The request shows on the
+Models tab under a new Requested button. When that model's gcode is saved from
+Orca, or linked by hand, the Hub queues one print of it in Dispatch by itself.
+
+**Link gcode by hand.** Behind the ⋯ on a Models card, Link gcode lists the
+gcode files in the folder and what each is already linked to. Link one, or
+several for a model that prints in parts, or unlink a wrong one.
+
+**Open in Orca links the right file.** It used to credit whichever gcode
+changed first in the folder while Orca was open, so two slices finishing
+together could swap. Now the new file's title has to match the model you
+opened (the designer's name is ignored while comparing). When nothing
+matches, it still links but marks it unverified on the card. Existing links
+that fail the same check are dropped once at startup, with a note in the log.
+
+**The x number, explained.** `Title - Designer x24.gcode` means 24 pieces on
+one plate. Worth printing divides by it, print requests record it, and Most
+printed ignores it when matching. The README now has a section on it.
+
+**Timelapses go to a folder you pick.** The chamber-camera timelapses from
+2.34 were built to upload to one farm's storefront. Now Settings has a
+Timelapses card: pick a folder, and every finished print's video is saved
+there as `<printer> - <file> - <date time>.mp4`. The card says whether ffmpeg
+is installed, what is being captured right now, and the last videos saved.
+Timelapses are off until you turn them on in Settings (capturing polls every
+printing camera), and even when on, nothing is captured until there is a
+folder to save into. The storefront upload is still there for anyone who
+configures it by hand, but no upload address is built in anymore.
+
+**Open in Orca from a Windows service.** If you run the Hub as a Windows
+service (so it starts with Windows and restarts itself), programs it opens for
+you would start invisibly in the service's own session. Set the environment
+variable `U1_DESKTOP_LAUNCHER` to the included `scripts/open-on-desktop.ps1`
+and Open in Orca goes through a scheduled task onto the signed-in desktop
+instead. Without the variable nothing changes.
+
+Also: a request whose file moved is re-filed instead of duplicated; and personal
+names, addresses and paths are gone from the code comments, examples and
+docs.
+
+### 2.39 - timelapses survive a Hub restart
+
+A restart mid-print used to start a brand-new, empty capture, so most videos
+only showed the last part of a print. The Hub now saves its place after every
+frame and a restart resumes the same capture.
+
 ## New in 2.38 - Convert to U1
 
 Asked for in issue #5: bring a MakerWorld project over to the U1 without
@@ -214,7 +266,7 @@ the reading width. Four U1s sit in one row.
 
 ### 2.34 - timelapses from the chamber camera
 
-The SF3D timelapse module captures frames from the chamber camera itself
+The timelapse module captures frames from the chamber camera itself
 instead of waiting on the firmware's own timelapse file.
 
 ## New in 2.33 - sort the shelf
@@ -287,8 +339,8 @@ name, Save, and the card offers to move it right then. The attributes live in
 `models-attrs.json` beside the Hub and ride over the folder-derived values on
 every list, so a file can be filed correctly before it is moved.
 
-**Delete** is permanent, after one confirm on the card itself. Danny's call
-over a trash folder; the Hub only ever deletes a `.3mf` inside the models
+**Delete** is permanent, after one confirm on the card itself. A deliberate
+call over a trash folder; the Hub only ever deletes a `.3mf` inside the models
 folder, and the harness proves a path outside it is refused.
 
 None of the three use a browser dialog - the confirm is a second click on the
@@ -305,13 +357,13 @@ and the margin over filament - in red when it lands under your sell floor.
 Save keeps one row per file (the last price wins), and the "table" link opens
 every file you have priced, most dollars per printer hour first, with totals
 at the bottom. Click a column to sort it the other ways, click a file name to
-select it, × to drop a row. Danny: "so that I can look and see what is most
+select it, × to drop a row. The ask was "so that I can look and see what is most
 and least profitable." Rows live in margin.json beside the Hub, per install;
 nothing is decided from them.
 
 ### 2.28.1 - easier on the eyes
 
-Danny, after 2.28.0: "the UI is really dark and sometimes difficult to
+Feedback after 2.28.0: "the UI is really dark and sometimes difficult to
 read ... it just feels murky." Same industrial identity, same amber, same
 layout; what changed is the spread. The three surfaces (page, panel, raised
 panel) were within a few steps of black, so cards did not lift off the page;
@@ -397,15 +449,15 @@ live Hub before this shipped.
   time, and the rollup only ever hits the cache. The 2026-09-14 rule in
   MISTAKES.md is met.
 
-### 2.27 - SF3D timelapse uploads
+### 2.27 - timelapse uploads
 
 Each U1 renders its own finished timelapse in firmware; the Hub listens for
 a print finishing, takes the file the printer already made, and hands it to
-the SF3D storefront. Shipped by the SF3D lane (commit 9d3e5fe).
+an online storefront (commit 9d3e5fe).
 
 ### 2.26.2 - a slow share no longer freezes the whole Hub
 
-Tonight a 198 MB gcode landed in X:\gcode while the share was having a slow
+Tonight a 198 MB gcode landed in the gcode folder on a network share while the share was having a slow
 few minutes, and for about a minute every request from every device took
 45 to 64 seconds, phone included ("server has no version"). The cause was
 three synchronous reads against the share on the paths a new file goes

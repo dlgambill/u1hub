@@ -125,8 +125,16 @@ module.exports = function mountAuth(app, express, baseDir, assetDir) {
   // Registered BEFORE express.static and every route, so it fronts the whole
   // Hub. Allowlist: the auth endpoints and page themselves, plus the minimum
   // the browser/PWA needs before login (manifest, icons, service worker).
+  // v2.40: /api/models/print-request is the one API route a DIFFERENT
+  // server calls (3mf-explorer, server-to-server, no browser and no Hub
+  // login session to send) - it is allow-listed past the cookie/session
+  // gate here and authenticates itself instead, with its own shared-secret
+  // check (models.js: X-U1-Token against config.json's models.explorerToken).
+  // Every other /api/models/* route is unaffected and still needs a real
+  // Hub session, same as before.
   const ALLOW = new Set(["/auth.html", "/manifest.json", "/sw.js",
-                         "/icon-192.png", "/icon-512.png", "/favicon.ico"]);
+                         "/icon-192.png", "/icon-512.png", "/favicon.ico",
+                         "/api/models/print-request"]);
   app.use((req, res, next) => {
     const p = req.path;
     if (ALLOW.has(p) || p.startsWith("/api/auth/")) return next();

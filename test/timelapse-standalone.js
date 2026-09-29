@@ -7,7 +7,7 @@
 //   node test/timelapse-standalone.js
 //
 // The table below is not invented - every (gcode_filename, r2_key) pair came
-// straight out of sf3d_timelapses (project pcbltjgwnuyaixiealbk), pulled
+// straight out of the storefront's timelapse table, pulled
 // 2026-09-21 while reverse-engineering the naming convention for the U1
 // rebuild. If slugify ever stops matching these, new uploads land at a
 // r2_key the storefront's existing 169 videos don't use, silently.
@@ -21,7 +21,7 @@ const ok = (cond, name, detail) => {
   else { fail++; console.log("  FAIL " + name + (detail === undefined ? "" : "  " + JSON.stringify(detail))); }
 };
 
-// [gcode_filename, expected slug] - real rows from sf3d_timelapses.
+// [gcode_filename, expected slug] - real rows from that table.
 const SLUG_TABLE = [
   ["Pit Viper (Female Dark Waglers).gcode", "Pit-Viper--Female-Dark-Waglers"],
   ["Tail_PLA_2h5m.gcode", "Tail_PLA_2h5m"],
@@ -84,7 +84,7 @@ for (const [input, want] of SLUG_TABLE) {
 
 // ---- scaleFitFilter / stillSegmentFilter / mainSegmentFilter ----
 // (2026-09-23, logo-intro + product-photo-outro compositing, replacing the
-// burned-in "Shop link in bio" CTA Danny rejected: "Get rid of it.")
+// burned-in "Shop link in bio" CTA the owner rejected: "Get rid of it.")
 
 // scaleFitFilter - exact reproduction, including the fixed COMPOSE_FPS=30
 // this module actually ships. Pins that constant from drifting silently,
@@ -141,8 +141,8 @@ for (const [input, want] of SLUG_TABLE) {
 // (2026-09-24 regression) The first shipped compose pipeline passed a
 // standalone "-r 30" ffmpeg flag ALONGSIDE the filter graph's own "fps=30"
 // clause - two separate frame-rate conversions stacked on the same stream.
-// Invisible on the still image loops (Danny's demo outro looked fine), but
-// it visibly scrambled the real timelapse into what Danny described as "a
+// Invisible on the still image loops (the demo outro looked fine), but
+// it visibly scrambled the real timelapse into what was described as "a
 // demigorgan" - caught by him actually watching the output, not by these
 // tests, which only ever checked filter STRINGS, never the full argv ffmpeg
 // actually runs. Pin the real argv here so that gap can't reopen silently.

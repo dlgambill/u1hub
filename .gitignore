@@ -82,3 +82,12 @@ models-attrs.json
 models-links.json
 logbook.json
 u1_template.3mf
+
+# Session notes: local only, never published (2026-09-29)
+CLAUDE.md
+MISTAKES.md
+HANDOFF.md
+share-posts.md
+TIMELAPSE-PLAN.md
+# v2.40 print requests (state)
+models-requests.json

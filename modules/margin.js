@@ -1,6 +1,6 @@
 // modules/margin.js — is this plate worth printing? (v2.28)
 //
-// Danny's selection rule for SF3D, applied to every gcode the Hub can see:
+// A print farm's selection rule, applied to every gcode the Hub can see:
 // filament under $0.02 a gram, sell for at least $0.12 a gram, or don't print
 // it - and lately, watch how long it ties up a printer. The Hub already knows
 // the two inputs from the file itself (grams from the slicer's filament
@@ -13,7 +13,7 @@
 //   per printer hour    = minimum for the plate / hours
 //
 // Three numbers on the job card, no price to type. Both rates are settings,
-// because every farm's rule of thumb is its own; the defaults are Danny's.
+// because every farm's rule of thumb is its own; the defaults are one real farm's.
 // This module never decides anything - Dispatch does not consult it - it
 // only shows the number so the person choosing what to print sees it.
 //
@@ -22,7 +22,7 @@
 // into dollars per printer hour, dollars per gram, and the margin over
 // filament. Save keeps one row per file in margin.json, and a table sorted
 // by those numbers shows which files carry the farm and which ones only
-// keep it busy. Danny: "so that I can look and see what is most and least
+// keep it busy. The owner: "so that I can look and see what is most and least
 // profitable."
 
 "use strict";

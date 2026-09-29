@@ -43,7 +43,7 @@
       'Pick a topic nobody would guess: on the public ntfy.sh server, anyone who knows it can read it. Nothing else about your Hub leaves the building.</div>' +
       '<div class="row" style="margin-top:8px; flex-wrap:wrap; gap:8px">' +
       '<input class="field" id="ntUrl" placeholder="https://ntfy.sh" style="max-width:220px">' +
-      '<input class="field" id="ntTopic" placeholder="topic, e.g. dannys-print-farm-7f3a" style="max-width:260px" autocomplete="off" spellcheck="false">' +
+      '<input class="field" id="ntTopic" placeholder="topic, e.g. my-print-farm-7f3a" style="max-width:260px" autocomplete="off" spellcheck="false">' +
       '<input class="field" id="ntToken" type="password" placeholder="access token (only for protected topics)" style="max-width:260px" autocomplete="off">' +
       '</div>' +
       '<div class="row" id="ntEvents" style="margin-top:8px; flex-wrap:wrap; gap:6px 14px"></div>' +

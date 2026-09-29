@@ -10,8 +10,8 @@
 //      finished" event built from the printer's own most recent completed
 //      job (via Moonraker history), lands on a plausible match
 //
-// Deliberately does NOT call the SF3D upload endpoint - that would write a
-// real row into production sf3d_timelapses and a real object into
+// Deliberately does NOT call the storefront upload endpoint - that would write a
+// real row into the production timelapse table and a real object into
 // production R2 from test data. The upload path itself is exercised for
 // real the first time an actual print completes with sf3dTimelapse.passcode
 // set in config.json; watch the Hub's log for "timelapse: uploaded" or

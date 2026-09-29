@@ -8,7 +8,7 @@
 "use strict";
 const fs = require("fs"), path = require("path"), cp = require("child_process");
 const ROOT = path.resolve(__dirname, "..");
-const CLONE = "C:\\Users\\Danny\\code\\u1-print-hub";
+const CLONE = require("path").resolve(__dirname, "..");
 const VER = require(path.join(ROOT, "package.json")).version;
 
 const tracked = cp.execSync("git ls-files", { cwd: CLONE, encoding: "utf8" }).split(/\r?\n/).filter(Boolean);

@@ -4,7 +4,7 @@
 // live in session 0, so a program the Hub spawns - Snapmaker Orca for Open in
 // Orca - starts where nobody can see it: the button "stopped working" and
 // invisible Orcas piled up. When U1_DESKTOP_LAUNCHER names a script (the
-// service's run wrapper sets it: services\open-on-desktop.ps1), the program
+// service's run wrapper sets it to scripts/open-on-desktop.ps1), the program
 // is started through it instead. The script points a Task Scheduler task
 // with an Interactive logon at the program and runs it, which is Windows'
 // own way into the signed-in user's session.

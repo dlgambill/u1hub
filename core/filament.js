@@ -14,7 +14,7 @@ const { app, decodeHeads } = hub;
 // back and only reports success once the printer confirms the new color.
 // Guards match touchscreen behavior: idle printers only, loaded slots only.
 //
-// v2.22.1 (Danny, field-found 2026-09-02): the head's MATERIAL too. Loading a
+// v2.22.1 (field-found 2026-09-02): the head's MATERIAL too. Loading a
 // spool pushed its color, so the Dash showed the right swatch on U6 T2 — and
 // "NONE" for the type, because nothing ever wrote print_task_config's
 // filament_type. A head with no type is what the touchscreen treats as not
@@ -25,7 +25,7 @@ const { app, decodeHeads } = hub;
 // parameter, the Hub says the material did not take rather than pretending.
 //
 // v2.22.2 — HARDWARE-VERIFIED on U6, 2026-09-02 23:26, read from the printer's
-// own /server/gcode_store after Danny picked PLA on the touchscreen:
+// own /server/gcode_store after the owner picked PLA on the touchscreen:
 //   SET_PRINT_FILAMENT_CONFIG CONFIG_EXTRUDER=1 VENDOR=Snapmaker FILAMENT_TYPE=PLA FILAMENT_SUBTYPE='Basic'
 // The first cut (2.22.1) sent FILAMENT_TYPE + FILAMENT_SUB_TYPE + SAVE and the
 // firmware raised "[print_task_config] filament_config, incomplete parameters"

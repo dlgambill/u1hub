@@ -219,7 +219,7 @@ function register(ctx) {
     // v2.22: fluid vs locked. "fluid" replans from scratch every call (the
     // original, and the default) so times slide as machines free up. "locked"
     // freezes the plan you were looking at — see D.frozen and plan() — so the
-    // board stops reshuffling on refresh. Danny's call: the answer to "why did
+    // board stops reshuffling on refresh. A deliberate call: the answer to "why did
     // everything move" is sometimes "hold still".
     schedule_mode: "fluid",                      // "fluid" | "locked"
     auto_start: false
@@ -279,7 +279,7 @@ function register(ctx) {
   // Write, then swap. The swap is what makes a half-written file impossible —
   // but it is ALSO what silently ate 17 hours of edits on 2026-08-31.
   //
-  // Staging lives on an SMB share (X: -> \\192.168.12.81\share). Windows
+  // Staging lives on an SMB share (a mapped network drive). Windows
   // rename-over-an-existing-file across SMB does not reliably replace the
   // destination, so renameSync threw every single time, the .tmp was left on
   // disk holding the real state, dispatch.json kept its 07:37 contents, and the
@@ -318,7 +318,7 @@ function register(ctx) {
   // map the user's explicit "Move" wrote to. After one plan() run every job
   // behaved like a user pin, and the consequences were:
   //   * free a printer, hit Replan, and it stays idle forever - no queued job
-  //     is allowed to migrate to it (Danny, field, 2026-08-30);
+  //     is allowed to migrate to it (field report, 2026-08-30);
   //   * the pin is read per COPY but keyed per JOB, so copy 1 sets it and
   //     copies 2..n are forced onto that same lane. A qty-4 job serialises
   //     onto one machine while the rest of the farm sits idle.
@@ -337,7 +337,7 @@ function register(ctx) {
     for (const k of PLACEMENT.keys())
       if (k.slice(0, k.lastIndexOf("#")) === jobId) PLACEMENT.delete(k);
   };
-  // A finished job LEAVES (v2.14, Danny's call). Before this, the last copy
+  // A finished job LEAVES (v2.14, a deliberate call). Before this, the last copy
   // flipped the job to state "done" and it sat in the list forever — 54 jobs
   // in the field, 19 of them finished, greyed out and permanently in the way.
   // Nothing read them: job.history is written and consumed by nobody, and
@@ -375,7 +375,7 @@ function register(ctx) {
     return n;
   }
   // Jobs that finished under the old rule are still in dispatch.json. Sweep
-  // them once at load rather than making Danny clear 19 rows by hand.
+  // them once at load rather than making anyone clear 19 rows by hand.
   {
     const stale = D.jobs.filter(j => j.state === "done");
     if (stale.length) {
@@ -432,7 +432,7 @@ function register(ctx) {
     }
     return null;                                             // no window in 2 weeks (deep away block)
   }
-  // FINISH POLICY (v2.11, Danny's call). Attended hours gate when a job may
+  // FINISH POLICY (v2.11, a deliberate call). Attended hours gate when a job may
   // START \u2014 the moment your hands are needed. A print RUNNING unattended is
   // just printing; refusing to run past your hours would idle the farm all
   // day. So by default a job may finish whenever.
@@ -564,7 +564,7 @@ function register(ctx) {
   //
   // 2026-09-01: it was proposed to soften this using the Resource Monitor's
   // on-hand figures — count the rolls, only warn when concurrent demand exceeds
-  // them. Danny said no, and was right: the shelf is only partly entered. A
+  // them. The owner said no, and was right: the shelf is only partly entered. A
   // color with two rolls recorded and eight on the wall would stop warning
   // correctly; a color with two recorded and two on the wall would stop
   // warning by luck. Inferring capacity from an inventory nobody has finished
@@ -682,7 +682,7 @@ function register(ctx) {
       return TARGET ? { at: TARGET, src: "target" } : { at: null, src: null };
     };
     const effDeadline = j => deadlineOf(j).at;
-    // v2.22: DEADLINES WIN, priority breaks ties (Danny's call). Earliest
+    // v2.22: DEADLINES WIN, priority breaks ties (a deliberate call). Earliest
     // deadline first, always — a job with a real due date is never bumped by a
     // higher priority number, because a missed deadline is a promise broken and
     // a priority is only a preference. Among jobs sharing an effective deadline
@@ -905,7 +905,7 @@ function register(ctx) {
     // Report the whole fleet, not just the machines that got work: an idle
     // printer vanishing from the timeline hides exactly the capacity problem
     // the scheduler exists to surface.
-    // WHAT IS ON THE BEDS RIGHT NOW (v2.15, Danny). `slots` is planned work,
+    // WHAT IS ON THE BEDS RIGHT NOW (v2.15). `slots` is planned work,
     // and it deliberately excludes the copy a machine is already printing —
     // scheduling work the farm is doing is the bug that exclusion prevents. But
     // leaving the running print off the picture entirely meant a busy printer
@@ -1229,15 +1229,20 @@ function register(ctx) {
     try { replan = await plan(); } catch (e) { replan = { error: "Marked, but replanning failed: " + e.message }; }
     res.json({ ok: true, maintenance: D.maintenance, plan: replan });
   });
-  app.post("/api/dispatch/jobs", (req, res) => {
-    const b = req.body || {};
+  // v2.40: factored out of the route so another module (models.js's
+  // print-request auto-dispatch, when a requested 3MF gets a matching
+  // gcode) can push a real job through the exact same contract - clamps,
+  // fileInfo lookup, bundle check - without going back out over HTTP to talk
+  // to itself. Returns { job } or { error, status }; never throws.
+  function createJob(b) {
+    b = b || {};
     const file = String(b.file || "").trim();
-    if (!file) return res.status(400).json({ error: "Job needs a file" });
+    if (!file) return { error: "Job needs a file", status: 400 };
     const info = ctx.fileInfo(file, b.type);
-    if (!info.exists) return res.status(404).json({ error: "'" + file + "' not found in that type's folder" });
+    if (!info.exists) return { error: "'" + file + "' not found in that type's folder", status: 404 };
     const qty = Math.max(1, Math.min(999, parseInt(b.qty, 10) || 1));
     if (b.bundle_id && !D.bundles.find(x => x.id === b.bundle_id))
-      return res.status(404).json({ error: "Unknown bundle" });
+      return { error: "Unknown bundle", status: 404 };
     const job = {
       id: newId("job"), file, type: String(b.type || "u1"),
       qty, remaining: qty,
@@ -1249,7 +1254,12 @@ function register(ctx) {
       state: "queued", created: Date.now(), history: [], printing_on: null
     };
     D.jobs.push(job); save();
-    res.json({ ok: true, job });
+    return { job };
+  }
+  app.post("/api/dispatch/jobs", (req, res) => {
+    const r = createJob(req.body || {});
+    if (r.error) return res.status(r.status || 400).json({ error: r.error });
+    res.json({ ok: true, job: r.job });
   });
   app.post("/api/dispatch/jobs/update", (req, res) => {
     const b = req.body || {};
@@ -1475,7 +1485,7 @@ function register(ctx) {
     try { res.json(await plan()); }
     catch (e) { res.status(500).json({ error: "Plan failed: " + e.message }); }
   });
-  // v2.22: FREEZE / UNFREEZE the board (Danny). Locked means the times you
+  // v2.22: FREEZE / UNFREEZE the board. Locked means the times you
   // approved stop moving: lock snapshots the CURRENT fluid plan's placed slots
   // and the board then serves that snapshot (reconciled for copies that ran or
   // were removed) until you unlock. Locking always re-snapshots from a freshly
@@ -1515,7 +1525,7 @@ function register(ctx) {
       const p = await plan();
       const next = (p.slots || []).find(s => s.printer === idx && !s.unplannable) || null;
       // v2.23.2: say up front when the planned file is no longer in the Hub
-      // library. Danny pressed "next", confirmed the filament dialog, landed on
+      // library. The owner pressed "next", confirmed the filament dialog, landed on
       // an empty dashboard: the job's file had been deleted from the library
       // after it was queued (it only existed on two printers' storage), and
       // the handoff's selectFile() failed silently. The planner does not care
@@ -1532,6 +1542,9 @@ function register(ctx) {
   });
 
   ctx.provide("dispatch.jobs", () => D.jobs);
+  // v2.40: see createJob() above - the print-request pipeline (models.js)
+  // calls this at match time instead of hand-rolling a job object.
+  ctx.provide("dispatch.createJob", createJob);
   // v2.20: maintenance is a FLEET fact, not a Dispatch-tab fact. It shipped
   // visible only on the Dispatch guide, so the Dash card for a machine taken
   // out of service still read "IDLE" — you could stand at the Dash, see an idle

@@ -89,7 +89,7 @@ app.get("/api/printers", (req, res) => {
 });
 
 
-// v2.23 PERF (field-measured on Danny's phone, 2026-09-03: "7 seconds to
+// v2.23 PERF (field-measured on a phone, 2026-09-03: "7 seconds to
 // load the Dash"). This listing was readdirSync + one statSync per file - 262
 // synchronous round trips to the SMB share, 5.8 s on the production process,
 // and because they are synchronous the whole server stood still for those
@@ -190,7 +190,7 @@ app.get("/api/files", async (req, res) => {
 
 // --- onboard printer files (read-only) ----------------------------------------
 // Lists gcode stored ON a printer via Moonraker GET /server/files/list?root=gcodes.
-// Response shape hardware-verified 2026-07-19 on 192.168.12.88 (73 files):
+// Response shape hardware-verified 2026-07-19 on 192.168.1.88 (73 files):
 //   { result: [ { path, modified (epoch seconds, float), size, permissions } ] }
 // `modified` is converted to ms (mtime) to match /api/files, so the unified
 // library view can sort both sources with a single comparator. Strictly
@@ -364,7 +364,7 @@ app.post("/api/files/rename", async (req, res) => {
 
 // --- printer-side file management ----------------------------------------------
 // Delete / rename for files stored ON a printer, via the Moonraker endpoints
-// hardware-verified 2026-07-19 on 192.168.12.88 (upload 201 / move 200 /
+// hardware-verified 2026-07-19 on 192.168.1.88 (upload 201 / move 200 /
 // delete 200). Guards, in order:
 //   * ACTIVE-PRINT HARD BLOCK — a live print_stats query per operation; if the
 //     target is the file being printed (or paused mid-print), refuse. Never
@@ -624,7 +624,7 @@ const PAL_CACHE = new Map(); // "<slug>:<name>" -> { size, mtime, colors:[hex], 
 const PAL_TAIL = 3 * 1024 * 1024;
 // v2.26.2: the tail read without blocking the event loop. Three megabytes
 // over a share having a slow minute was a 45 s stall for every request in
-// the process (2026-09-14, a 198 MB file just saved to X:\gcode: /api/map
+// the process (2026-09-14, a 198 MB file just saved to a gcode folder on a network share: /api/map
 // and the palette read both did this synchronously). Whole file if small.
 async function readTailAsync(fp, size) {
   if (size <= PAL_TAIL) return fs.promises.readFile(fp, "utf8");

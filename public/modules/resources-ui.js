@@ -125,7 +125,7 @@
   #modview-resources .rscroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
 
   /* ---- Phone layout ------------------------------------------------------
-     Below 700px an 8-column table is unreadable at any zoom, and Danny checks
+     Below 700px an 8-column table is unreadable at any zoom, and the owner checks
      this from his phone while away from the shop — that is the primary use,
      not a fallback. Each row becomes a card: color identity on top, then the
      numbers as labelled pairs. th labels come through data-label so there is
@@ -212,7 +212,7 @@
   }
 
   // The date range bounds `deadline`, which is the only date a job actually
-  // carries. Danny's call: show everything scheduled by default whether or not
+  // carries. A deliberate call: show everything scheduled by default whether or not
   // it makes a deadline, and let "deadline only" narrow it deliberately —
   // otherwise 38 of 41 jobs (the ones with deadline 0) would vanish from a view
   // whose whole point is "what do I need to buy".
@@ -308,7 +308,7 @@
       </div>`);
     }
     // v2.19 affiliate disclosure, v2.21 at the BOTTOM of the page (#res-disc,
-    // after the table and the footnote). Danny's call: at the top it was the
+    // after the table and the footnote). A deliberate call: at the top it was the
     // first thing on every visit — a warning-shaped box for something that is
     // not a warning — and the switch now lives in Settings besides. It stays on
     // the page (the honest place for a disclosure is near the links it covers,

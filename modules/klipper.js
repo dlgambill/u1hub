@@ -1,7 +1,7 @@
 // modules/klipper.js — each printer's own Klipper UI, reachable wherever the
 // Hub is reachable (v2.21).
 //
-// The problem, in Danny's words: "if I'm outside of the network I can't access
+// The problem, in the owner's words: "if I'm outside of the network I can't access
 // the printers Klipper pages." The Hub already publishes itself through a
 // Cloudflare tunnel, but the tunnel points at ONE origin — the Hub's port. The
 // nine printers are separate hosts on the LAN and the tunnel knows nothing

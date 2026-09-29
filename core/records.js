@@ -66,7 +66,7 @@ function fileContentHash(fp) {
 }
 // v2.26.2: the same hash without blocking the event loop. Two megabytes over
 // a network share that is having a slow minute is a 30 s stall for every
-// request in the process when read synchronously (seen 2026-09-14, X:\gcode,
+// request in the process when read synchronously (seen 2026-09-14, a gcode folder on a network share,
 // a 198 MB file just saved). Request handlers use this; the print-start
 // record keeps the sync one because it runs once per push.
 async function fileContentHashAsync(fp) {

@@ -31,7 +31,7 @@
 //
 // v2.28 adds the other half, one step earlier: POST /api/advisor/model takes a
 // 3MF from the Models tab and asks for the slicer settings it should be sliced
-// with. Danny: the 2.25 shape "doesn't exactly match what I wanted - I want it
+// with. The owner: the 2.25 shape "doesn't exactly match what I wanted - I want it
 // to evaluate a 3MF and suggest the best slicer settings for it." What makes
 // that answerable rather than boilerplate is what goes in: the plate render
 // the designer saved inside the file (sent as an image - the model can look at

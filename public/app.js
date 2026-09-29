@@ -4,7 +4,7 @@
 // Served as app.js?v=<VERSION> — see core/app.js serveIndex.
 
 const $ = id => document.getElementById(id);
-// v2.23 PERF (Danny, from work over the tunnel: "several seconds to load").
+// v2.23 PERF (the owner, from work over the tunnel: "several seconds to load").
 // Measured on a phone profile: ~25 thumbnail requests fired at page load and
 // hogged all six browser connections while /api/fleet waited in line behind
 // them. loading="lazy" alone did not prevent it - the library renders before
@@ -1708,7 +1708,7 @@ async function loadSpools(){
       // Amazon search for that brand/material/color when it does not.
       //
       // v2.21: the "add buy link" cell is GONE, and the link says the same
-      // thing in both cases. Danny's call, and it is right twice over. Every
+      // thing in both cases. A deliberate call, and it is right twice over. Every
       // row was carrying a chore ("paste a URL for this roll") that nobody was
       // ever going to do nine times, sitting directly above a control that
       // already worked without it — so the chore read as the primary action and
@@ -1817,7 +1817,7 @@ $("diagDl").addEventListener("click",async ()=>{
 
 // v2.21: the ↗ on a card goes through the Hub, not to the printer's LAN IP.
 //
-// Danny: "if I'm outside of the network I can't access the printers Klipper
+// The owner: "if I'm outside of the network I can't access the printers Klipper
 // pages." The direct link only ever worked from the house, and it looked
 // identical from a phone on cellular — a link that is dead exactly when you
 // most want it (something has gone wrong and you are not there). /p/<id>/ is
@@ -1836,7 +1836,7 @@ $("diagDl").addEventListener("click",async ()=>{
 // the path, so the printer's own page and its live WebSocket just work, with
 // nothing of ours that can break. Only when the Hub page itself arrived over a
 // public hostname (the tunnel) do we route the link through /p/<id>/, so a
-// phone away from home still reaches the pages. Danny's call, 2026-09-01, after
+// phone away from home still reaches the pages. A deliberate call, 2026-09-01, after
 // the tunnel's WebSocket turned out to die at Cloudflare's edge (an Access /
 // zone toggle we couldn't chase down): the LAN case is the one that has to be
 // bulletproof, and it now is.
@@ -2547,7 +2547,7 @@ async function loadConfigUI(){
     const c=await (await fetch("/api/config")).json();
     $("setFolder").value=c.gcodeFolder||"";
     (function(){
-      const LBL={power:"Smart plugs",camera:"Chamber cameras",spools:"Spools & RFID",match:"Spool Match",mixer:"FS Mixer","types-beta":"Printer types (beta)",dispatch:"Dispatch scheduler",slicing:"In-app slicing",resources:"Resource Monitor",updates:"Update notices",klipper:"Printer pages via Hub"};
+      const LBL={power:"Smart plugs",camera:"Chamber cameras",spools:"Spools & RFID",match:"Spool Match",mixer:"FS Mixer","types-beta":"Printer types (beta)",dispatch:"Dispatch scheduler",slicing:"In-app slicing",resources:"Resource Monitor",updates:"Update notices",klipper:"Printer pages via Hub",spoolman:"Spoolman import",notify:"Phone notifications",advisor:"AI pre-flight",models:"Models (3MF library)",margin:"Worth printing",logbook:"Logbook",timelapse:"Timelapses"};
       const cfgF=c.featuresConfig||c.features||{}, liveF=c.features||{};
       const box=$("setFeatures");
       box.innerHTML=Object.keys(cfgF).map(k=>

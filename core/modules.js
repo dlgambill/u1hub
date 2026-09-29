@@ -47,10 +47,10 @@ const MODULE_TABLE = {
   // (pauses/errors with a reason, maintenance mode), uses notify.send at call
   // time, provides logbook.cards for the fleet snapshot's `upkeep` field.
   logbook: require("../modules/logbook.js"),
-  // v2.27: SF3D timelapse upload. Listens on hub.events ("print.done"),
-  // pulls the printer's own rendered clip and hands it to the SF3D edge
-  // function. No route, no UI - it only reacts to events dispatch already
-  // publishes, so ordering relative to the others here doesn't matter.
+  // v2.34/v2.40: timelapses from the chamber camera. Listens on hub.events
+  // (print.started / done / cancelled / error), saves finished videos to the
+  // folder set in Settings; an optional storefront upload stays off unless
+  // configured by hand. Off by default (MODULE_DEFAULTS).
   timelapse: require("../modules/timelapse.js"),
   // Last on purpose: it owns no data anyone else reads, and its only side
   // effect is one outbound HTTPS GET that must never delay a registration

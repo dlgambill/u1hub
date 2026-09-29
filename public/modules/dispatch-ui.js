@@ -3,7 +3,7 @@
 // ALWAYS goes through the existing /api/print path from this client after the
 // human bed-clear tap — dispatch never grows its own way to start a machine.
 //
-// v2.11 UI round 2 (Danny's direction):
+// v2.11 UI round 2 (from field use):
 //   * drag a file straight from the library list onto the Dispatch tab or
 //     view — the core marks rows draggable with an application/x-u1hub-file
 //     payload; hovering the tab switches to it mid-drag.
@@ -277,7 +277,7 @@
     const jobRow = j => {
       const dl = j.deadline ? fmtT(j.deadline) : (j.bundle_id ? "↑ bundle" : "—");
       const st = { queued: "queued", scheduled: "planned", printing: "▶ printing", done: "✓ done", paused: "⏸ paused" }[j.state] || j.state;
-      // v2.22 PRIORITY (Danny): 1-5, 5 runs first. It only breaks ties between
+      // v2.22 PRIORITY: 1-5, 5 runs first. It only breaks ties between
       // jobs that share a deadline — a due date always wins — so this is the
       // "bump this ahead of the other un-urgent stuff" dial, not an override.
       const prio = (j.priority >= 1 && j.priority <= 5) ? j.priority : 3;
@@ -366,7 +366,7 @@
     // running now legitimately pins the guide to now — it starts now. But when
     // nothing is on the beds and the next job can't start until a later window,
     // anchoring to now just draws hours of dead grey before the first bar (the
-    // "empty space at the front" Danny called out). With nothing running the
+    // "empty space at the front" the owner called out). With nothing running the
     // schedule slides forward and opens on the first job's real start time.
     const RUN0 = (PLAN && PLAN.running) || [];
     const firstStart = good.length ? Math.min(...good.map(s => s.est_start)) : now;
@@ -500,7 +500,7 @@
 
     const zoom = PPH_STEPS.map(p =>
       `<button class="dsp-gz${p === PPH ? " dsp-gzon" : ""}" data-pph="${p}">${p >= 180 ? "15m" : p >= 90 ? "30m" : p >= 48 ? "1h" : "3h"}</button>`).join("");
-    // v2.22 FLUID / LOCKED (Danny). Fluid keeps re-optimizing as the farm
+    // v2.22 FLUID / LOCKED. Fluid keeps re-optimizing as the farm
     // changes; locked freezes the plan you approved so the times stop shifting.
     // The button both SHOWS the mode and toggles it, and when locked it reports
     // anything queued after the freeze that the frozen board isn't showing.
@@ -1127,7 +1127,7 @@
       /* ETA unknown: striped, so an 8-hour pessimistic bar never reads as a measurement */
       .dsp-grunq{background:repeating-linear-gradient(45deg,#1d5c3a,#1d5c3a 6px,#164a2e 6px,#164a2e 12px)}
       .dsp-grunning{color:var(--ok,#3DD68C);font-weight:700}
-      /* v2.22 (Danny): highlight the whole row of a printer that is PRINTING
+      /* v2.22: highlight the whole row of a printer that is PRINTING
          NOW, so "which machines are going" reads at a glance even when the
          "printing now" label is clipped in the narrow name cell. A green left
          rail + a faint tint + a pill that can't be truncated. */

@@ -85,13 +85,14 @@ const CLIENT_TABLE = {
   advisor: "/modules/advisor-ui.js",     // v2.25 AI pre-flight: Settings block + job-card button (no tab)
   models: "/modules/models-ui.js",       // v2.26 Models tab (3MF library; read-only on touch, v2.27; ✦ Settings, v2.28)
   margin: "/modules/margin-ui.js",       // v2.28 worth-printing line on the job card + Settings rates (no tab)
-  logbook: "/modules/logbook-ui.js"      // v2.37 Logbook tab: issues, fixes, maintenance schedule
+  logbook: "/modules/logbook-ui.js",     // v2.37 Logbook tab: issues, fixes, maintenance schedule
+  timelapse: "/modules/timelapse-ui.js"  // v2.40 Timelapses card in Settings (save folder, ffmpeg check)
   // (named -ui deliberately: the server module is modules/dispatch.js, and two
   //  same-named files in different folders is a foot-gun during deploys)
 };
 
 // v2.23: the ?v= stamp is VERSION plus a content hash of the stamped assets,
-// computed once at boot. Found live on Danny's phone 2026-09-08: the assets
+// computed once at boot. Found live on a phone 2026-09-08: the assets
 // are cached immutable for a year (below), so between RELEASES every edit to
 // app.js was invisible to a browser that had already loaded 2.23.0 - the
 // tangle-reason line shipped, the server said it, and the card never drew
@@ -118,7 +119,7 @@ function serveIndex(req, res) {
     if (hub.FEATURES.mixer === false)
       html = html.replace(/<a class="gear" href="\/fs-colors\.html"[^>]*>[^<]*<\/a>/g, "");
     // v2.21: every asset URL the page loads carries ?v=<VERSION>. Found live on
-    // Danny's phone the hour v2.21 shipped: index.html refreshed (the badge
+    // Seen on a phone the hour v2.21 shipped: index.html refreshed (the badge
     // said 2.21.0) while the Resources tab still ran the 2.20 resources-ui.js
     // from the browser's HTTP cache — express.static sends no Cache-Control,
     // so mobile browsers cache heuristically, and a pull-to-refresh revalidates

@@ -15,7 +15,7 @@ REM Restarting does NOT stop anything on the printers: Klipper runs the prints,
 REM the Hub watches and dispatches. In-flight jobs are re-adopted on boot.
 REM
 REM 2026-09-28: when the Hub is installed as the U1PrintHub Windows service
-REM (C:\Users\Danny\code\services), restart THE SERVICE. Killing its node by
+REM (a WinSW wrapper, set up outside this repo), restart THE SERVICE. Killing its node by
 REM port would make the service restart it while this script starts a second
 REM copy, and one of them dies on EADDRINUSE. Needs an elevated shell.
 powershell -NoProfile -Command "$s=Get-Service U1PrintHub -ErrorAction SilentlyContinue; if($s -and $s.StartType -ne 'Disabled'){exit 0}else{exit 1}" && (
@@ -26,7 +26,7 @@ powershell -NoProfile -Command "$p=(Get-NetTCPConnection -LocalPort 4545 -State 
 timeout /t 2 /nobreak >nul
 REM 2026-09-09: the Hub runs from the git clone on C: (staging on X: retired);
 REM the path is taken from this script's own location, so a moved checkout
-REM still works. Gcode lives on X:\gcode via config.json's gcodeFolder.
+REM still works. Gcode lives wherever config.json's gcodeFolder points.
 set HUBDIR=%~dp0..
 for %%I in ("%HUBDIR%") do set HUBDIR=%%~fI
 REM 2026-09-13: ShowWindow=0 (SW_HIDE). Launched from the logon task, the WMI

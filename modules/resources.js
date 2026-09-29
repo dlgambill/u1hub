@@ -231,7 +231,7 @@ function readShelf(baseDir, store, meta) {
 // Before this, deleting a spool stranded its inventory row and the Resources
 // tab said so on every render — "1 inventory entry belongs to a spool that no
 // longer exists (600 g @ $25)" — with a `forget` button as the only way out.
-// Danny's read is the right one: deleting filament from the library IS the
+// The owner's read is the right one: deleting filament from the library IS the
 // instruction to forget its numbers. A banner that survives the delete is the
 // software arguing with a decision the user already made.
 //
@@ -564,7 +564,7 @@ function buildRows(agg, aff) {
     const sp = m.spool;
     const needed = +row.needed_g.toFixed(2);
 
-    // on-hand is genuinely unknown until Danny fills it in. Unknown is NOT
+    // on-hand is genuinely unknown until the owner fills it in. Unknown is NOT
     // zero: reporting a shortfall against a number nobody entered would invent
     // a shopping list. The Resources tab offers `assume_empty_when_unset` for
     // the deliberate worst-case view instead.
@@ -804,7 +804,7 @@ function register(ctx) {
   // its off switch (v2.19). Lives in config.json rather than resources.json
   // because it is an operator setting, not farm state.
   //
-  // Danny's own decision, recorded because it is the kind of thing that gets
+  // The owner's own decision, recorded because it is the kind of thing that gets
   // quietly reversed later: this ships DISCLOSED and switchable. Anyone running
   // the Hub — including him — can turn it off in one click, and with it off no
   // tag is applied to anything.

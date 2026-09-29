@@ -33,7 +33,8 @@ printer, with thumbnails.
 
 **Know whether it is worth printing.** Under every file you select, one line
 says what its filament costs, the least it has to sell for (per piece when the
-file name carries the plate count, like `Penguin x20.gcode`), and what that
+file name carries the plate count, like `Penguin x20.gcode` - see
+[the x number](#the-x-number-in-a-file-name) below), and what that
 comes to per printer hour. Type what a piece really sells for in the box
 beside it and you get the real numbers: what the plate brings in, dollars per
 printer hour, dollars per gram, margin over filament. Save it, and the table
@@ -70,6 +71,18 @@ designer's prime tower, walls, infill and supports on your U1's printer and
 filament presets.
 
 ![Models: the shelf behind the library, with the designer's own plate renders](docs/models.png)
+
+**Take print requests from 3MF Explorer.** 3MF Explorer is a separate, free
+app from the same place (it has its own download on the Releases page): a fast
+searchable index of a whole 3D model library, thumbnails, designers,
+duplicates and all. Pair it with the Hub once, and anyone browsing it can
+select a model and press Mark for print. The request shows up on the Hub's
+Models tab under Requested. As soon as that model's gcode is saved from Orca
+(or you link one by hand with Link gcode behind the ⋯), the Hub queues one
+print of it in Dispatch on its own. To pair them, open Models, then ⚙ Folder:
+the Hub shows its address and a token to copy into 3MF Explorer's settings.
+Both apps need to be looking at the same model folder, since a request names
+the file by where it sits on disk.
 
 **Ask what settings a model wants.** The Settings button on any Models card
 has Claude suggest the slicer settings for that file on the printer you pick,
@@ -125,6 +138,15 @@ printer), every so many days, or both. What's due shows on the printer card,
 the Done button logs it, and your phone can get a heads-up when something
 comes due.
 
+**Keep a timelapse of every print.** Turn on Timelapses in Settings and pick
+a folder. While a U1 prints, the Hub grabs a frame from its chamber camera each
+time a new layer starts, and when the print finishes it turns them into a
+short video in that folder, named after the printer, the file and the time.
+Cancelled and failed prints are thrown away. It needs the free
+[ffmpeg](https://ffmpeg.org/download.html) installed on the Hub computer, and
+the Settings card tells you whether it found it. A Hub restart in the middle
+of a print picks the same video back up instead of starting over.
+
 **Let your phone tell you.** Settings can send push notifications through
 [ntfy](https://ntfy.sh) (free, no account) when a print finishes, a printer
 pauses (with the reason), errors, or stops answering. Pick the events you want;
@@ -149,6 +171,49 @@ refuses to cut power mid-print, a Full Spectrum mix planner, per-printer
 stats and temperature graphs, skip-an-object mid-print, a shared print queue,
 and printable QR spool labels. The [long version](docs/CHANGELOG.md) covers
 everything in detail, release by release.
+
+---
+
+## The x number in a file name
+
+Most of the Hub works with any file name. A few features get smarter when a
+gcode file is named like this:
+
+```
+Title - Designer x24.gcode
+```
+
+**The x number is how many pieces are on that one plate.** `Penguin - Maker
+x24.gcode` is a single print that makes 24 penguins. It is not 24 prints.
+
+Here is what reads it:
+
+- **Worth printing** divides by it. The line under a selected file shows the
+  least each piece has to sell for, and the What sells table multiplies the
+  price you type by it to get what the whole plate brings in. With no x
+  number, the plate is treated as one piece and there is no per-piece price.
+- **Print requests** record it. When a request from 3MF Explorer finds its
+  gcode, the Hub queues one print of that file, and the Models card shows it
+  as queued with 24 pieces. You set how many times to print it in Dispatch,
+  like any other job.
+- **Most printed** ignores it on purpose. When the Hub matches finished jobs
+  back to your 3MF files, `Penguin - Maker x24` and `Penguin x20` both count
+  toward the same Penguin model.
+
+The rules for writing it:
+
+- `x24`, `x 24`, `24x` and `×24` all work, upper or lower case.
+- It has to stand on its own, separated by a space, dash, underscore or
+  bracket. `Box20` and `Onyx 3` do not count as numbers of pieces.
+- Up to three digits (999 pieces).
+
+**The Title - Designer part** is what the Hub matches against your 3MF
+library. When you save a gcode from Orca after pressing Open in Orca, or when
+a print request is waiting, the Hub checks that the new file's title matches
+the model you opened, and ignores the designer's name while it compares.
+That is how it tells two files apart when two slices land in the folder at
+the same time. A file that does not match is still linked, but marked
+unverified on the card, so you can fix it with Link gcode.
 
 ---
 

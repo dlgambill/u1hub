@@ -32,6 +32,10 @@
   const SORTS = { designer: "Designer A-Z", name: "Name A-Z", newest: "Newest first", oldest: "Oldest first", printed: "Most printed", random: "Random" };
   let SORT = "designer", SEED = 0;
   try { const v = localStorage.getItem("u1.models.sort"); if (v && SORTS[v]) SORT = v; } catch {}
+  // v2.40: print requests from 3MF Explorer. REQ_ONLY toggles the
+  // "Requested" filter (server-side, via ?requested=1); requestedTotal comes
+  // back on every /api/models answer so the button's count is never stale.
+  let REQ_ONLY = false;
   const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   async function jget(p) { try { const r = await fetch(p); return r.ok ? r.json() : null; } catch { return null; } }
   async function jpost(p, b) {
@@ -132,7 +136,15 @@
       ".mdl-adv .facts{font-family:var(--mono); font-size:10.5px; color:var(--ink-faint); margin-top:8px; line-height:1.6;}",
       ".mdl-adv .foot{margin-top:8px; font-family:var(--mono); font-size:10.5px; color:var(--ink-faint); display:flex; gap:10px; flex-wrap:wrap; align-items:center;}",
       "@media (max-width: 700px){ .mdl-adv td.v, .mdl-adv td.k{white-space:normal;} }",
-      "@media (max-width: 1100px){ .mdl-wrap{grid-template-columns: 1fr;} .mdl-rail{position:static; max-height:none; display:flex; flex-wrap:wrap; gap:4px;} .mdl-rail button{width:auto;} }"
+      "@media (max-width: 1100px){ .mdl-wrap{grid-template-columns: 1fr;} .mdl-rail{position:static; max-height:none; display:flex; flex-wrap:wrap; gap:4px;} .mdl-rail button{width:auto;} }",
+      // v2.40: print requests from 3MF Explorer - the "Requested" badge on
+      // a card, and the inline gcode-link tool.
+      ".mdl-reqhold:empty{display:none;}",
+      ".mdl-req{display:inline-flex; align-items:center; gap:2px; font-family:var(--mono); font-size:10.5px; padding:2px 7px; border-radius:var(--r-pill,999px); border:1px solid color-mix(in srgb, var(--signal) 50%, var(--line)); color:var(--signal); width:fit-content;}",
+      ".mdl-req.done{border-color:color-mix(in srgb, var(--ok,#3DD68C) 50%, var(--line)); color:var(--ok,#3DD68C);}",
+      ".mdl-req .btn{font-size:9.5px !important; padding:1px 6px !important; color:inherit; border-color:currentColor;}",
+      ".mdl-link-row{display:flex; justify-content:space-between; align-items:center; gap:6px; font-family:var(--mono); font-size:11px; color:var(--ink-dim);}",
+      ".mdl-link-row .unv{color:var(--warn,#F5A524);}"
     ].join("\n");
     document.head.appendChild(s);
   }
@@ -149,6 +161,7 @@
       '<input class="field" id="mdl-q" placeholder="Filter models… (* ? -word)" title="Plain text matches anywhere in designer/model/file. * and ? are wildcards. -word excludes.">' +
       '<select class="field" id="mdl-sort" title="Order the shelf is shown in">' + Object.keys(SORTS).map(k => '<option value="' + k + '"' + (k === SORT ? " selected" : "") + ">" + SORTS[k] + "</option>").join("") + "</select>" +
       '<button class="btn ghost" id="mdl-shuffle" title="Deal a new random order"' + (SORT === "random" ? "" : ' style="display:none"') + '>🎲 Shuffle</button>' +
+      '<button class="btn ghost" id="mdl-req" title="Only 3MFs marked for print in 3MF Explorer">📋 Requested</button>' +
       '<button class="btn ghost" id="mdl-rescan" title="Walk the folder again now">⟳ Rescan</button>' +
       '<button class="btn ghost" id="mdl-cfgbtn">⚙ Folder</button>' +
       '</div>' +
@@ -163,6 +176,7 @@
       SEED = 0; OFFSET = 0; load();
     });
     el.querySelector("#mdl-shuffle").addEventListener("click", () => { SEED = 0; OFFSET = 0; load(); });
+    el.querySelector("#mdl-req").addEventListener("click", () => { REQ_ONLY = !REQ_ONLY; OFFSET = 0; load(); });
     el.querySelector("#mdl-cfgbtn").addEventListener("click", () => { el.querySelector("#mdl-cfg").classList.toggle("show"); });
     el.querySelector("#mdl-grid").addEventListener("click", onGridClick);
     el.querySelector("#mdl-grid").addEventListener("keydown", e => {
@@ -193,7 +207,16 @@
       '<input class="field" id="mdl-orca" placeholder="C:\\Program Files\\Snapmaker_Orca\\snapmaker-orca.exe" value="' + esc(orca) + '">' +
       '<label>U1 template <span class="hint">for Convert to U1: a project saved in Snapmaker Orca with the U1 and your usual filaments; blank uses u1_template.3mf at the top of the folder' + (DATA && DATA.u1_template ? " (found: " + esc(DATA.u1_template) + ")" : " (none found yet)") + '</span></label>' +
       '<input class="field" id="mdl-u1t" placeholder="' + esc(folder ? folder.replace(/[\\/]+$/, "") + "\\u1_template.3mf" : "u1_template.3mf") + '" value="' + esc(DATA && DATA.u1_template_set || "") + '">' +
-      '<div class="row" style="margin-top:8px; gap:8px"><button class="btn primary" id="mdl-save" style="font-size:12px; padding:5px 12px">Save</button><span class="pstatus" id="mdl-cfgmsg"></span></div>';
+      '<div class="row" style="margin-top:8px; gap:8px"><button class="btn primary" id="mdl-save" style="font-size:12px; padding:5px 12px">Save</button><span class="pstatus" id="mdl-cfgmsg"></span></div>' +
+      // v2.40: pairing with 3MF Explorer (its "Mark for print" lands in Requested here).
+      '<label>3MF Explorer <span class="hint">to send "Mark for print" here, put this Hub\'s address and token in 3MF Explorer\'s config.json (hub.url, hub.token) and restart it</span></label>' +
+      '<div class="row" style="gap:8px; flex-wrap:wrap; align-items:center"><code id="mdl-pair" style="font-size:11.5px; word-break:break-all">…</code><button class="btn ghost" id="mdl-paircopy" style="font-size:11px; padding:3px 8px">Copy token</button></div>';
+    jget("/api/models/pairing").then(p => {
+      const el = box.querySelector("#mdl-pair"); if (!el) return;
+      el.textContent = p && p.token ? "url " + p.url + "  ·  token " + p.token : "no token (restart the Hub once)";
+      const b = box.querySelector("#mdl-paircopy");
+      if (b && p && p.token) b.addEventListener("click", async () => { try { await navigator.clipboard.writeText(p.token); b.textContent = "Copied"; } catch { b.textContent = "Select and copy it"; } });
+    });
     box.querySelector("#mdl-save").addEventListener("click", async () => {
       const fv = box.querySelector("#mdl-folder").value.trim();
       if (!fv) { const m = box.querySelector("#mdl-cfgmsg"); m.className = "pstatus err"; m.textContent = "Enter the folder path (it was left blank)."; return; }
@@ -212,7 +235,7 @@
     if (BUSY) return; BUSY = true;
     try {
       const u = "/api/models?limit=60&offset=" + OFFSET + (Q ? "&q=" + encodeURIComponent(Q) : "") + (CREATOR ? "&creator=" + encodeURIComponent(CREATOR) : "") + (refresh ? "&refresh=1" : "")
-        + (SORT !== "designer" ? "&sort=" + SORT : "") + (SORT === "random" && SEED ? "&seed=" + SEED : "");
+        + (SORT !== "designer" ? "&sort=" + SORT : "") + (SORT === "random" && SEED ? "&seed=" + SEED : "") + (REQ_ONLY ? "&requested=1" : "");
       const d = await jget(u);
       if (!d) return;
       if (d.sort === "random" && d.seed) SEED = d.seed;
@@ -230,6 +253,14 @@
     EL.querySelector("#mdl-count").textContent = d.missing ? "folder not found"
       : (d.scanning && !d.total_all) ? "scanning the folder…"
       : (d.total_all + " file" + (d.total_all === 1 ? "" : "s") + (d.refreshing ? " · rescanning…" : "") + (d.unreachable ? " · folder not reachable right now, showing the last scan" : ""));
+    // v2.40: the count on the toggle is always the TRUE total (from the
+    // unfiltered `all` list server-side), so it stays right even while the
+    // filter itself, or a search/creator filter, is narrowing what's shown.
+    const reqBtn = EL.querySelector("#mdl-req");
+    if (reqBtn) {
+      reqBtn.className = "btn " + (REQ_ONLY ? "primary" : "ghost");
+      reqBtn.textContent = "📋 Requested" + (d.requested_total ? " (" + d.requested_total + ")" : "");
+    }
     const rail = EL.querySelector("#mdl-rail");
     rail.innerHTML = '<button class="' + (CREATOR ? "" : "on") + '" data-c=""><span>All designers</span><span class="n">' + d.total_all + "</span></button>" +
       d.creators.map(c => { const v = c.name || "__none__"; return '<button class="' + (CREATOR === v ? "on" : "") + '" data-c="' + esc(v) + '"><span>' + esc(c.name || "(no folder)") + '</span><span class="n">' + c.count + "</span></button>"; }).join("");
@@ -239,7 +270,7 @@
     if (d.missing) {
       grid.innerHTML = '<div class="mdl-empty" style="grid-column:1/-1">No folder at <code>' + esc(d.folder) + "</code>. Point the Hub at your 3MF folder with the ⚙ Folder button above.</div>";
     } else if (!items.length) {
-      grid.innerHTML = '<div class="mdl-empty" style="grid-column:1/-1">' + (d.total_all ? "Nothing matches." : (d.refreshing ? "Scanning the folder…" : "No 3MF files found under <code>" + esc(d.folder) + "</code>.")) + "</div>";
+      grid.innerHTML = '<div class="mdl-empty" style="grid-column:1/-1">' + (REQ_ONLY ? "Nothing marked for print yet. In 3MF Explorer, select a model and press Mark for print - it shows up here, and gets queued as soon as its gcode is saved." : d.total_all ? "Nothing matches." : (d.refreshing ? "Scanning the folder…" : "No 3MF files found under <code>" + esc(d.folder) + "</code>.")) + "</div>";
     } else {
       grid.innerHTML = items.map(card).join("");
       lazyInfo();
@@ -259,6 +290,7 @@
       '<div class="mdl-body">' +
       '<div class="mdl-name" title="' + esc(it.rel) + '">' + esc(it.name) + "</div>" +
       '<div class="mdl-sub" title="' + (it.conventional ? "filed the way the convention wants it" : esc(it.rel)) + '">' + (it.prints != null ? '<span class="prints" title="completed prints of gcode sliced from this file, from the printers\' own job history">printed ' + it.prints + "×</span> · " : "") + (it.group ? '<span class="grp" title="format folder">' + esc(it.group) + "</span> " : "") + esc(it.creator || "") + (it.model && it.model !== it.name ? " · " + esc(it.model) : "") + " · " + mb(it.size) + "</div>" +
+      '<div class="mdl-reqhold">' + reqBadge(it) + '</div>' +
       '<div class="mdl-chips" data-info="' + esc(it.rel) + '"><span class="k">…</span></div>' +
       '<div class="mdl-act"><button class="btn primary" data-open="' + esc(it.rel) + '"' + (DATA && DATA.orca_found === false ? ' title="Snapmaker Orca not found - set its path under ⚙ Folder"' : "") + '>Open in Orca</button>' +
       (window.HUB_FEATURES && window.HUB_FEATURES.advisor === false ? "" : '<button class="btn ghost" data-suggest="' + esc(it.rel) + '" title="Have Claude read this file\'s geometry and the designer\'s profile and suggest the slicer settings for your printer">✦ Settings</button>') +
@@ -267,10 +299,25 @@
       '<button class="btn ghost" data-convert="' + esc(it.rel) + '" title="Write a copy for the Snapmaker U1 beside this file, keeping the designer\'s prime tower, walls, infill and supports">Convert to U1</button>' +
       '<button class="btn ghost" data-rename="' + esc(it.rel) + '" title="' + (it.conventional ? "Already filed as Designer\\Name\\Designer - Name.3mf" : "Move to Designer\\Name\\Designer - Name.3mf") + '"' + (it.conventional ? " disabled" : "") + '>Rename</button>' +
       '<button class="btn ghost" data-attrs="' + esc(it.rel) + '" title="Set or change the designer and name">Attributes</button>' +
+      '<button class="btn ghost" data-link="' + esc(it.rel) + '" title="Link this to one or more gcode files by hand - for names that don\'t fit the title - designer x&lt;N&gt; convention, or a multi-part model">Link gcode</button>' +
       '<button class="btn ghost danger" data-del="' + esc(it.rel) + '" title="Delete this file from the folder">Delete</button>' +
       '</div>' +
       '<div class="mdl-edit" data-edit="' + esc(it.rel) + '"></div>' +
       "</div></div>";
+  }
+
+  // v2.40: the badge for a print request from 3MF Explorer. Rendered into its
+  // own holder div so clearing it never disturbs the info chips beside it
+  // (those are filled once, lazily, by IntersectionObserver - see lazyInfo).
+  function reqBadge(it) {
+    if (!it.requested) return "";
+    const done = it.requested.status === "dispatched";
+    const label = done ? "✓ queued" + (it.requested.pieces ? " · " + it.requested.pieces + " pcs" : "") : "📋 requested";
+    const title = done
+      ? "Auto-dispatched to " + esc(it.requested.gcode || "a gcode") + (it.requested.job_id ? " (job " + esc(it.requested.job_id) + ")" : "")
+      : "Marked for print in 3MF Explorer - no matching gcode yet";
+    return '<div class="mdl-req' + (done ? " done" : "") + '" title="' + title + '">' + label +
+      '<button class="btn ghost" data-clearreq="' + esc(it.rel) + '" title="Clear this request (does not touch any gcode link or queued job)">clear</button></div>';
   }
 
   // ---- v2.30: rename / attributes / delete, all inline on the card ---------
@@ -350,6 +397,72 @@
     if (DATA) { DATA.items = DATA.items.filter(x => x.rel !== rel); DATA.total = Math.max(0, DATA.total - 1); DATA.total_all = Math.max(0, DATA.total_all - 1); }
     if (ADVFILE === rel) { const adv = EL.querySelector("#mdl-adv"); adv.className = "mdl-adv"; adv.innerHTML = ""; ADVFILE = null; }
     EL.querySelector("#mdl-count").textContent = DATA.total_all + " file" + (DATA.total_all === 1 ? "" : "s");
+  }
+
+  // ---- v2.40: the manual gcode <-> 3MF link tool, and the print-request badge -
+  // One gcode at a time (POST /api/models/link), since a multi-part model
+  // needs several links pointed at the same 3MF; the panel lists what's
+  // already linked here with an Unlink next to each, and a picker for one
+  // more. "unverified" means the auto-watcher's name match didn't confirm it
+  // - still trusted, just flagged, until re-linked by hand or by a cleaner name.
+  async function askLink(rel) {
+    const box = editBox(rel); if (!box) return;
+    box.className = "mdl-edit show";
+    box.innerHTML = '<div class="msg">loading gcode files…</div>';
+    const slug = typeSlug();
+    const d = await jget("/api/models/gcodes?type=" + encodeURIComponent(slug));
+    if (!d || !d.folder) {
+      box.innerHTML = '<div class="msg err">Could not read the gcode folder' + (d ? " (" + esc(d.type) + ")" : "") + ".</div><div class=\"row\"><button class=\"btn ghost\" data-cancel=\"" + esc(rel) + '" style="font-size:11px; padding:3px 8px">Close</button></div>';
+      return;
+    }
+    renderLinkPanel(rel, d);
+  }
+  function renderLinkPanel(rel, d) {
+    const box = editBox(rel); if (!box) return;
+    const mine = d.files.filter(f => f.linked === rel);
+    const others = d.files.filter(f => f.linked !== rel);
+    box.innerHTML =
+      '<label>Linked here' + (mine.length ? "" : ' <span class="hint">(none yet)</span>') + "</label>" +
+      mine.map(f => '<div class="mdl-link-row"><span>' + esc(f.name) + (f.verified === false ? ' <span class="unv">(unverified)</span>' : "") + '</span><button class="btn ghost danger" data-unlink="' + esc(f.name) + '" data-for="' + esc(rel) + '" style="font-size:10.5px; padding:2px 7px">Unlink</button></div>').join("") +
+      '<label>Link another gcode file (' + esc(d.folder) + ")</label>" +
+      '<select class="field" data-pick><option value="">choose a file…</option>' +
+      others.map(f => '<option value="' + esc(f.name) + '">' + esc(f.name) + (f.linked ? " (linked to " + esc(String(f.linked).split("/").pop()) + ")" : "") + "</option>").join("") +
+      "</select>" +
+      '<div class="row"><button class="btn primary" data-do-link="' + esc(rel) + '" style="font-size:11.5px; padding:4px 10px">Link</button><button class="btn ghost" data-cancel="' + esc(rel) + '" style="font-size:11px; padding:3px 8px">Close</button><span class="msg" data-msg></span></div>';
+  }
+  async function doLink(rel) {
+    const box = editBox(rel); if (!box) return;
+    const sel = box.querySelector("[data-pick]"), msg = box.querySelector("[data-msg]");
+    const gcode = sel && sel.value;
+    if (!gcode) { if (msg) { msg.className = "msg err"; msg.textContent = "Pick a file first."; } return; }
+    if (msg) { msg.className = "msg"; msg.textContent = "linking…"; }
+    const r = await jpost("/api/models/link", { gcode, file: rel, type: typeSlug() });
+    if (!r.ok) { if (msg) { msg.className = "msg err"; msg.textContent = r.d.error || "could not link it"; } return; }
+    applyRequest(rel, r.d.request);
+    const d = await jget("/api/models/gcodes?type=" + encodeURIComponent(typeSlug()));
+    if (d) renderLinkPanel(rel, d);
+    // panel was just rebuilt (fresh markup, no [data-msg] to reuse) - say it at the top instead
+    box.insertAdjacentHTML("afterbegin", '<div class="msg">Linked ' + esc(gcode) + (r.d.dispatched ? " - matched an open print request and queued one print of it in Dispatch." : ".") + "</div>");
+  }
+  async function doUnlink(gcode, rel) {
+    const box = editBox(rel); if (!box) return;
+    const r = await jpost("/api/models/link", { gcode });
+    if (!r.ok) { alert(r.d.error || "could not unlink it"); return; }
+    const d = await jget("/api/models/gcodes?type=" + encodeURIComponent(typeSlug()));
+    if (d) renderLinkPanel(rel, d);
+  }
+  // Patches a card's badge in place from a fresh `request` object (or null),
+  // without a full grid reload - used after link/unlink/clear so the panel
+  // interaction stays snappy.
+  function applyRequest(rel, request) {
+    const it = itemOf(rel); if (it) it.requested = request || null;
+    const c = cardOf(rel); const holder = c && c.querySelector(".mdl-reqhold");
+    if (holder) holder.innerHTML = it ? reqBadge(it) : "";
+  }
+  async function clearRequest(rel) {
+    const r = await jpost("/api/models/print-request/clear", { file: rel });
+    if (!r.ok) { alert(r.d.error || "Could not clear it"); return; }
+    applyRequest(rel, null);
   }
 
   // ---- v2.38: Convert to U1 ----------------------------------------------------
@@ -515,9 +628,13 @@
     if (t && t.dataset.rename != null) { closeEdit(t.dataset.rename); askRename(t.dataset.rename); return; }
     if (t && t.dataset.attrs != null) { closeEdit(t.dataset.attrs); openAttrs(t.dataset.attrs); return; }
     if (t && t.dataset.del != null) { closeEdit(t.dataset.del); askDelete(t.dataset.del); return; }
+    if (t && t.dataset.link != null) { closeEdit(t.dataset.link); askLink(t.dataset.link); return; }
     if (t && t.dataset.saveAttrs != null) { saveAttrs(t.dataset.saveAttrs); return; }
     if (t && t.dataset.doRename != null) { doRename(t.dataset.doRename); return; }
     if (t && t.dataset.doDel != null) { doDelete(t.dataset.doDel); return; }
+    if (t && t.dataset.doLink != null) { doLink(t.dataset.doLink); return; }
+    if (t && t.dataset.unlink != null) { doUnlink(t.dataset.unlink, t.dataset.for); return; }
+    if (t && t.dataset.clearreq != null) { clearRequest(t.dataset.clearreq); return; }
     if (t && t.dataset.cancel != null) { closeEdit(t.dataset.cancel); return; }
     const b = e.target.closest("[data-open]");
     if (!b) return;

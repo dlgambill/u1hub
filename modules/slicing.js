@@ -317,7 +317,7 @@ function register(ctx) {
     };
   };
   // Auto-create only the DEFAULT library folder. A user-configured path
-  // (X:\3mf-sorted) is never silently created — same ethos as type folders:
+  // (on a network share, say) is never silently created — same ethos as type folders:
   // if it's missing, status says so and the fix is the user's to make.
   if (!((ctx.cfg || {}).slicer || {}).srcFolder) { try { fs.mkdirSync(scfg().srcFolder, { recursive: true }); } catch {} }
 
@@ -400,7 +400,7 @@ function register(ctx) {
     logTail: (j.log || "").slice(-4000) });
 
   // Safe path inside the 3MF library only (one level of subfolders welcome —
-  // X:\3mf-sorted is organized that way).
+  // a sorted library is organized that way).
   function safe3mf(rel) {
     const c = scfg();
     const p = path.resolve(c.srcFolder, String(rel || ""));
@@ -587,7 +587,7 @@ function register(ctx) {
     });
   });
 
-  // UI-editable settings (v2.12, Danny's ask after a round of PowerShell JSON
+  // UI-editable settings (v2.12, asked for after a round of PowerShell JSON
   // surgery). Partial update; known keys only; empty string reverts a key to
   // its default. Applies LIVE — scfg() reads ctx.cfg fresh on every use, so
   // no restart semantics to be honest about. Paths are validated for shape,

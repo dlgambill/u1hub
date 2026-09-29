@@ -422,7 +422,7 @@ async function stopHub() {
     const cfg0 = (await jget("/api/config")).body;
     const keep = cfg0.printers.map(p => ({ name: p.name, url: p.url, type: p.type }));
     // Same origin twice → 409 naming both, and NOTHING is written.
-    r = await jpost("/api/config", { printers: [{ name: "Alpha", url: "http://192.168.12.88" }, { name: "Bravo", url: "http://192.168.12.88/" }] });
+    r = await jpost("/api/config", { printers: [{ name: "Alpha", url: "http://192.168.1.88" }, { name: "Bravo", url: "http://192.168.1.88/" }] });
     ok(r.status === 409, "same IP twice → 409, save refused", r.status);
     ok(r.body && /Alpha/.test(r.body.error) && /Bravo/.test(r.body.error), "error names both printers", r.body);
     let now = (await jget("/api/config")).body;
@@ -707,7 +707,7 @@ async function stopHub() {
     ok(r.status === 502 && /not confirmed/.test(r.body.error) && mockU1.state.ptc.filament_color_rgba[0] === "123ABCFF",
       "silently-dropped write → 502 'not confirmed' off the read-back — no false ✓", r.body);
     mockU1.state.dropColorWrites = false;
-    // v2.22.1 (Danny, field-found 2026-09-02): loading a spool set the head's
+    // v2.22.1 (field-found 2026-09-02): loading a spool set the head's
     // COLOR and left its TYPE at NONE, so the touchscreen never saw it as
     // loaded. The material now rides along and is held to the same rule as
     // the color: the printer has to report it back. Each check here fails on
@@ -730,7 +730,7 @@ async function stopHub() {
         "…sent as the touchscreen's exact material command, then the untouched verified color command", sent);
       ok(!sent.some(s => /FILAMENT_SUB_TYPE|FILAMENT_TYPE='/.test(s)),
         "…and never the 2.22.1 shape the firmware refused as 'incomplete parameters'", sent);
-      // Danny's exact case: a roll recorded as "PLA+" with no separate variant.
+      // The exact field case: a roll recorded as "PLA+" with no separate variant.
       r = await jpost("/api/setcolor", { printer: 0, slot: 0, hex: "#A1B2C3", material: "PLA+" });
       ok(r.body.material && r.body.material.sent === "PLA" && r.body.material.sub === "PLA+" && r.body.material.confirmed === true
          && mockU1.state.ptc.filament_type[0] === "PLA",
@@ -1171,7 +1171,7 @@ async function stopHub() {
       // wide open again for the remaining checks
       await jpost("/api/dispatch/settings", { attended: { start: "00:00", end: "23:59" }, weekend: { start: "00:00", end: "23:59" } });
     }
-    // FINISH POLICY (Danny's rule): attended hours gate the START only \u2014
+    // FINISH POLICY (the farm's rule): attended hours gate the START only \u2014
     // prints run unattended, but the machine then waits for a human to clear
     // the bed, and the plan must model that wait honestly rather than
     // pretending the printer frees itself at 3am.
@@ -1327,7 +1327,7 @@ async function stopHub() {
       ok(r.status === 400, "assignment to a nonexistent printer refused", r.status);
       for (const id of idsA) await jpost("/api/dispatch/jobs/remove", { id });
     }
-    // REPLAN AFTER A MOVE (field-found 2026-08-30, Danny). Freeing a printer
+    // REPLAN AFTER A MOVE (field-found 2026-08-30). Freeing a printer
     // must actually free it. v2.11 wrote every planner choice into the same map
     // as the user's explicit Move, so after one plan() run nothing could ever
     // migrate: move a print off a machine, hit Replan, and the machine stayed
@@ -1391,7 +1391,7 @@ async function stopHub() {
       // ...but excluded from PLANNING is not the same as missing from the
       // picture. Before v2.15 a busy printer drew as an unexplained empty lane
       // until its ETA — the guide showed a hole where the most certain thing on
-      // the farm belongs (Danny, 2026-08-30).
+      // the farm belongs (2026-08-30).
       const run0 = (r.body.running || []).find(x => x.printer === 0);
       ok(run0 && run0.file === "single.gcode" && run0.est_end > Date.now() && run0.tracked === true,
         "the print running right now is reported separately, named, and marked tracked", r.body.running);
@@ -1639,7 +1639,7 @@ async function stopHub() {
         (r.body.attended || []).map(a => dayOf(a.from)).slice(0, 3));
       await jpost("/api/dispatch/settings", { attended: { start: "00:00", end: "23:59" }, weekend: { start: "00:00", end: "23:59" } });
     }
-    // A FINISHED JOB LEAVES (v2.14, Danny's call). It used to flip to state
+    // A FINISHED JOB LEAVES (v2.14, a deliberate call). It used to flip to state
     // "done" and sit in the list forever — 54 jobs in the field, 19 finished.
     // Nothing read them: job.history is consumed by nobody and printlog.json
     // already records "last printed" per file.
@@ -1760,7 +1760,7 @@ async function stopHub() {
     // v2.21: every injected script and the stylesheet carry ?v=<version>, and
     // the page itself says no-cache. Found on a real phone the hour 2.21
     // shipped: the page refreshed to 2.21 while the Resources tab kept running
-    // the cached 2.20 resources-ui.js — the labels Danny had just asked to
+    // the cached 2.20 resources-ui.js — the labels the owner had just asked to
     // change were still there, because a pull-to-refresh revalidates the HTML
     // but not the scripts it names. A versioned URL cannot go stale: after a
     // release it is simply a different URL.
@@ -1790,7 +1790,7 @@ async function stopHub() {
     ok(/id="dispadd"/.test(dpage) && /HubModules\.fileAction/.test(APP_JS()),
       "core exposes a module file-action button (the mobile path \u2014 touch never fires drag events)");
     // v2.22: FLUID/LOCKED schedule, a 1-5 priority (deadlines win, priority
-    // breaks ties), and the clamp on both. Danny, 2026-09-03. Each check here
+    // breaks ties), and the clamp on both. Owner, 2026-09-03. Each check here
     // fails on the pre-v2.22 Hub: priority defaulted to 0, there was no lock
     // endpoint, and the plan carried neither `locked` nor `new_since_lock`.
     {
@@ -1881,7 +1881,7 @@ async function stopHub() {
 
   console.log("\n== MOD6: feature toggles through the Settings API (v2.11) ==");
   {
-    // Danny's ask: modules switchable from the UI. The UI posts /api/config
+    // The ask: modules switchable from the UI. The UI posts /api/config
     // with a features map; it applies on the next boot, and /api/config shows
     // both the configured and the live map so the page can say "restart".
     r = await jget("/api/config");
@@ -1901,6 +1901,38 @@ async function stopHub() {
     // flip it back for a clean final state
     r = await jget("/api/config");
     await jpost("/api/config", { gcodeFolder: "./gcode", printers: r.body.printers, features: { camera: true } });
+  }
+
+  console.log("\n== TL40: timelapses opt-in, saved to a folder you pick (v2.40) ==");
+  {
+    // Capturing polls every printing U1's camera, so it is off until someone
+    // turns it on; and with no folder (and no storefront upload) it captures
+    // nothing even when on.
+    r = await jget("/api/timelapse");
+    ok(r.status === 404, "timelapse is off by default: no API", r.status);
+    ok(!/\/modules\/timelapse-ui\.js/.test(await (await fetch(HUB + "/")).text()), "…and no Settings card");
+    r = await jget("/api/config");
+    ok(r.body.features && r.body.features.timelapse === false, "the Settings module list offers it, unticked", r.body.features && r.body.features.timelapse);
+    await jpost("/api/config", { gcodeFolder: "./gcode", printers: r.body.printers, features: { camera: true, timelapse: true } });
+    await stopHub(); await startHub(hubDir);
+    ok(/\/modules\/timelapse-ui\.js/.test(await (await fetch(HUB + "/")).text()), "turned on: the Settings card is injected");
+    r = await jget("/api/timelapse");
+    ok(r.status === 200 && r.body.saveDir === "" && r.body.resolved === null && r.body.upload_configured === false && Array.isArray(r.body.capturing) && r.body.capturing.length === 0,
+      "on, no folder: answers, nowhere to save, nothing capturing", r.body);
+    ok(r.body.ffmpeg && typeof r.body.ffmpeg.ok === "boolean", "…and says whether ffmpeg is installed", r.body.ffmpeg);
+    const tlDir = path.join(tmp, "timelapses", "sub");
+    r = await jpost("/api/timelapse/settings", { saveDir: tlDir });
+    ok(r.status === 200 && r.body.resolved === tlDir && r.body.folder_ok === true && fs.existsSync(tlDir), "a folder is saved, resolved and created", r.body);
+    ok(JSON.parse(fs.readFileSync(path.join(hubDir, "config.json"), "utf8")).timelapse.saveDir === tlDir, "…and persisted in config.json");
+    r = await jpost("/api/timelapse/settings", { saveDir: "" });
+    ok(r.status === 200 && r.body.resolved === null && r.body.folder_ok === null, "a blank folder turns saving off", r.body);
+    const tsrc = fs.readFileSync(path.join(REPO, "modules", "timelapse.js"), "utf8");
+    ok(!/supabase\.co/.test(tsrc) && !/DEFAULT_UPLOAD_URL/.test(tsrc), "no storefront upload address is built in - uploads only with a configured uploadUrl + passcode");
+    const saveFn = tsrc.slice(tsrc.indexOf("async function saveToFolder"), tsrc.indexOf("function checkFfmpeg"));
+    ok(saveFn.length > 200 && !/Sync\(/.test(saveFn) && /COPYFILE_EXCL/.test(saveFn), "saving is async and never overwrites a video already in the folder");
+    r = await jget("/api/config");
+    await jpost("/api/config", { gcodeFolder: "./gcode", printers: r.body.printers, features: { camera: true, timelapse: false } });
+    await stopHub(); await startHub(hubDir);
   }
 
   console.log("\n== SLICE: U1-ify transplant + /api/slice queue (v2.12) ==");
@@ -2131,7 +2163,7 @@ async function stopHub() {
     // Snapmaker's Klipper fork pauses on its own detectors (tangle, runout,
     // ...) and reports the reason in print_stats.exception while .message
     // stays "". Shape captured live on U2 2026-09-08. Before this, a paused
-    // card said "paused" and nothing else - Danny had to walk to the machine.
+    // card said "paused" and nothing else - the owner had to walk to the machine.
     mockU1.state.printState = "paused"; mockU1.state.filename = "penguin.gcode";
     mockU1.state.exception = { id: 523, index: 0, code: 38, message: "detect filament tangled!", level: 2 };
     await sleep(4300);                                   // outlive the 4 s probe cache
@@ -2359,7 +2391,7 @@ async function stopHub() {
     // Resources tab only, so the tab where rolls are actually managed showed
     // "add buy link" and nothing else for every spool without a URL — the
     // feature existed and was invisible exactly where someone would look for
-    // it. Danny found it in about a minute.
+    // it. The owner found it in about a minute.
     let sp = await jget("/api/resources/spools");
     ok(sp.status === 200 && (sp.body.spools || []).every(x => "buy" in x),
       "/api/resources/spools carries a buy link for every spool",
@@ -2409,7 +2441,7 @@ async function stopHub() {
       ok(/<a class="rbuy"/.test(rui), "…it is a real anchor");
       ok(/>Replenish on Amazon<\/a>/.test(code) && /Replenish on Amazon<\/button>/.test(code),
         "the Resources control reads 'Replenish on Amazon' in every state, disabled included");
-      // v2.21: the disclosure is a footnote, not a headline. Danny: "either
+      // v2.21: the disclosure is a footnote, not a headline. The owner: "either
       // move this to the bottom of the page, or remove it, since it is already
       // on the settings." Moved, not removed — a disclosure belongs on the page
       // that carries the links — but it renders into #res-disc, which the
@@ -2447,7 +2479,7 @@ async function stopHub() {
     ok(r.body.affiliate.tagged_rows === 0,
       "…so the disclosure line stops claiming something is earned", r.body.affiliate);
     // v2.21: the switch is readable without the rollup, because Settings now
-    // carries it too. Danny went looking for it in Settings and it was not
+    // carries it too. The owner went looking for it in Settings and it was not
     // there — a switch findable only from the right tab in the right state is
     // not a setting.
     let ag = await jget("/api/resources/affiliate");
@@ -2460,7 +2492,7 @@ async function stopHub() {
     {
       const idx = PAGE_SRC();   // v2.23: the page's HTML plus its (now external) script
       ok(/setAffOn/.test(idx) && /receives a small commission/.test(idx) && /uncheck this box/.test(idx),
-        "Settings carries the affiliate choice, in plain words, with the box Danny asked for");
+        "Settings carries the affiliate choice, in plain words, with the box the owner asked for");
       // And the slicing warning: the feature ships unfinished, so ticking its
       // box must say so BEFORE it lands in the config, and offer the fork.
       ok(/not yet ready for use/.test(idx) && /github\.com\/dlgambill\/u1hub/.test(idx.slice(idx.indexOf("not yet ready"))),
@@ -2485,7 +2517,7 @@ async function stopHub() {
     // --- v2.19 regression guard: the colour library is not a shelf -----------
     // v2.16 read STATE.local as if it held physical rolls. It does not: rfid.js
     // concatenates it with the 2,266 FilamentColors swatches purely as a search
-    // pool for binding a tag. The result was seven invented spools on Danny's
+    // pool for binding a tag. The result was seven invented spools on the owner's
     // farm — one with no brand or name at all, two whose hex was the #888888
     // placeholder rather than the colour they claim — each handed a default
     // 1000 g of filament that does not exist, in the match pool and in the
@@ -3160,7 +3192,7 @@ async function stopHub() {
       ok(nmod.compose({ type: "print.started", printer: "U1", filename: "x.gcode" }, on) === false, "compose: started is off by default");
       const m4 = nmod.compose({ type: "printer.offline", printer: "U3", sinceMs: Date.now() - 120000 }, on);
       ok(m4 && /U3 is unreachable/.test(m4.title) && /2 min/.test(m4.body), "compose: offline names the printer and how long", m4);
-      ok(nmod.topicOk("dannys-farm_7f3a") && !nmod.topicOk("has space") && !nmod.topicOk(""), "topic validation: ntfy's character set");
+      ok(nmod.topicOk("my-farm_7f3a") && !nmod.topicOk("has space") && !nmod.topicOk(""), "topic validation: ntfy's character set");
     }
 
     let r = await jget("/api/notify");
@@ -3675,7 +3707,7 @@ async function stopHub() {
       const tplPs = { printer_model: "Snapmaker U1", printer_settings_id: "Snapmaker U1 (0.4 nozzle)", print_settings_id: "0.20 Standard @Snapmaker U1 (0.4 nozzle)",
         enable_prime_tower: "0", prime_tower_width: "20", wall_loops: "2", top_shell_layers: "4", brim_width: "0", outer_wall_speed: ["150"], nozzle_temperature: ["210"],
         sparse_infill_density: "25%", support_filament: "0", layer_height: "0.2", seam_position: "aligned", post_process: [], filename_format: "{input_filename_base}.gcode",
-        filament_colour: ["#FF0000FF"], filament_type: ["PLA"], filament_settings_id: ["SF3D PLA"], different_settings_to_system: ["", "", ""] };
+        filament_colour: ["#FF0000FF"], filament_type: ["PLA"], filament_settings_id: ["My PLA"], different_settings_to_system: ["", "", ""] };
       const tplPath = path.join(tmp, "my-u1-template.3mf");
       fs.writeFileSync(tplPath, buildZip([{ name: "Metadata/project_settings.config", data: Buffer.from(JSON.stringify(tplPs)) }, { name: "3D/3dmodel.model", data: Buffer.from("<model/>") }]));
       const srcPs = { printer_model: "Bambu Lab X1 Carbon", printer_settings_id: "Bambu Lab X1 Carbon 0.4 nozzle", print_settings_id: "0.20mm Standard @BBL X1C",
@@ -3721,7 +3753,7 @@ async function stopHub() {
       ok(JSON.stringify(ops.outer_wall_speed) === '["150"]' && JSON.stringify(ops.nozzle_temperature) === '["210"]', "copy: speeds and temperatures stay the U1's (tuning for the X1C does not cross over)");
       ok(JSON.stringify(ops.post_process) === "[]" && ops.filename_format === "{input_filename_base}.gcode" && !("bambu_only_thing" in ops), "copy: no post-process script, no filename format, no keys Snapmaker Orca does not know");
       ok(ops.support_filament === "0", "copy: a support filament past slot 4 goes back to default");
-      ok(JSON.stringify(ops.filament_colour) === JSON.stringify(["#D57E0B", "#FFFFFF", "#FAE9B4", "#000000"]) && JSON.stringify(ops.filament_type) === JSON.stringify(["PLA", "PLA", "PLA", "PLA"]) && ops.filament_settings_id.length === 4 && ops.filament_settings_id.every(x => x === "SF3D PLA"), "copy: the designer's colors (first four) on the template's filament presets and types", { c: ops.filament_colour, t: ops.filament_type });
+      ok(JSON.stringify(ops.filament_colour) === JSON.stringify(["#D57E0B", "#FFFFFF", "#FAE9B4", "#000000"]) && JSON.stringify(ops.filament_type) === JSON.stringify(["PLA", "PLA", "PLA", "PLA"]) && ops.filament_settings_id.length === 4 && ops.filament_settings_id.every(x => x === "My PLA"), "copy: the designer's colors (first four) on the template's filament presets and types", { c: ops.filament_colour, t: ops.filament_type });
       const dirty = String(ops.different_settings_to_system[0]).split(";");
       ok(dirty.includes("prime_tower_width") && dirty.includes("wall_loops") && !dirty.includes("sparse_infill_density") && ops.different_settings_to_system.length === 6, "copy: Orca's own-values list names what was carried and nothing that matched", ops.different_settings_to_system);
       ok(!on.has("Metadata/filament_settings_1.config") && !on.has("Metadata/process_settings_1.config"), "copy: stale embedded filament and process presets stripped");
@@ -3754,7 +3786,53 @@ async function stopHub() {
       ok(r.status === 200 && r.body.u1_template_set === null && r.body.folder === mroot, "settings: clear resets the template to the default lookup and keeps the folder", r.body);
       try { fs.rmSync(path.join(mroot, "MW Maker"), { recursive: true, force: true }); } catch {}
     }
-    // v2.33: sort orders and "most printed". Danny (2026-09-24): "Can I get
+    // v2.40: print requests from 3MF Explorer. A request plus a gcode link
+    // queues ONE print; the "x24" in the gcode's name is pieces on that plate,
+    // recorded on the request, never turned into 24 prints.
+    {
+      mk("PR Maker/Tiny Turtle/Tiny Turtle.3mf", [{ name: "3D/3dmodel.model", data: Buffer.from("<model/>") },
+        { name: "Metadata/project_settings.config", data: proj(["#00FF00"], "Snapmaker U1") }]);
+      await jget("/api/models?refresh=1");
+      for (let i = 0; i < 20; i++) { r = await jget("/api/models?q=" + encodeURIComponent("*turtle*")); if (!r.body.refreshing && r.body.total) break; await sleep(150); }
+      const tok = JSON.parse(fs.readFileSync(path.join(hubDir, "config.json"), "utf8")).models.explorerToken;
+      ok(typeof tok === "string" && tok.length >= 32, "a pairing token for 3MF Explorer is generated once and kept in config.json");
+      const gdirPR = path.join(hubDir, "gcode");
+      fs.mkdirSync(gdirPR, { recursive: true });
+      fs.writeFileSync(path.join(gdirPR, "Tiny Turtle - PR Maker x24.gcode"), "; estimated printing time (normal mode) = 1h 2m 3s\n; filament used [g] = 12.34\nG28\n");
+      const reqPR = async (body, t) => { const res = await fetch(HUB + "/api/models/print-request", { method: "POST", headers: Object.assign({ "Content-Type": "application/json" }, t ? { "X-U1-Token": t } : {}), body: JSON.stringify(body) }); return { status: res.status, body: await res.json().catch(() => null) }; };
+      r = await reqPR({}, tok);
+      ok(r.status === 400, "print-request: a path is required", r.body);
+      r = await reqPR({ path: path.join(tmp, "elsewhere.3mf") }, tok);
+      ok(r.status === 404 && /not on the shelf/.test(r.body.error), "print-request: a file outside the models folder is refused", r.body);
+      r = await reqPR({ path: path.join(mroot, "PR Maker", "Tiny Turtle", "Tiny Turtle.3mf"), sha256: "ab12" }, tok);
+      ok(r.status === 200 && r.body.rel === "PR Maker/Tiny Turtle/Tiny Turtle.3mf" && r.body.request.status === "requested" && r.body.dispatched === false,
+        "print-request: marked, nothing to print yet (no gcode linked)", r.body);
+      r = await jget("/api/models?requested=1");
+      ok(r.body.requested_total === 1 && r.body.items.length === 1 && r.body.items[0].requested.status === "requested", "the Requested view shows it, with a count", { t: r.body.requested_total, n: r.body.items.length });
+      const jobsBefore = (await jget("/api/dispatch")).body;
+      const nBefore = Array.isArray(jobsBefore) ? jobsBefore.length : (jobsBefore && jobsBefore.jobs || []).length;
+      r = await jpost("/api/models/link", { gcode: "Tiny Turtle - PR Maker x24.gcode", file: "PR Maker/Tiny Turtle/Tiny Turtle.3mf", type: "u1" });
+      ok(r.status === 200 && r.body.dispatched === true && r.body.job && r.body.job.qty === 1 && r.body.request.status === "dispatched" && r.body.request.pieces === 24,
+        "linking its gcode queues ONE print in Dispatch; x24 is recorded as 24 pieces, not 24 prints", r.body && { d: r.body.dispatched, qty: r.body.job && r.body.job.qty, pieces: r.body.request && r.body.request.pieces });
+      const jobsAfter = (await jget("/api/dispatch")).body;
+      const listAfter = Array.isArray(jobsAfter) ? jobsAfter : (jobsAfter && jobsAfter.jobs || []);
+      ok(listAfter.length === nBefore + 1 && listAfter.some(j => j.file === "Tiny Turtle - PR Maker x24.gcode" && j.qty === 1), "…and Dispatch holds exactly one job for it");
+      r = await jpost("/api/models/link", { gcode: "Tiny Turtle - PR Maker x24.gcode", file: "PR Maker/Tiny Turtle/Tiny Turtle.3mf", type: "u1" });
+      ok(r.status === 200 && r.body.dispatched === false, "linking again does not queue a second print");
+      r = await jpost("/api/models/print-request/clear", { file: "PR Maker/Tiny Turtle/Tiny Turtle.3mf" });
+      ok(r.status === 200 && (await jget("/api/models?requested=1")).body.requested_total === 0, "a request can be cleared");
+      const mcodePR = fs.readFileSync(path.join(REPO, "modules", "models.js"), "utf8");
+      const prRoute = mcodePR.slice(mcodePR.indexOf('app.post("/api/models/print-request"'), mcodePR.indexOf('app.get("/api/models/print-requests"'));
+      ok(prRoute.length > 300 && !/Sync\(/.test(prRoute), "the print-request route does no synchronous file IO");
+      ok(/function maybeAutoDispatch[\s\S]{0,120}try \{/.test(mcodePR), "auto-dispatch never throws (a busy share once surfaced as an unhandled rejection)");
+      const jid = listAfter.find(j => j.file === "Tiny Turtle - PR Maker x24.gcode");
+      if (jid) await jpost("/api/dispatch/jobs/remove", { id: jid.id });
+      await jpost("/api/models/link", { gcode: "Tiny Turtle - PR Maker x24.gcode" });
+      try { fs.unlinkSync(path.join(gdirPR, "Tiny Turtle - PR Maker x24.gcode")); } catch {}
+      await jpost("/api/models/delete", { file: "PR Maker/Tiny Turtle/Tiny Turtle.3mf" });
+      try { fs.rmSync(path.join(mroot, "PR Maker"), { recursive: true, force: true }); } catch {}
+    }
+    // v2.33: sort orders and "most printed". Asked for (2026-09-24): "Can I get
     // some sort options here... alphabetical, oldest, newest, most printed,
     // random". The print counts come from the printers' own Moonraker job
     // history, matched to shelf files by a recorded link (when the Hub watched
@@ -3792,7 +3870,7 @@ async function stopHub() {
 
       await jpost("/api/models/settings", { folder: mroot });
       // v2.36: format folders, the browsing random, and the loose-files filter.
-      // Danny (2026-09-26): "make the models tab less clunky... improve the random".
+      // Asked for (2026-09-26): "make the models tab less clunky... improve the random".
       {
         const rels = ["U1/Poke Prints/Wooper.3mf", "U1/Poke Prints/Umbreon.3mf", "prusa-format/ZOU3D/Baby Ness/Baby_Ness.3mf",
           "prusa-format/Cinderwing3D/turtle.3mf", "prusa-format/MatMire Makes/Opossum/x.3mf", "ZOU3D/Spider/Spider.3mf",
@@ -3947,7 +4025,7 @@ async function stopHub() {
 
   console.log("\n== PLAN36: the planner stops idling printers (v2.36) ==");
   {
-    // Danny (2026-09-26): "jobs appearing multiple times and the schedule not
+    // Asked for (2026-09-26): "jobs appearing multiple times and the schedule not
     // being very efficient". Two causes, both pinned here.
     //
     // 1. Where a job starts on a lane. Driven through pickStart() with a
@@ -3990,11 +4068,11 @@ async function stopHub() {
       };
     };
     const at = (day, h, m) => day * DAY + ((h * 60) + (m || 0)) * M;
-    // Danny's real week: Sun 00-24, Mon 06-24, Tue-Thu 16-24, Fri 06-24, Sat 00-24.
-    const danny = [[[0, 1440]], [[360, 1440]], [[960, 1440]], [[960, 1440]], [[960, 1440]], [[360, 1440]], [[0, 1440]]];
-    let p = pickStart(at(2, 16), 13 * 60, false, mkCal(danny, 13 * 60));
+    // A real week: Sun 00-24, Mon 06-24, Tue-Thu 16-24, Fri 06-24, Sat 00-24.
+    const week = [[[0, 1440]], [[360, 1440]], [[960, 1440]], [[960, 1440]], [[960, 1440]], [[360, 1440]], [[0, 1440]]];
+    let p = pickStart(at(2, 16), 13 * 60, false, mkCal(week, 13 * 60));
     ok(p && p.start === at(2, 16), "a 13-hour job ready Tuesday 16:00 starts then, not Friday 06:00 (the old walk idled the printer 2.5 days to 'fit')", p && (p.start - at(2, 16)) / 3600000 + " h late");
-    p = pickStart(at(6, 4, 33), 1338, false, mkCal(danny, 1338));
+    p = pickStart(at(6, 4, 33), 1338, false, mkCal(week, 1338));
     ok(p && p.start === at(6, 4, 33), "a 22-hour job ready Saturday 04:33 starts then: Sat 00-23:59 and Sun 00-23:59 are one block, not two with a wall at midnight", p && (p.start - at(6, 4, 33)) / 3600000 + " h late");
     const split = [0, 1, 2, 3, 4, 5, 6].map(() => [[480, 540], [1020, 1410]]);
     p = pickStart(at(1, 8), 62, false, mkCal(split, 62));
@@ -4003,7 +4081,7 @@ async function stopHub() {
     ok(p && p.start === at(1, 17), "a job that ends in NEXT morning's window is a good fit, not an overrun to avoid");
     const shape = [0, 1, 2, 3, 4, 5, 6].map(() => [[420, 540], [1020, 1320]]);
     ok(pickStart(at(1, 7), 600, true, mkCal(shape, 600)) === null, "strict (finish must be attended, same block): a 10-hour job with 2- and 5-hour blocks is still honestly unplannable");
-    p = pickStart(at(6, 4, 33), 1338, true, mkCal(danny, 1338));
+    p = pickStart(at(6, 4, 33), 1338, true, mkCal(week, 1338));
     ok(p && p.start === at(6, 4, 33), "strict: across the joined weekend block a 22-hour job fits", p && (p.start - at(6, 4, 33)) / 3600000);
     // A later fitting start past the first start's bed-clear moment is refused.
     const wk = [0, 1, 2, 3, 4, 5, 6].map(d => d === 5 ? [[360, 1440]] : [[960, 1440]]);
@@ -4037,7 +4115,7 @@ async function stopHub() {
 
   console.log("\n== SUG: the 3MF settings suggester (v2.28) ==");
   {
-    // Danny (2026-09-22): the 2.25 pre-flight "doesn't exactly match the
+    // Asked for (2026-09-22): the 2.25 pre-flight "doesn't exactly match the
     // shape I wanted - I want it to evaluate a 3MF and suggest the best
     // slicer settings for it, part of the Models cards." Three layers here:
     // the pure mesh measurements, the brief they become, and the route that
@@ -4204,7 +4282,7 @@ async function stopHub() {
 
   console.log("\n== MGN: worth printing? (v2.28) ==");
   {
-    // Danny's rule: filament under $0.02/g, sell for at least $0.12/g, and
+    // The farm's rule: filament under $0.02/g, sell for at least $0.12/g, and
     // watch the hours. No price to type: grams and time come from the file,
     // the plate count from its name.
     const mg = require(path.join(REPO, "modules", "margin.js"));
@@ -4221,7 +4299,7 @@ async function stopHub() {
     ok(estMinutes("1d 2h 3m") === 1563 && estMinutes("; estimated printing time (normal mode) = 23h 59m 30s") === 1440 && estMinutes("nope") === null, "estMinutes: the slicer's time string, whole line or bare value", [estMinutes("1d 2h 3m"), estMinutes("nope")]);
 
     let r = await jget("/api/margin");
-    ok(r.status === 200 && r.body.sell_per_g === 0.12 && r.body.cost_per_g === 0.02, "GET /api/margin: Danny's rates are the defaults", r.body);
+    ok(r.status === 200 && r.body.sell_per_g === 0.12 && r.body.cost_per_g === 0.02, "GET /api/margin: the rule-of-thumb rates are the defaults", r.body);
     r = await jpost("/api/margin/settings", { sell_per_g: "abc" });
     ok(r.status === 400, "a rate that is not a number is refused", r.status);
     r = await jpost("/api/margin/settings", { sell_per_g: 0.15, cost_per_g: 0.025 });
@@ -4395,7 +4473,7 @@ async function stopHub() {
   }
 
   // ---- KLIPPER: each printer's own UI, proxied through the Hub (v2.21) ----
-  // Danny: "if I'm outside of the network I can't access the printers Klipper
+  // The owner: "if I'm outside of the network I can't access the printers Klipper
   // pages." The tunnel publishes ONE origin — the Hub — so nine LAN hosts were
   // unreachable from anywhere but the house, and the ↗ on every Dash card was a
   // link that only worked when you did not need it.
@@ -4539,7 +4617,7 @@ async function stopHub() {
       ok(/function klipperHref/.test(idx) && /"\/p\/"\s*\+\s*p\.id/.test(idx),
         "the Dash card link can go through the Hub proxy (the remote path)");
       // v2.21.1: on the LAN the link goes STRAIGHT to the printer IP; the proxy
-      // is the fallback for when the page came in over the tunnel. Danny's call
+      // is the fallback for when the page came in over the tunnel. A deliberate call
       // after the tunnel WebSocket turned out to die at Cloudflare's edge.
       ok(/function onLan\(/.test(idx) && /onLan\(\)\s*\?\s*p\.url\s*:\s*"\/p\/"/.test(idx),
         "…but on the LAN it links direct to the printer, bypassing the proxy entirely");
