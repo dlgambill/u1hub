@@ -661,7 +661,10 @@
       if (s.state === "watching") return '<div class="mdl-sess"><span>⏳ <b>' + f + "</b> is open in Orca. Slice it, then save the gcode into the library folder - the Hub is watching for it.</span><span class=\"k\">since " + new Date(s.launchedAt).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }) + '</span><button class="btn ghost" data-dismiss="' + s.id + '" style="font-size:11px; padding:3px 9px; margin-left:auto">Stop watching</button></div>';
       if (s.state === "done") return '<div class="mdl-sess"><span>✓ Orca saved <b>' + esc(s.newGcode) + "</b>.</span>" +
         '<button class="btn primary" data-select="' + esc(s.newGcode) + '" style="font-size:11.5px; padding:4px 10px">Select in library</button>' +
-        (window.HUB_FEATURES && window.HUB_FEATURES.dispatch !== false ? '<button class="btn ghost" data-dispatch="' + esc(s.newGcode) + '" data-type="' + esc(s.type || "u1") + '" style="font-size:11.5px; padding:4px 10px">Send to Dispatch</button>' : "") +
+        (window.HUB_FEATURES && window.HUB_FEATURES.dispatch !== false
+          ? (s.queued ? '<span class="k">✓ ' + (s.queued.existing ? "already in the Dispatch queue" : "queued in Dispatch") + "</span>"
+                      : '<button class="btn ghost" data-sendsess="' + s.id + '" style="font-size:11.5px; padding:4px 10px">Send to Dispatch</button>')
+          : "") +
         '<button class="btn ghost" data-dismiss="' + s.id + '" style="font-size:11px; padding:3px 9px; margin-left:auto">Dismiss</button></div>';
       return '<div class="mdl-sess"><span class="k">Stopped watching for ' + f + " (30 minutes passed).</span><button class=\"btn ghost\" data-dismiss=\"" + s.id + '" style="font-size:11px; padding:3px 9px; margin-left:auto">Dismiss</button></div>';
     }).join("");
@@ -675,12 +678,13 @@
       if (typeof window.selectFile === "function") window.selectFile(t.dataset.select);
       return;
     }
-    if (t.dataset.dispatch) {
+    if (t.dataset.sendsess) {
+      // v2.40: queued through the session, so it happens once however often
+      // the strip is redrawn (see /api/models/sessions/send).
       t.disabled = true;
-      const r = await jpost("/api/dispatch/jobs", { file: t.dataset.dispatch, type: t.dataset.type || "u1", qty: 1 });
-      t.disabled = false;
-      if (!r.ok) { alert(r.d.error || "Dispatch refused it"); return; }
-      t.textContent = "Queued ✓";
+      const r = await jpost("/api/models/sessions/send", { id: Number(t.dataset.sendsess) });
+      if (!r.ok) { t.disabled = false; alert(r.d.error || "Dispatch refused it"); return; }
+      pollSessions(true);
     }
   }
 

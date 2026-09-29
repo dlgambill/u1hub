@@ -1234,10 +1234,29 @@ function register(ctx) {
   // gcode) can push a real job through the exact same contract - clamps,
   // fileInfo lookup, bundle check - without going back out over HTTP to talk
   // to itself. Returns { job } or { error, status }; never throws.
+  //
+  // v2.40: DUPLICATES. The same file already waiting in the queue (state
+  // queued, not in a bundle) is refused with 409 and the existing job,
+  // unless the caller says `again: true`. Found live 2026-09-29: two extra
+  // "Impossible Vortex" and one extra "King Cobra" sitting queued minutes
+  // apart while the first copy printed - most likely a Send to Dispatch
+  // button that kept offering itself after it had already queued the file.
+  // Wanting more of something is a count on the job that is already there
+  // (the Dispatch tab offers exactly that on a 409); a second job for the
+  // same file is how a queue ends up printing things twice by accident.
+  // A copy that is already PRINTING does not block a new job - "print
+  // another one after this" is a normal ask.
+  // Every job also records where it came from (`source`), and creation is
+  // logged, so the next surprise in the queue can be traced.
   function createJob(b) {
     b = b || {};
     const file = String(b.file || "").trim();
     if (!file) return { error: "Job needs a file", status: 400 };
+    const type = String(b.type || "u1");
+    if (!b.again && !b.bundle_id) {
+      const dupe = D.jobs.find(x => x.file === file && (x.type || "u1") === type && x.state === "queued" && !x.bundle_id);
+      if (dupe) return { error: "'" + file + "' is already in the queue (" + dupe.remaining + " to print). Raise its count instead of adding it twice.", status: 409, duplicate: dupe };
+    }
     const info = ctx.fileInfo(file, b.type);
     if (!info.exists) return { error: "'" + file + "' not found in that type's folder", status: 404 };
     const qty = Math.max(1, Math.min(999, parseInt(b.qty, 10) || 1));
@@ -1251,14 +1270,16 @@ function register(ctx) {
       bundle_id: b.bundle_id || null,
       needs_finish: !!b.needs_finish,   // "I want to be here when it lands"
       est_minutes: info.estMinutes, colors: info.colors, multi: info.multi,
-      state: "queued", created: Date.now(), history: [], printing_on: null
+      state: "queued", created: Date.now(), history: [], printing_on: null,
+      source: String(b.source || "api").slice(0, 40)
     };
     D.jobs.push(job); save();
+    ctx.hublog("info", "dispatch: queued '" + file + "' x" + qty + " (" + job.source + ", job " + job.id + ")");
     return { job };
   }
   app.post("/api/dispatch/jobs", (req, res) => {
     const r = createJob(req.body || {});
-    if (r.error) return res.status(r.status || 400).json({ error: r.error });
+    if (r.error) return res.status(r.status || 400).json({ error: r.error, duplicate: r.duplicate || undefined });
     res.json({ ok: true, job: r.job });
   });
   app.post("/api/dispatch/jobs/update", (req, res) => {
@@ -1390,10 +1411,12 @@ function register(ctx) {
       const job = { id: newId("job"), file: f, type: String(b.type || "u1"), qty, remaining: qty,
         deadline: null, priority: clampPrio(b.priority), bundle_id: bundle.id,
         needs_finish: !!b.needs_finish, est_minutes: info.estMinutes, colors: info.colors,
-        multi: info.multi, state: "queued", created: Date.now(), history: [], printing_on: null };
+        multi: info.multi, state: "queued", created: Date.now(), history: [], printing_on: null,
+        source: String(b.source || "bundle").slice(0, 40) };
       D.jobs.push(job); return job;
     });
     save(); res.json({ ok: true, bundle, jobs });
+    ctx.hublog("info", "dispatch: queued bundle '" + bundle.name + "' (" + jobs.length + " files x" + qty + ")");
   });
   // Manual override: put this job on that printer (or clear the pin so the
   // scheduler is free to choose again).

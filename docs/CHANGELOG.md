@@ -98,6 +98,15 @@ opened (the designer's name is ignored while comparing). When nothing
 matches, it still links but marks it unverified on the card. Existing links
 that fail the same check are dropped once at startup, with a note in the log.
 
+**No more accidental duplicate jobs.** Dispatch refuses to add a file that
+is already waiting in the queue and offers to raise that job's count instead;
+a copy that is already printing does not count, so "print another after this
+one" still works. The Send to Dispatch button on a finished Orca session now
+queues through the session and stays done - it used to come back every time
+the strip redrew, which is how extra copies of a job could pile up. The Add
+button ignores a second click while the first is still going. Every job now
+records where it came from, and each new job is written to the Hub's log.
+
 **The x number, explained.** `Title - Designer x24.gcode` means 24 pieces on
 one plate. Worth printing divides by it, print requests record it, and Most
 printed ignores it when matching. The README now has a section on it.

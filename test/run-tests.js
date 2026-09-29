@@ -1000,7 +1000,7 @@ async function stopHub() {
     // Reset the tray the setcolor-honesty section painted, so the swap math
     // below asserts against a known loadout (red + green on T1/T2).
     mockU1.state.ptc.filament_color_rgba[0] = "FF0000FF";
-    r = await jpost("/api/dispatch/jobs", { file: "multi.gcode", type: "u1", qty: 2, deadline: Date.now() + 60 * 60000 });
+    r = await jpost("/api/dispatch/jobs", { again: true, file: "multi.gcode", type: "u1", qty: 2, deadline: Date.now() + 60 * 60000 });
     ok(r.status === 200 && r.body.job.colors.length === 3 && r.body.job.est_minutes === 62 && r.body.job.multi === true,
       "job captures USED palette (3 colors — the 0 g white is defined-but-unused) + estimate (1h 2m → 62) + multi class",
       r.body.job && { colors: r.body.job.colors, est: r.body.job.est_minutes });
@@ -1035,7 +1035,7 @@ async function stopHub() {
       // holds: a far-future, low-priority job that stays behind multi.gcode.
       fs.copyFileSync(path.join(gcodeDir, "single.gcode"), path.join(gcodeDir, "dsp-guard.gcode"));
       await jget("/api/files?type=u1");
-      let d = await jpost("/api/dispatch/jobs", { file: "dsp-guard.gcode", type: "u1", qty: 2, priority: 1, deadline: Date.now() + 30 * 86400000 });
+      let d = await jpost("/api/dispatch/jobs", { again: true, file: "dsp-guard.gcode", type: "u1", qty: 2, priority: 1, deadline: Date.now() + 30 * 86400000 });
       const GUARDJOB = d.body.job && d.body.job.id;
       d = await jpost("/api/files/delete", { name: "dsp-guard.gcode", type: "u1" });
       ok(d.status === 409 && /Dispatch job/.test(d.body.error) && /2 copies/.test(d.body.error),
@@ -1163,8 +1163,15 @@ async function stopHub() {
       r = await jget("/api/dispatch/plan");
       const s2 = (r.body.slots || []).find(x => !x.unplannable);
       const mins = ms => { const d = new Date(ms); return d.getHours() * 60 + d.getMinutes(); };
-      ok(s2 && ((mins(s2.est_start) >= 480 && mins(s2.est_end) <= 540) || (mins(s2.est_start) >= 1020 && mins(s2.est_end) <= 1410)),
-        "62-min job placed wholly inside one attended block (not the 1-hour morning one)",
+      // v2.40: wall-clock fix. Under the default finish policy ("anytime")
+      // a print may START late in the evening block and finish unattended -
+      // the 2.36 rule is to start now rather than idle until tomorrow. So run
+      // late in the evening (after ~22:28) the job legitimately ends past
+      // 23:30, and this check went red for an hour a day. What must hold:
+      // wholly inside a block, or started inside the evening one.
+      ok(s2 && ((mins(s2.est_start) >= 480 && mins(s2.est_end) <= 540) || (mins(s2.est_start) >= 1020 && mins(s2.est_end) <= 1410)
+                || (mins(s2.est_start) >= 1020 && mins(s2.est_start) < 1410 && s2.est_start < Date.now() + 36e5)),
+        "62-min job placed wholly inside one attended block (not the 1-hour morning one), or started now in the evening block",
         s2 && new Date(s2.est_start).toString().slice(0, 21) + " -> " + new Date(s2.est_end).toTimeString().slice(0, 5));
       ok(s2 && !(mins(s2.est_start) < 540 && mins(s2.est_end) > 540),
         "never straddles the gap between blocks", s2 && mins(s2.est_end));
@@ -1180,7 +1187,7 @@ async function stopHub() {
       const shape = { on: true, windows: [{ start: "07:00", end: "09:00" }, { start: "17:00", end: "22:00" }] };
       const w3 = {}; DAYK3.forEach(k => w3[k] = shape);
       await jpost("/api/dispatch/settings", { week: w3, finish_policy: "anytime" });
-      r = await jpost("/api/dispatch/jobs", { file: "long.gcode", type: "u1", qty: 2 });
+      r = await jpost("/api/dispatch/jobs", { again: true, file: "long.gcode", type: "u1", qty: 2 });
       ok(r.status === 200 && r.body.job.est_minutes === 600, "10-hour job added (est parsed)", r.body.job && r.body.job.est_minutes);
       const LONGID = r.body.job.id;
       r = await jget("/api/dispatch/plan");
@@ -1213,6 +1220,32 @@ async function stopHub() {
       await jpost("/api/dispatch/jobs/remove", { id: LONGID });
       await jpost("/api/dispatch/settings", { attended: { start: "00:00", end: "23:59" }, weekend: { start: "00:00", end: "23:59" } });
     }
+    // v2.40 DUPLICATES: the same file already waiting in the queue is refused
+    // (409 + the existing job) unless the caller says again. Found live:
+    // extra copies of jobs queued minutes apart while the first printed.
+    {
+      r = await jpost("/api/dispatch/jobs", { file: "single.gcode", type: "u1", qty: 1, source: "dispatch-tab" });
+      ok(r.status === 200 && r.body.job.source === "dispatch-tab", "a job records where it came from", r.body.job && r.body.job.source);
+      const A = r.body.job.id;
+      r = await jpost("/api/dispatch/jobs", { file: "single.gcode", type: "u1", qty: 1 });
+      ok(r.status === 409 && r.body.duplicate && r.body.duplicate.id === A && /already in the queue/.test(r.body.error),
+        "the same file again while it waits in the queue: 409 with the job that is already there", r.body);
+      r = await jget("/api/dispatch");
+      ok(r.body.jobs.filter(j => j.file === "single.gcode" && j.state === "queued").length === 1, "…and no second job was created");
+      r = await jpost("/api/dispatch/jobs", { file: "single.gcode", type: "u1", qty: 1, again: true });
+      ok(r.status === 200 && r.body.job.id !== A && r.body.job.source === "api", "again: true adds it on purpose (and an unnamed caller is recorded as api)");
+      const B = r.body.job.id;
+      r = await jpost("/api/dispatch/jobs/update", { id: A, qty: 3 });
+      ok(r.status === 200 && r.body.job.qty === 3 && r.body.job.remaining === 3, "wanting more is a count on the job that is already there");
+      await jpost("/api/dispatch/jobs/remove", { id: A }); await jpost("/api/dispatch/jobs/remove", { id: B });
+      const dui = fs.readFileSync(path.join(REPO, "public", "modules", "dispatch-ui.js"), "utf8");
+      ok(/let ADDING = false/.test(dui) && /if \(ADDING\) return;/.test(dui) && /r\.status === 409/.test(dui),
+        "the Dispatch Add button ignores a second click while the first is in flight, and offers to raise the count on a 409");
+      const mui4 = fs.readFileSync(path.join(REPO, "public", "modules", "models-ui.js"), "utf8");
+      const msrc = fs.readFileSync(path.join(REPO, "modules", "models.js"), "utf8");
+      ok(!/jpost\("\/api\/dispatch\/jobs"/.test(mui4) && /\/api\/models\/sessions\/send/.test(mui4) && /if \(s\.queued\) return res\.json/.test(msrc),
+        "Send to Dispatch on an Orca session goes through the session, which remembers it queued (it used to reappear on every redraw)");
+    }
     // SPREAD: with idle machines available, independent jobs must go to
     // DIFFERENT printers. (Field-found 2026-08-27: scoring swaps before finish
     // time packed everything onto already-used lanes while 3 printers sat
@@ -1221,7 +1254,7 @@ async function stopHub() {
     {
       const ids = [];
       for (let i = 0; i < 3; i++) {
-        r = await jpost("/api/dispatch/jobs", { file: "single.gcode", type: "u1", qty: 1 });
+        r = await jpost("/api/dispatch/jobs", { again: true, file: "single.gcode", type: "u1", qty: 1 });
         ids.push(r.body.job.id);
       }
       r = await jget("/api/dispatch/plan");
@@ -1299,7 +1332,7 @@ async function stopHub() {
     {
       const idsA = [];
       for (let i = 0; i < 2; i++) {
-        r = await jpost("/api/dispatch/jobs", { file: "multi.gcode", type: "u1", qty: 1 });
+        r = await jpost("/api/dispatch/jobs", { again: true, file: "multi.gcode", type: "u1", qty: 1 });
         idsA.push(r.body.job.id);
       }
       r = await jget("/api/dispatch/plan");
@@ -1336,9 +1369,9 @@ async function stopHub() {
     // happened to win.
     {
       const laneOf = (slots, id) => (slots.find(s => s.job_id === id && !s.unplannable) || {}).printer;
-      r = await jpost("/api/dispatch/jobs", { file: "long.gcode", type: "u1", qty: 1 });
+      r = await jpost("/api/dispatch/jobs", { again: true, file: "long.gcode", type: "u1", qty: 1 });
       const BLOCKER = r.body.job.id;
-      r = await jpost("/api/dispatch/jobs", { file: "single.gcode", type: "u1", qty: 1 });
+      r = await jpost("/api/dispatch/jobs", { again: true, file: "single.gcode", type: "u1", qty: 1 });
       const MOVER = r.body.job.id;
       r = await jget("/api/dispatch/plan");
       const lB = laneOf(r.body.slots || [], BLOCKER), lM = laneOf(r.body.slots || [], MOVER);
@@ -1357,7 +1390,7 @@ async function stopHub() {
       // Placement is per COPY: a qty-2 job with two idle machines must use both.
       // Two genuinely idle machines are the whole point here, so park whatever
       // earlier sections left in the queue for the duration and restore it.
-      r = await jpost("/api/dispatch/jobs", { file: "single.gcode", type: "u1", qty: 2 });
+      r = await jpost("/api/dispatch/jobs", { again: true, file: "single.gcode", type: "u1", qty: 2 });
       const PAIR = r.body.job.id;
       const parked = ((await jget("/api/dispatch")).body.jobs || [])
         .filter(j => j.id !== PAIR && j.state !== "done" && j.state !== "paused").map(j => j.id);
@@ -1374,7 +1407,7 @@ async function stopHub() {
     // when Dispatch arrives. Those prints must be claimed, or the planner
     // schedules copies of work in progress.
     {
-      r = await jpost("/api/dispatch/jobs", { file: "single.gcode", type: "u1", qty: 2 });
+      r = await jpost("/api/dispatch/jobs", { again: true, file: "single.gcode", type: "u1", qty: 2 });
       const AID = r.body.job.id;
       mockU1.state.printState = "printing"; mockU1.state.filename = "single.gcode";
       await sleep(4500);
@@ -1406,7 +1439,7 @@ async function stopHub() {
     // printer holds one job, so a wrong attachment can never be re-adopted -
     // there has to be a way to let go.
     {
-      r = await jpost("/api/dispatch/jobs", { file: "single.gcode", type: "u1", qty: 1 });
+      r = await jpost("/api/dispatch/jobs", { again: true, file: "single.gcode", type: "u1", qty: 1 });
       const RID = r.body.job.id;
       await jpost("/api/dispatch/jobs/assign", { id: RID, printer: 0 });
       // attach it by hand the way the collision did
@@ -1482,7 +1515,7 @@ async function stopHub() {
       // Nothing to be late against: no target, no per-job deadline. The report
       // must say "nothing judged", not show a green all-clear that means
       // nothing.
-      r = await jpost("/api/dispatch/jobs", { file: "multi.gcode", type: "u1", qty: 3 });
+      r = await jpost("/api/dispatch/jobs", { again: true, file: "multi.gcode", type: "u1", qty: 3 });
       const TJOB = r.body.job.id;
       r = await jget("/api/dispatch/plan");
       ok(r.body.report && r.body.report.judged === 0 && r.body.report.misses === 0
@@ -1524,7 +1557,7 @@ async function stopHub() {
       // A job's OWN deadline wins over the farm target, looser or tighter.
       // Overriding a deliberately later deadline would invent a miss nobody
       // asked about, and a report that cries wolf stops being read.
-      r = await jpost("/api/dispatch/jobs", { file: "single.gcode", type: "u1", qty: 1,
+      r = await jpost("/api/dispatch/jobs", { again: true, file: "single.gcode", type: "u1", qty: 1,
                                               deadline: Date.now() + 20 * 24 * 3600000 });
       const TOWN = r.body.job.id;
       r = await jget("/api/dispatch/plan");
@@ -1537,7 +1570,7 @@ async function stopHub() {
 
       // TOO LONG: no wait to blame — the run alone overshoots. An idle farm
       // would not help, and the fix has to say so rather than "free capacity".
-      r = await jpost("/api/dispatch/jobs", { file: "long.gcode", type: "u1", qty: 1 });
+      r = await jpost("/api/dispatch/jobs", { again: true, file: "long.gcode", type: "u1", qty: 1 });
       const TLONG = r.body.job.id, ESTL = r.body.job.est_minutes || 60;
       await jpost("/api/dispatch/settings", { target: Date.now() + Math.max(1, Math.floor(ESTL / 2)) * 60000 });
       r = await jget("/api/dispatch/plan");
@@ -1559,7 +1592,7 @@ async function stopHub() {
             ? { on: false, windows: [] }
             : { on: true, windows: [{ start: "00:00", end: "23:59" }] };
         await jpost("/api/dispatch/settings", { week });
-        r = await jpost("/api/dispatch/jobs", { file: "single.gcode", type: "u1", qty: 1 });
+        r = await jpost("/api/dispatch/jobs", { again: true, file: "single.gcode", type: "u1", qty: 1 });
         const TWAIT = r.body.job.id;
         r = await jget("/api/dispatch/plan");
         let w = (r.body.slots || []).find(s => s.job_id === TWAIT && !s.unplannable);
@@ -1644,7 +1677,7 @@ async function stopHub() {
     // Nothing read them: job.history is consumed by nobody and printlog.json
     // already records "last printed" per file.
     {
-      r = await jpost("/api/dispatch/jobs", { file: "single.gcode", type: "u1", qty: 2 });
+      r = await jpost("/api/dispatch/jobs", { again: true, file: "single.gcode", type: "u1", qty: 2 });
       const RM = r.body.job.id;
       const jobById = async id => ((await jget("/api/dispatch")).body.jobs || []).find(j => j.id === id);
       // Drive the executor deterministically — printing, then complete, one
@@ -1806,7 +1839,7 @@ async function stopHub() {
       await sleep(4600);                                    // age the probe cache to idle
 
       // -- priority: a 1-5 dial, default 3, clamped --
-      r = await jpost("/api/dispatch/jobs", { file: "single.gcode", type: "u1", qty: 1 });
+      r = await jpost("/api/dispatch/jobs", { again: true, file: "single.gcode", type: "u1", qty: 1 });
       ok(r.body.job.priority === 3, "a job added with no priority defaults to 3 (normal), not 0", r.body.job.priority);
       const DEF22 = r.body.job.id;
       r = await jpost("/api/dispatch/jobs/update", { id: DEF22, priority: 99 });
@@ -1814,15 +1847,15 @@ async function stopHub() {
       await jpost("/api/dispatch/jobs/remove", { id: DEF22 });
 
       // -- deadlines win, priority breaks ties --
-      r = await jpost("/api/dispatch/jobs", { file: "single.gcode", type: "u1", qty: 1, priority: 1 });
+      r = await jpost("/api/dispatch/jobs", { again: true, file: "single.gcode", type: "u1", qty: 1, priority: 1 });
       const LOP22 = r.body.job.id;
-      r = await jpost("/api/dispatch/jobs", { file: "single.gcode", type: "u1", qty: 1, priority: 5 });
+      r = await jpost("/api/dispatch/jobs", { again: true, file: "single.gcode", type: "u1", qty: 1, priority: 5 });
       const HIP22 = r.body.job.id;
       r = await jget("/api/dispatch/plan");
       let good22 = (r.body.slots || []).filter(s => !s.unplannable);
       ok(good22.length && good22[0].job_id === HIP22,
         "with no deadlines, priority 5 is scheduled ahead of priority 1", good22.map(s => ({ id: s.job_id, p: s.printer })));
-      r = await jpost("/api/dispatch/jobs", { file: "single.gcode", type: "u1", qty: 1, priority: 1, deadline: Date.now() + 60 * 60000 });
+      r = await jpost("/api/dispatch/jobs", { again: true, file: "single.gcode", type: "u1", qty: 1, priority: 1, deadline: Date.now() + 60 * 60000 });
       const DUE22 = r.body.job.id;
       r = await jget("/api/dispatch/plan");
       good22 = (r.body.slots || []).filter(s => !s.unplannable);
@@ -1846,7 +1879,7 @@ async function stopHub() {
         "the locked board serves the same copies it froze", { frozenIds22, lockedIds22 });
       // Add work while locked: the frozen board must NOT reschedule; the new
       // job is reported off to the side instead of silently slipped in.
-      r = await jpost("/api/dispatch/jobs", { file: "single.gcode", type: "u1", qty: 1, priority: 5 });
+      r = await jpost("/api/dispatch/jobs", { again: true, file: "single.gcode", type: "u1", qty: 1, priority: 5 });
       const LATE22 = r.body.job.id;
       r = await jget("/api/dispatch/plan");
       const lockedSlots22 = (r.body.slots || []).filter(s => !s.unplannable);
@@ -2134,7 +2167,7 @@ async function stopHub() {
     // on disk must actually contain it, and no .tmp may be left behind. Either
     // symptom is the signature of that bug returning by any route.
     const dpath = path.join(hubDir, "dispatch.json");
-    r = await jpost("/api/dispatch/jobs", { file: "single.gcode", type: "u1", qty: 1 });
+    r = await jpost("/api/dispatch/jobs", { again: true, file: "single.gcode", type: "u1", qty: 1 });
     const PJOB = r.body.job.id;
     let onDisk = JSON.parse(fs.readFileSync(dpath, "utf8"));
     ok(onDisk.jobs.some(j => j.id === PJOB),
@@ -2245,7 +2278,7 @@ async function stopHub() {
 
     // multi.gcode: "filament used [g] = 10.0;12.5;3.2;0" against
     // "#FF0000;#00FF00;#0000FF;#FFFFFF". At qty 2 every number below is exact.
-    r = await jpost("/api/dispatch/jobs", { file: "multi.gcode", type: "u1", qty: 2 });
+    r = await jpost("/api/dispatch/jobs", { again: true, file: "multi.gcode", type: "u1", qty: 2 });
     const RESJOB = r.body.job.id;
 
     r = await jget("/api/resources");
@@ -2562,7 +2595,7 @@ async function stopHub() {
 
     // An unreadable file is a warning, never a silent omission.
     fs.writeFileSync(path.join(gcodeDir, "vanish.gcode"), GCODE_SINGLE);
-    r = await jpost("/api/dispatch/jobs", { file: "vanish.gcode", type: "u1", qty: 3 });
+    r = await jpost("/api/dispatch/jobs", { again: true, file: "vanish.gcode", type: "u1", qty: 3 });
     const VANISH = r.body.job.id;
     fs.rmSync(path.join(gcodeDir, "vanish.gcode"), { force: true });
     r = await jget("/api/resources");
@@ -2630,7 +2663,7 @@ async function stopHub() {
     ok(fleetN >= 2, "the fixture farm has at least two printers to redistribute across", fleetN);
 
     // Enough copies that both machines are certain to be used.
-    let r = await jpost("/api/dispatch/jobs", { file: "single.gcode", type: "u1", qty: 6 });
+    let r = await jpost("/api/dispatch/jobs", { again: true, file: "single.gcode", type: "u1", qty: 6 });
     const MJOB = r.body.job.id;
 
     const lanesOf = p => {
@@ -2795,7 +2828,7 @@ async function stopHub() {
       await startHub(hubDir, { U1HUB_DIR: altDir });
       const rv = await jget("/api/version");
       ok(rv.status === 200, "U1HUB_DIR: the Hub still runs from its install dir", rv.status);
-      const rj = await jpost("/api/dispatch/jobs", { file: "single.gcode", type: "u1", qty: 1 });
+      const rj = await jpost("/api/dispatch/jobs", { again: true, file: "single.gcode", type: "u1", qty: 1 });
       ok(rj.status === 200, "U1HUB_DIR: it accepts work normally", rj.status);
       await stopHub();
       const altDispatch = path.join(altDir, "dispatch.json");
@@ -2820,9 +2853,9 @@ async function stopHub() {
     // there would be nothing to push back.
     await jpost("/api/dispatch/maintenance", { printer: 1 });
 
-    let r = await jpost("/api/dispatch/jobs", { file: "single.gcode", type: "u1", qty: 1 });
+    let r = await jpost("/api/dispatch/jobs", { again: true, file: "single.gcode", type: "u1", qty: 1 });
     const A = r.body.job.id;
-    r = await jpost("/api/dispatch/jobs", { file: "multi.gcode", type: "u1", qty: 1 });
+    r = await jpost("/api/dispatch/jobs", { again: true, file: "multi.gcode", type: "u1", qty: 1 });
     const B = r.body.job.id;
 
     const order = async () => {
@@ -2887,7 +2920,7 @@ async function stopHub() {
     // --- a cycle must not hang the planner ---------------------------------------
     // `after` is stored in dispatch.json, which a human can edit. Two jobs
     // pointing at each other must degrade to "no reorder", never to a hang.
-    r = await jpost("/api/dispatch/jobs", { file: "multi.gcode", type: "u1", qty: 1 });
+    r = await jpost("/api/dispatch/jobs", { again: true, file: "multi.gcode", type: "u1", qty: 1 });
     const C = r.body.job.id;
     await stopHub();
     const dpath = path.join(hubDir, "dispatch.json");
@@ -4098,7 +4131,7 @@ async function stopHub() {
     // The Hub sees the printer through its fleet poll, not the mock's memory.
     const p0State = async () => { const fl = (await jget("/api/fleet")).body || []; return String((fl[0] && (fl[0].status || fl[0].state)) || "").toLowerCase(); };
     for (let i = 0; i < 60 && !/print/.test(await p0State()); i++) await sleep(250);
-    r = await jpost("/api/dispatch/jobs", { file: "single.gcode", type: "u1", qty: 1 });
+    r = await jpost("/api/dispatch/jobs", { again: true, file: "single.gcode", type: "u1", qty: 1 });
     const OCC = r.body.job && r.body.job.id;
     let plan = (await jget("/api/dispatch/plan")).body;
     const run0 = (plan.running || []).find(x => x.printer === 0);

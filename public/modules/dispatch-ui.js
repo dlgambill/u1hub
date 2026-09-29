@@ -70,7 +70,7 @@
   async function jget(p) { const r = await fetch(p); return { ok: r.ok, body: await r.json().catch(() => null) }; }
   async function jpost(p, b) {
     const r = await fetch(p, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(b || {}) });
-    return { ok: r.ok, body: await r.json().catch(() => null) };
+    return { ok: r.ok, status: r.status, body: await r.json().catch(() => null) };
   }
 
   // Take a printer out of service, or put it back. The server answers with the
@@ -1304,14 +1304,26 @@
       openPicker(el, dtGet(el), ms => dtSet(el, ms));
     };
     $$("#dsp-stage").onclick = () => addChip($$("#dsp-file").value);
+    let ADDING = false;   // v2.40: one Add at a time - a double click used to post twice
     $$("#dsp-add").onclick = async () => {
+      if (ADDING) return;
       if (!FILEQ.length && $$("#dsp-file").value) addChip($$("#dsp-file").value);
       if (!FILEQ.length) return;
+      ADDING = true; $$("#dsp-add").disabled = true;
+      try {
       const dl = dtGet($$("#dsp-dl"));
       const nf = $$("#dsp-on").checked;
       let r;
       if (FILEQ.length === 1) {
-        r = await jpost("/api/dispatch/jobs", { file: FILEQ[0].file, type: FILEQ[0].type, qty: FILEQ[0].qty || 1, deadline: dl, needs_finish: nf });
+        const want = FILEQ[0].qty || 1;
+        r = await jpost("/api/dispatch/jobs", { file: FILEQ[0].file, type: FILEQ[0].type, qty: want, deadline: dl, needs_finish: nf, source: "dispatch-tab" });
+        // v2.40: already waiting in the queue - offer to raise that job's
+        // count rather than stacking a second job for the same file.
+        const dupe = !r.ok && r.status === 409 && r.body && r.body.duplicate;
+        if (dupe) {
+          const more = confirm("'" + FILEQ[0].file + "' is already in the queue (" + dupe.remaining + " to print).\n\nAdd " + want + " more to that job instead?");
+          r = more ? await jpost("/api/dispatch/jobs/update", { id: dupe.id, qty: dupe.qty + want }) : { ok: true };
+        }
       } else {
         // One bundle. bundle-jobs applies a single qty to every member, so when
         // the counts differ (2 clickers + 1 stego) the bundle is created with
@@ -1320,6 +1332,7 @@
         const qtys = FILEQ.map(x => x.qty || 1);
         const base = Math.min(...qtys);
         r = await jpost("/api/dispatch/bundle-jobs", {
+          source: "dispatch-tab",
           files: FILEQ.map(x => x.file), type: FILEQ[0].type, qty: base,
           deadline: dl, needs_finish: nf, name: $$("#dsp-bundlename").value.trim()
         });
@@ -1333,6 +1346,7 @@
       if (!r.ok) alert((r.body && r.body.error) || "Add failed");
       else { FILEQ = []; $$("#dsp-bundlename").value = ""; dtSet($$("#dsp-dl"), null); $$("#dsp-on").checked = false; }
       load();
+      } finally { ADDING = false; $$("#dsp-add").disabled = false; }
     };
     $$("#dsp-replan").onclick = replan;
     $$("#dsp-adopt").onclick = async () => {

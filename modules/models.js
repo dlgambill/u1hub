@@ -595,7 +595,8 @@ function register(ctx) {
     if (!g) return null;
     const type = (LINKS_META[g] && LINKS_META[g].type) || "u1";
     const pieces = qtyFromName(g);                           // null when the name has no count
-    const r = create({ file: g, type, qty: 1, needs_finish: false });
+    let r = create({ file: g, type, qty: 1, needs_finish: false, source: "print-request" });
+    if (r.duplicate) r = { job: r.duplicate, joined: true };   // already waiting in the queue: the request rides on that job
     if (r.error) {
       hublog("warn", "models: print request for " + rel + " matched " + g + " but Dispatch refused it - " + r.error);
       return null;
@@ -1140,6 +1141,27 @@ function register(ctx) {
     res.json({ sessions: [...SESSIONS.values()].sort((a, b) => b.launchedAt - a.launchedAt) });
   });
   app.post("/api/models/sessions/dismiss", (req, res) => { SESSIONS.delete(Number((req.body || {}).id)); res.json({ ok: true }); });
+  // v2.40: "Send to Dispatch" on a finished Orca session, done HERE so it can
+  // only ever happen once per session. The button used to post straight to
+  // Dispatch and remember "Queued ✓" only in the page; every redraw of the
+  // strip (each poll, each new Open in Orca) put the button back, and the
+  // strip stays up for an hour - the likeliest source of the duplicate jobs
+  // found 2026-09-29. Now the session records the job, the strip shows it,
+  // and a second press answers with the same job.
+  app.post("/api/models/sessions/send", (req, res) => {
+    const s = SESSIONS.get(Number((req.body || {}).id));
+    if (!s || s.state !== "done" || !s.newGcode) return res.status(404).json({ error: "no finished Orca session with that id" });
+    if (s.queued) return res.json({ ok: true, already: true, job_id: s.queued.job_id });
+    const create = ctx.use("dispatch.createJob");
+    if (!create) return res.status(503).json({ error: "Dispatch is turned off" });
+    let r;
+    try { r = create({ file: s.newGcode, type: s.type || "u1", qty: 1, source: "models-orca" }); }
+    catch (e) { return res.status(500).json({ error: "could not queue it: " + (e && e.message || e) }); }
+    if (r.duplicate) { s.queued = { job_id: r.duplicate.id, at: Date.now(), existing: true }; return res.json({ ok: true, already: true, existing: true, job_id: r.duplicate.id }); }
+    if (r.error) return res.status(r.status || 400).json({ error: r.error });
+    s.queued = { job_id: r.job.id, at: Date.now() };
+    res.json({ ok: true, job_id: r.job.id });
+  });
 
   // ---- v2.40: print-request intake (3mf-explorer -> here) --------------------
   // POST /api/models/print-request { path, sha256?, designer?, title? } - a
