@@ -70,6 +70,28 @@ it is dead weight waiting for Danny to delete it - never read from it.
 goes in that project's log or in `C:\Users\Danny\code\MISTAKES-shared.md`, not
 here.
 
+## Things the Hub depends on outside this repo - never move them
+
+- **`X:\_MMF\u1_template.3mf`** (and `u1_template_supports.3mf` beside it) is
+  the U1 template Convert to U1 reads from the top of the models folder. It is
+  live configuration, not a library file: no reorg, rename, quarantine, dedupe
+  or cleanup - by 3MF Explorer, a script, or a session tidying `X:\_MMF` - may
+  move it. If it moves, Convert to U1 silently falls back to
+  `slicer-template.3mf` and converted files lose Danny's filament setup. It
+  happened once (3MF Explorer reorg batch `reorg-31b78e`, 2026-09-28, moved
+  both into `X:\_MMF\_repair\`; `reorg-fix-676494` put them back); Danny
+  asked for it to be written down. Stale copies in `X:\_quarantine\` are
+  duplicates from 9/16 to 9/22 - never restore from there. Registered in
+  SESSIONS.md, and in 3MF Explorer's own CLAUDE.md.
+- **The Hub runs as the Windows service `U1PrintHub`** (since 2026-09-28;
+  WinSW in `C:\Users\Danny\code\services\`, logs in `services\logs\`).
+  Restart it with `scripts\restart-4545.cmd` or `Restart-Service U1PrintHub`
+  (elevated); never `node server.js` by hand and never kill its node by port.
+  A service lives in the hidden session 0, so anything the Hub opens on
+  Danny's screen must go through `modules/desktop.js` `launchOnDesktop()`
+  (a plain `spawn` of a windowed program opens invisibly - that is how Open in
+  Orca broke on 2026-09-28).
+
 ## Hard rules
 
 1. **Rule #1 — read before writing.** Read every file you are about to change,
