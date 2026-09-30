@@ -77,6 +77,15 @@ printers, and nothing leaves your network unless you turn remote access on.
 
 ---
 
+### 2.40.1 - a tidier Logbook
+
+The Logbook's entries and schedule came out as tall cards that were mostly
+empty space, because they borrowed a name the page layout already uses for
+its own padding. They are compact again, the "Add the fix" and "refresh"
+links match the rest of the Hub instead of browser blue, and the delete
+button on each entry keeps a proper shape on a phone. The README has new
+pictures of print requests, the Logbook, Timelapses and 3MF Explorer.
+
 ## New in 2.40 - print requests, timelapses in a folder, and 3MF Explorer
 
 **Print requests from 3MF Explorer.** 3MF Explorer, the model-library app

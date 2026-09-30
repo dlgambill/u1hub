@@ -67,7 +67,25 @@ const SHOTS = [
     thenReady2: "#mdl-advbody tr", thenTimeout: 90000, extraMs: 2500 },
   { name: "jobcard",   file: "worth-printing.png",   w: 1440, h: 900,  url: "/#dash",      ready: ".pcard .pill",
     thenEval: "document.querySelector('.job').click();", thenReady: "#mgline.show",
-    thenEval2: "document.getElementById('advgo').click();", thenReady2: "#advbody .advverdict", thenTimeout: 90000, extraMs: 1500 }
+    thenEval2: "document.getElementById('advgo').click();", thenReady2: "#advbody .advverdict", thenTimeout: 90000, extraMs: 1500 },
+  // v2.40. Print requests need some on 4546: seed-4546 copies models-requests.json,
+  // and for a clean picture a few can be filed against 4546 the way 3MF Explorer
+  // files them (POST /api/models/print-request) - its state is a temp copy.
+  // Requested view, then the first card's Link gcode panel open.
+  { name: "requests",  file: "print-requests.png",   w: 1440, h: 1000, url: "/#models",    ready: ".mdl-card",
+    thenEval: "document.getElementById('mdl-grid').innerHTML=''; document.getElementById('mdl-req').click();",
+    thenReady: ".mdl-card .mdl-req",
+    thenEval2: "document.querySelector('.mdl-card [data-link]').click();",
+    thenReady2: ".mdl-edit.show [data-pick]", extraMs: 2500 },
+  // Settings > Timelapses, scrolled into view (needs features.timelapse on).
+  { name: "timelapse", file: "timelapses.png",       w: 1440, h: 900,  url: "/#settings",  ready: "#setTimelapse #tlState",
+    thenEval: "document.getElementById('setTimelapse').scrollIntoView({ block: 'center' });", clip: "#setTimelapse", extraMs: 2500 },
+  // v2.37 Logbook: entries, what's due, the maintenance schedule.
+  { name: "logbook",   file: "logbook.png",          w: 1440, h: 1100, url: "/#dash",      ready: ".pcard .pill", thenView: "logbook", thenReady: "#lgb-count", extraMs: 2500 },
+  // 3MF Explorer (its own app, on 7333): the library table with one model selected.
+  { name: "explorer",  file: "3mf-explorer.png",     w: 1600, h: 1000, base: "http://127.0.0.1:7333", url: "/", ready: "#tbody tr",
+    thenEval: "const q=document.getElementById('q'); q.value='crystal dragon'; q.dispatchEvent(new Event('input', { bubbles: true }));",
+    thenReady: "#tbody tr", thenEval2: "setTimeout(() => { const rows = [...document.querySelectorAll('#tbody tr')]; (rows.find(r => /CrystalDragon3MF/.test(r.textContent)) || rows[0]).click(); }, 1200);", thenReady2: "#detail img", extraMs: 3000 }
 ];
 
 (async () => {
@@ -83,7 +101,7 @@ const SHOTS = [
       const page = await browser.newPage();
       try {
         await page.setViewport({ width: s.w, height: s.h });
-        await page.goto(BASE + s.url, { waitUntil: "domcontentloaded", timeout: 30000 });
+        await page.goto((s.base || BASE) + s.url, { waitUntil: "domcontentloaded", timeout: 30000 });
         if (s.ready)
           await page.waitForSelector(s.ready, { timeout: 30000 });
         else if (s.readyText)
@@ -106,7 +124,8 @@ const SHOTS = [
         if (s.thenClick) { await page.click(s.thenClick); await new Promise(r => setTimeout(r, 600)); }
         // Let live tiles (progress bars, sparklines, thumbnails) finish a tick.
         await new Promise(r => setTimeout(r, s.extraMs || 1500));
-        await page.screenshot({ path: dest });
+        if (s.clip) { const el = await page.$(s.clip); await el.screenshot({ path: dest }); }
+        else await page.screenshot({ path: dest });
         console.log("  ok   " + s.name.padEnd(10) + s.file + "  " + fs.statSync(dest).size + " bytes");
       } catch (e) {
         bad++;

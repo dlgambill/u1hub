@@ -40,14 +40,21 @@
       ".lgb-sec .btn{font-family:inherit; letter-spacing:normal; text-transform:none;}",
       ".lgb-hours{font-family:var(--mono); font-size:11px; color:var(--ink-faint); display:flex; flex-wrap:wrap; gap:4px 12px;}",
       ".lgb-hours b{color:var(--ink-dim); font-weight:600;}",
+      // in-text actions ("Add the fix", "refresh") read as the Hub's accent, not browser-default blue
+      ".lgb-hours a, .lgb-row .fix a{color:var(--accent,#f5b316); text-decoration:none; border-bottom:1px dotted currentColor;}",
+      ".lgb-hours a:hover, .lgb-row .fix a:hover{border-bottom-style:solid;}",
       ".lgb-row{display:flex; gap:10px; align-items:flex-start; padding:10px 12px; border:1px solid var(--line); border-radius:10px; background:var(--panel); margin-bottom:8px; flex-wrap:wrap;}",
-      ".lgb-row .main{flex:1 1 260px; min-width:0;}",
+      // lgb-main, not "main": the page layout owns .main (24-34px padding), and a
+      // bare .main here inherited it - every entry came out a tall, mostly empty card (2.40.1).
+      ".lgb-row .lgb-main{flex:1 1 260px; min-width:0;}",
       ".lgb-row .t{font-weight:600; color:var(--ink); overflow-wrap:anywhere;}",
       ".lgb-row .s{font-family:var(--mono); font-size:11px; color:var(--ink-faint); margin-top:3px; overflow-wrap:anywhere;}",
       ".lgb-row .fix{margin-top:6px; color:var(--ink-dim); overflow-wrap:anywhere;}",
       ".lgb-row .fix b{color:var(--ok,#3dd68c); font-weight:600;}",
       ".lgb-row .acts{display:flex; gap:6px; align-items:center; flex-wrap:wrap;}",
       ".lgb-row .btn{font-size:11.5px; padding:4px 9px;}",
+      // phones give buttons a 44px touch height; keep the lone "×" from turning into a thin sliver
+      ".lgb-row .acts .btn{min-width:36px; justify-content:center;}",
       ".lgb-row .btn.danger{color:var(--bad,#e5484d); border-color:color-mix(in srgb, var(--bad,#e5484d) 45%, var(--line));}",
       ".lgb-pill{font-family:var(--mono); font-size:10px; padding:1px 7px; border-radius:99px; border:1px solid var(--line); color:var(--ink-dim); white-space:nowrap;}",
       ".lgb-pill.due{color:var(--bad,#e5484d); border-color:color-mix(in srgb, var(--bad,#e5484d) 55%, var(--line));}",
@@ -124,7 +131,7 @@
       (rows.some(r => r.status === "soon") ? ' <span class="lgb-pill soon">' + rows.filter(r => r.status === "soon").length + " coming up</span>" : "") + "</div>" +
       rows.map(r => {
         const key = "done:" + r.task_id + ":" + r.printer;
-        return '<div class="lgb-row"><div class="main"><div class="t">' + esc(r.name) + " · " + esc(r.title) + '</div><div class="s">every ' + esc(every(r)) + " · " + esc(progress(r)) +
+        return '<div class="lgb-row"><div class="lgb-main"><div class="t">' + esc(r.name) + " · " + esc(r.title) + '</div><div class="s">every ' + esc(every(r)) + " · " + esc(progress(r)) +
           (r.last ? " · last " + fmtDate(r.last.at) : "") + "</div></div>" +
           '<div class="acts"><span class="lgb-pill ' + r.status + '">' + (r.status === "due" ? "due" : "soon") + '</span><button class="btn primary" data-open="' + esc(key) + '">Done</button></div>' +
           (OPEN === key ? '<div class="lgb-inline" data-enter><input class="field" id="lgb-note" placeholder="Note (optional): what you did, parts used"><button class="btn primary" data-go data-done="' + esc(r.task_id) + '" data-p="' + r.printer + '">Mark done</button><button class="btn ghost" data-close>Cancel</button></div>' : "") +
@@ -163,7 +170,7 @@
         : (e.kind === "issue" ? (OPEN === fixKey
             ? '<div class="lgb-inline" data-enter><input class="field" id="lgb-fx" placeholder="What fixed it"><button class="btn primary" data-go data-savefix="' + esc(e.id) + '">Save</button><button class="btn ghost" data-close>Cancel</button></div>'
             : '<div class="fix"><a href="#" data-open="' + esc(fixKey) + '">' + (e.source === "maintenance-mode" && e.back_at ? "What fixed it?" : "Add the fix") + "</a></div>") : "");
-      return '<div class="lgb-row"><div class="main"><div class="t">' + esc(e.what) + '</div><div class="s">' + fmtDate(e.at) + " · " + esc(e.name || "") +
+      return '<div class="lgb-row"><div class="lgb-main"><div class="t">' + esc(e.what) + '</div><div class="s">' + fmtDate(e.at) + " · " + esc(e.name || "") +
         (e.hours != null ? " · at " + fmtH(e.hours) : "") + (src ? " · " + src : "") + away + (e.file ? " · " + esc(String(e.file).replace(/\.gcode$/i, "")) : "") + "</div>" + fix + "</div>" +
         '<div class="acts"><span class="lgb-pill ' + e.kind + '">' + e.kind + "</span>" +
         (OPEN === rmKey ? '<button class="btn ghost danger" data-rm="' + esc(e.id) + '">Delete it</button><button class="btn ghost" data-close>Keep</button>' : '<button class="btn ghost" data-open="' + esc(rmKey) + '" title="Delete this entry" aria-label="Delete">×</button>') +
@@ -188,7 +195,7 @@
     const rows = DATA.tasks.map(t => {
       const st = byTask[t.id] || [];
       const rmKey = "trm:" + t.id;
-      return '<div class="lgb-row"><div class="main"><div class="t">' + esc(t.title) + '</div><div class="s">' + (t.printer === "all" ? "all printers" : esc((DATA.printers[t.printer] || {}).name || "")) + " · every " + esc(every(t)) + "</div>" +
+      return '<div class="lgb-row"><div class="lgb-main"><div class="t">' + esc(t.title) + '</div><div class="s">' + (t.printer === "all" ? "all printers" : esc((DATA.printers[t.printer] || {}).name || "")) + " · every " + esc(every(t)) + "</div>" +
         '<div class="lgb-chips">' + st.map(r => '<span class="lgb-pill ' + (r.status === "unknown" ? "" : r.status) + '" title="' + esc(progress(r)) + '">' + esc(r.name) + (r.status === "due" ? " due" : r.status === "soon" ? " soon" : "") + "</span>").join("") + "</div></div>" +
         '<div class="acts">' + (OPEN === rmKey ? '<button class="btn ghost danger" data-trm="' + esc(t.id) + '">Remove task</button><button class="btn ghost" data-close>Keep</button>' : '<button class="btn ghost" data-open="' + esc(rmKey) + '" title="Remove this task" aria-label="Remove">×</button>') + "</div></div>";
     }).join("");

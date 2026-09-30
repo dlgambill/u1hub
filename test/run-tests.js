@@ -3429,6 +3429,14 @@ async function stopHub() {
       const nui = fs.readFileSync(path.join(REPO, "public", "modules", "notify-ui.js"), "utf8");
       ok(/\/modules\/logbook-ui\.js/.test(html) && /HubModules\.register\("logbook", \{ tab: "Logbook"/.test(lui) && /data-upkeep="\$\{p\.id\}"/.test(appjs2) && /\["maintenance", "Maintenance due/.test(nui),
         "the Logbook tab is injected, the printer card draws the due line, and the notify settings have a Maintenance due switch");
+      // 2.40.1: the page layout owns .main (gold.css pads it 32-34px), and a
+      // module that reuses the bare class for its own rows inherits it - the
+      // Logbook's entries came out as tall, mostly empty cards. Module UIs
+      // prefix their class names.
+      const MAINCLS = /class=["'](?:[^"']*\s)?main(?:\s[^"']*)?["']/;
+      const leaks = fs.readdirSync(path.join(REPO, "public", "modules")).filter(f => f.endsWith(".js") &&
+        MAINCLS.test(fs.readFileSync(path.join(REPO, "public", "modules", f), "utf8")));
+      ok(leaks.length === 0, "no module UI puts the page layout's bare .main class on its own markup", leaks);
       await jpost("/api/notify/settings", { enabled: false });
       mockU1.state.totalPrintTime = 0;
     }

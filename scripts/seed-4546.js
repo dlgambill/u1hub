@@ -25,7 +25,7 @@ fs.mkdirSync(DST, { recursive: true });
 // v2.28: models-index.json so the Models tab draws at once instead of walking
 // the share for minutes; advisor.json so cached AI answers show without a
 // paid call (the key itself rides in config.json, as it always has).
-for (const f of ["config.json", "dispatch.json", "spools.json", "slots.json", "resources.json", "models-index.json", "advisor.json", "margin.json", "models-attrs.json", "models-links.json", "logbook.json"]) {
+for (const f of ["config.json", "dispatch.json", "spools.json", "slots.json", "resources.json", "models-index.json", "advisor.json", "margin.json", "models-attrs.json", "models-links.json", "logbook.json", "models-requests.json"]) {
   const from = path.join(SRC, f);
   if (fs.existsSync(from)) fs.copyFileSync(from, path.join(DST, f));
 }
@@ -39,6 +39,12 @@ const folder = cfg.gcodeFolder || "./gcode";
 cfg.gcodeFolder = path.isAbsolute(folder) ? folder : path.resolve(SRC, folder);
 // Never let the throwaway open a tunnel or answer on production's port.
 delete cfg.port;
+// v2.40: nor talk to anything outside this PC on production's behalf. A print
+// finishing while 4546 runs would otherwise upload a second storefront
+// timelapse and push a second phone notification. Timelapses still work,
+// into a folder inside the throwaway's own state dir.
+delete cfg.timelapseUpload; delete cfg.sf3dTimelapse; delete cfg.notify;
+cfg.timelapse = { saveDir: path.join(DST, "timelapses") };
 fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
 
 console.log("seeded " + DST);

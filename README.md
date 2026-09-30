@@ -84,6 +84,10 @@ the Hub shows its address and a token to copy into 3MF Explorer's settings.
 Both apps need to be looking at the same model folder, since a request names
 the file by where it sits on disk.
 
+![Models, filtered to Requested: what was marked for print in 3MF Explorer, one already queued, and Link gcode open on a card](docs/print-requests.png)
+
+![3MF Explorer: the whole model library in one searchable table, with the details of the model you pick](docs/3mf-explorer.png)
+
 **Ask what settings a model wants.** The Settings button on any Models card
 has Claude suggest the slicer settings for that file on the printer you pick,
 before you slice - a table of setting, the value to use, what the designer's
@@ -138,6 +142,8 @@ printer), every so many days, or both. What's due shows on the printer card,
 the Done button logs it, and your phone can get a heads-up when something
 comes due.
 
+![Logbook: what went wrong on each printer, what fixed it, and the upkeep schedule](docs/logbook.png)
+
 **Keep a timelapse of every print.** Turn on Timelapses in Settings and pick
 a folder. While a U1 prints, the Hub grabs a frame from its chamber camera each
 time a new layer starts, and when the print finishes it turns them into a
@@ -146,6 +152,8 @@ Cancelled and failed prints are thrown away. It needs the free
 [ffmpeg](https://ffmpeg.org/download.html) installed on the Hub computer, and
 the Settings card tells you whether it found it. A Hub restart in the middle
 of a print picks the same video back up instead of starting over.
+
+![Settings, Timelapses: the folder videos go to, whether ffmpeg is there, and what is recording now](docs/timelapses.png)
 
 **Let your phone tell you.** Settings can send push notifications through
 [ntfy](https://ntfy.sh) (free, no account) when a print finishes, a printer
