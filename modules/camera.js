@@ -24,6 +24,8 @@ function register(ctx) {
   const CAM_COOLDOWN_MS = 5000;   // plugin misbehaves if start_monitor is hammered
   const CAM_IDLE_MS = 60000;      // stop the stream after this long with no viewers
   const CAM_WARMUP_MS = 1400;     // first frame lands ~1.1s after start
+  const CAM_KEEPALIVE_MS = 4 * 60 * 1000; // the firmware stops the monitor 6 min
+                                  // after the last start_monitor - renew before
   const INFLIGHT = new Map();     // idx -> Promise<Buffer|null>, the grab everyone waiting shares (v2.35)
 
   function camConnect(idx) {
@@ -50,12 +52,28 @@ function register(ctx) {
     CAM.set(idx, c);
     return c;
   }
+  // The U1 firmware stops the monitor by itself 6 minutes after the last
+  // camera.start_monitor, whoever is still watching (found 2026-09-30 in the
+  // printer's unisrv.log: a notify_camera_monitoring_to_stop countdown, then
+  // camera_stop_stream, 360 s after the start). A socket that only started it
+  // once, on open, froze on its last picture after 6 minutes. So an open
+  // socket re-sends start_monitor when the monitor has stopped and before the
+  // 6 minutes run out.
+  function camRenew(c) {
+    const now = Date.now();
+    if (!c || !c.open || !c.ws || now < c.cooldownUntil) return false;
+    if (c.monitoring && now - c.startedAt < CAM_KEEPALIVE_MS) return false;
+    try { c.ws.send(JSON.stringify({ jsonrpc: "2.0", method: "camera.start_monitor", params: { domain: "lan", interval: 0 }, id: 902 })); } catch { return false; }
+    const wasOff = !c.monitoring;
+    c.monitoring = true; c.startedAt = now; c.cooldownUntil = now + CAM_COOLDOWN_MS;
+    return wasOff;
+  }
   // Ensure a live stream; returns true if this call had to (re)start it (cold).
   function camEnsure(idx) {
     const prev = CAM.get(idx);
-    const cold = !(prev && prev.open && prev.monitoring);
+    let cold = !(prev && prev.open && prev.monitoring);
     const c = camConnect(idx);
-    if (c) c.lastReq = Date.now();
+    if (c) { c.lastReq = Date.now(); if (camRenew(c)) cold = true; }
     return cold;
   }
   function camStop(idx) {

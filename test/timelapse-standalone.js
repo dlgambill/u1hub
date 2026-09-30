@@ -79,7 +79,7 @@ for (const [input, want] of SLUG_TABLE) {
   ok(!args.includes("-r"), "assembleArgs never passes a standalone output -r flag", { args });
   ok(args.includes("-framerate") && args[args.indexOf("-framerate") + 1] === "12",
     "assembleArgs sets -framerate from its fps argument", { args });
-  ok(args.includes("/tmp/frames/frame_%06d.jpg"), "assembleArgs points -i at the frame glob inside framesDir", { args });
+  ok(args.includes(require("path").join("/tmp/frames", "frame_%06d.jpg")), "assembleArgs points -i at the frame glob inside framesDir (on Windows too)", { args });
 }
 
 // ---- scaleFitFilter / stillSegmentFilter / mainSegmentFilter ----
@@ -169,5 +169,89 @@ for (const [input, want] of SLUG_TABLE) {
   ok(buggyArgs.includes("-r"), "the old buggy argv shape (with -r) is exactly what this test would flag", { buggyArgs });
 }
 
-console.log("\n" + pass + " passed, " + fail + " failed\n");
-process.exit(fail ? 1 : 0);
+// ---- 2026-09-30: stale frames ------------------------------------------------
+// A real video (Possum x2) held ~20 different pictures in 343 frames: the
+// printer stops its camera monitor 6 minutes after the last start_monitor,
+// and every grab after that saved the same old monitor.jpg.
+{
+  const { frameFreshness, parseYavg, keepFrames, FRESH_MAX_AGE_MS, DARK_YAVG } = require("../modules/timelapse.js");
+  const T = "Wed, 30 Sep 2026 01:08:07 GMT", T1 = "Wed, 30 Sep 2026 01:08:08 GMT", OLD = "Tue, 29 Sep 2026 23:24:59 GMT";
+  const f1 = frameFreshness(T, T, 0);
+  ok(f1.known && f1.fresh && f1.age === 0, "a frame written this second is fresh", f1);
+  ok(frameFreshness(T, T1, 0).fresh, "…and still fresh a second later (HTTP dates are whole seconds)");
+  const stale = frameFreshness(OLD, T, 0);
+  ok(stale.known && !stale.fresh && stale.age > FRESH_MAX_AGE_MS, "a monitor.jpg 1.5 hours old (what production showed) is stale", stale);
+  ok(!frameFreshness(T, T, Date.parse(T)).fresh, "the same picture as the last saved frame is not fresh, however recent");
+  ok(frameFreshness(T1, T1, Date.parse(T)).fresh, "a newer picture than the last saved frame is fresh");
+  // Judged by the printer's own clock: a Hub PC hours off does not matter,
+  // because only Last-Modified vs the printer's Date header is compared.
+  ok(frameFreshness("Wed, 30 Sep 2026 09:00:00 GMT", "Wed, 30 Sep 2026 09:00:01 GMT", 0).fresh, "freshness never reads the Hub's own clock");
+  const nk = frameFreshness(null, T, 0);
+  ok(nk.known === false && nk.fresh === false, "no Last-Modified: unknown (caller compares bytes instead)", nk);
+
+  const txt = "[Parsed_metadata_2 @ 0x1] frame:0    pts:0\n[Parsed_metadata_2 @ 0x1] lavfi.signalstats.YAVG=87.25\n" +
+    "[Parsed_metadata_2 @ 0x1] frame:1    pts:1\n[Parsed_metadata_2 @ 0x1] lavfi.signalstats.YAVG=0.047\n";
+  const y = parseYavg(txt);
+  ok(y.length === 2 && y[0] === 87.25 && y[1] === 0.047, "parseYavg reads ffmpeg's per-frame brightness in order", y);
+  ok(parseYavg("").length === 0 && parseYavg(null).length === 0, "parseYavg of nothing is an empty list");
+
+  // frames: 0 ok, 1 repeat of 0, 2 dark, 3 new, 4 repeat of 3, 5 new (same bytes as 0 but not adjacent to a kept 0)
+  const k = keepFrames([80, 80, 3, 90, 90, 80], ["a", "a", "b", "c", "c", "a"], DARK_YAVG);
+  ok(JSON.stringify(k) === "[0,3,5]", "keepFrames drops dark frames and back-to-back repeats, keeps order", k);
+  ok(JSON.stringify(keepFrames([], ["a", "b"], DARK_YAVG)) === "[0,1]", "no brightness readings: judge by repeats only (fail open)");
+  ok(keepFrames(new Array(261).fill(0.05), Array.from({ length: 261 }, (_, i) => "h" + i), DARK_YAVG).length === 0,
+    "the all-black overnight video (vaporeon x8, YAVG ~0.05) keeps nothing");
+}
+
+// camera.js's live view must renew the monitor: the U1 firmware stops it
+// 360 s after the last camera.start_monitor (printer unisrv.log,
+// 2026-09-30), and a socket that only started it on open froze on its last
+// picture. Driven for real: the module is registered against a fake ctx and a
+// fake WebSocket, the printer's "monitoring: false" is delivered, and the
+// clock is moved. CAMERA_JS lets rule 6 point this at the pre-fix file.
+async function liveViewCheck() {
+  const camPath = process.env.CAMERA_JS ? require("path").resolve(process.env.CAMERA_JS) : require.resolve("../modules/camera.js");
+  delete require.cache[camPath];
+  const sent = [];
+  let sock = null;
+  class FakeWS {
+    constructor() { sock = this; this.readyState = 1; setTimeout(() => this.onopen && this.onopen(), 0); }
+    send(m) { sent.push(JSON.parse(m).method); }
+    close() { this.readyState = 3; }
+  }
+  const realWS = global.WebSocket, realSI = global.setInterval, realFetch = global.fetch, realNow = Date.now;
+  let offset = 0;
+  global.WebSocket = FakeWS;
+  global.setInterval = () => ({ unref() {} });
+  global.fetch = async () => ({ ok: true, arrayBuffer: async () => new Uint8Array([0xff, 0xd8, 0xff, 0xd9]).buffer });
+  Date.now = () => realNow() + offset;
+  let handler = null;
+  const ctx = { printers: [{ name: "U1", url: "http://printer" }], app: { get: (route, fn) => { if (route === "/api/camera") handler = fn; } }, hublog() {} };
+  const res = { status() { return this; }, json() { return this; }, end() { return this; }, set() { return this; }, type() { return this; }, send() { return this; } };
+  const starts = () => sent.filter((m) => m === "camera.start_monitor").length;
+  try {
+    require(camPath).register(ctx);
+    await handler({ query: { id: "0" } }, res);
+    await new Promise((r) => setTimeout(r, 5));
+    const first = starts();
+    offset += 6000; // past the reconnect cooldown
+    sock.onmessage({ data: JSON.stringify({ method: "notify_camera_status_change", params: [{ monitor_domain: "lan", monitoring: false }] }) });
+    await handler({ query: { id: "0" } }, res);
+    const afterStop = starts();
+    offset += 5 * 60 * 1000; // still watching, five minutes on
+    await handler({ query: { id: "0" } }, res);
+    return { first, afterStop, afterKeepalive: starts() };
+  } finally {
+    global.WebSocket = realWS; global.setInterval = realSI; global.fetch = realFetch; Date.now = realNow;
+  }
+}
+
+(async () => {
+  const v = await liveViewCheck();
+  ok(v.first >= 1, "a live view starts the monitor", v);
+  ok(v.afterStop === v.first + 1, "when the printer reports the monitor stopped, the next view request starts it again", v);
+  ok(v.afterKeepalive === v.afterStop + 1, "a view still open after 5 minutes renews it before the firmware's 6-minute cutoff", v);
+
+  console.log("\n" + pass + " passed, " + fail + " failed\n");
+  process.exit(fail ? 1 : 0);
+})();

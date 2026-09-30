@@ -5,8 +5,11 @@
 //   1. "print.started" (core/events.js) opens the printer's chamber-camera
 //      socket (the same camera.start_monitor plugin modules/camera.js uses
 //      for live view - see there for the protocol notes) and polls
-//      /printer/objects/query?print_stats every CAPTURE_POLL_MS. Each time
-//      current_layer advances, one frame is grabbed from monitor.jpg.
+//      subscribes to print_stats on that same socket, so a layer change
+//      arrives the moment the printer reports it (CAPTURE_POLL_MS polling of
+//      /printer/objects/query?print_stats stays on as a fallback). Each time
+//      current_layer advances, one FRESH frame is grabbed from monitor.jpg -
+//      see capGrabFresh() for what "fresh" means and why it matters.
 //   2. "print.done" stops the poll and, if enough frames came in, runs
 //      ffmpeg once to turn frame_000001.jpg, frame_000002.jpg, ... into a
 //      silent .mp4 at CAPTURE_OUTPUT_FPS.
@@ -55,9 +58,27 @@ const MIN_DURATION_SEC = 1.5;           // guards against a 0-byte/corrupt
 const QUEUE_FILE = "timelapse-queue.json"; // survives a Hub restart mid-upload
 
 // ---- Chamber-camera frame capture (2026-09-24) ----
-const CAPTURE_POLL_MS = 8000;           // how often to ask the printer for
-                                         // its current layer while a print
-                                         // the Hub is watching is running
+const CAPTURE_POLL_MS = 8000;           // fallback: how often to ask the
+                                         // printer for its current layer
+                                         // (the socket subscription normally
+                                         // reports it first)
+const FRESH_MAX_AGE_MS = 3000;          // a monitor.jpg older than this (by
+                                         // the printer's own clock) is not
+                                         // today's frame - the monitor has
+                                         // stopped. HTTP dates are whole
+                                         // seconds and the plugin writes ~1 fps,
+                                         // so a live frame reads 0-2 s old
+const FRESH_WAIT_MS = 6000;             // how long one layer's grab keeps
+                                         // retrying for a fresh frame before
+                                         // skipping that layer
+const MONITOR_KEEPALIVE_MS = 4 * 60 * 1000; // renew start_monitor well
+                                         // before the firmware's 6-minute
+                                         // cutoff
+const REARM_COOLDOWN_MS = 5000;         // the plugin misbehaves if
+                                         // start_monitor is hammered (camera.js)
+const DARK_YAVG = 16;                   // mean brightness (0-255) below which
+                                         // a frame is treated as black - the
+                                         // chamber light was off
 const CAPTURE_QUERY_TIMEOUT_MS = 6000;  // per print_stats query
 const CAPTURE_OUTPUT_FPS = 12;          // frame rate of the assembled clip -
                                          // NOT the polling rate; a tall print
@@ -200,6 +221,63 @@ function assembleArgs(framesDir, outPath, fps) {
     "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p", "-an", outPath];
 }
 
+// 2026-09-30: a finished timelapse (Possum x2, U1, 343 frames) held only
+// about 20 different pictures - long runs of the SAME stale monitor.jpg
+// repeated, then a jump to a nearly finished print. Root cause, found in the
+// printer's own unisrv.log: the U1 firmware stops the camera monitor by
+// itself 360 s after the last camera.start_monitor (a
+// notify_camera_monitoring_to_stop countdown, then camera_stop_stream), no
+// matter who is still using it. The capture sent start_monitor once, when its
+// socket opened, so six minutes into every print it was saving the same old
+// picture - except when someone happened to open a live camera view, which
+// started the monitor again for another six minutes (the bursts of fresh
+// frames). Fixes: the capture renews the monitor every MONITOR_KEEPALIVE_MS,
+// restarts it the moment the printer reports it stopped, and never saves a
+// frame that is not NEW - frameFreshness() below.
+//
+// Is a monitor.jpg response a new picture? Judged by the PRINTER'S clock
+// alone (its Last-Modified against its own Date header), so a clock
+// difference between the printer and the Hub's PC cannot make every frame
+// look stale or fresh. Pure, for the standalone tests. { known: false } when
+// the printer sends no Last-Modified - the caller falls back to comparing
+// bytes with the previous frame.
+function frameFreshness(lastModified, date, prevMod) {
+  const mod = Date.parse(lastModified || "");
+  if (!Number.isFinite(mod)) return { known: false, fresh: false };
+  const now = Date.parse(date || "");
+  const age = Number.isFinite(now) ? now - mod : null;
+  const fresh = mod > (prevMod || 0) && (age === null || age <= FRESH_MAX_AGE_MS);
+  return { known: true, fresh, mod, age };
+}
+
+// ffmpeg's signalstats, printed per frame by the metadata filter, looks like
+// "lavfi.signalstats.YAVG=87.2" - one per frame, in frame order. Pure.
+function parseYavg(text) {
+  const out = [];
+  const re = /lavfi\.signalstats\.YAVG=([0-9.]+)/g;
+  let m;
+  while ((m = re.exec(String(text || "")))) out.push(parseFloat(m[1]));
+  return out;
+}
+
+// Which frames go into the video: not black (chamber light off - a whole
+// overnight print came out as 22 s of black on 2026-09-29), and not a byte-
+// identical repeat of the frame kept just before it. Returns kept indexes in
+// order. A frame with no brightness reading (ffmpeg missing a line) is kept -
+// fail open. Pure.
+function keepFrames(yavgs, hashes, darkBelow) {
+  const kept = [];
+  let lastHash = null;
+  for (let i = 0; i < hashes.length; i++) {
+    const y = yavgs[i];
+    if (typeof y === "number" && y < darkBelow) continue;
+    if (hashes[i] && hashes[i] === lastHash) continue;
+    kept.push(i);
+    lastHash = hashes[i];
+  }
+  return kept;
+}
+
 function register(ctx) {
   const queuePath = path.join(ctx.baseDir, QUEUE_FILE);
   const framesRoot = path.join(ctx.baseDir, FRAMES_DIR_NAME);
@@ -316,16 +394,60 @@ function register(ctx) {
   // /api/camera grab() - deliberately duplicated rather than shared, since
   // camera.js's version is wired to that module's own idle-reaped socket
   // lifecycle and importing across modules isn't how this codebase is split.
+  // Returns { buf, lastModified, date } so the caller can tell a new picture
+  // from the last one the camera left on disk (see frameFreshness above).
   async function grabFrame(base) {
     const ctrl = new AbortController();
     const to = setTimeout(() => ctrl.abort(), 5000);
     try {
-      const r = await fetch(base + "/server/files/camera/monitor.jpg", { signal: ctrl.signal });
+      const r = await fetch(base + "/server/files/camera/monitor.jpg", { signal: ctrl.signal, cache: "no-store" });
       clearTimeout(to);
       if (!r.ok) return null;
       const b = Buffer.from(await r.arrayBuffer());
-      return (b.length > 2 && b[0] === 0xff && b[1] === 0xd8) ? b : null; // valid JPEG SOI
+      if (!(b.length > 2 && b[0] === 0xff && b[1] === 0xd8)) return null; // valid JPEG SOI
+      return { buf: b, lastModified: r.headers.get("last-modified"), date: r.headers.get("date") };
     } catch { clearTimeout(to); return null; }
+  }
+  const sha1 = (b) => require("crypto").createHash("sha1").update(b).digest("hex");
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // (Re)starts the camera monitor on this capture's own socket - also the
+  // keepalive against the firmware's 6-minute cutoff - throttled,
+  // because camera.js learned the plugin misbehaves when start_monitor is
+  // hammered. With no open socket it reconnects instead (onopen starts it).
+  function capRearm(state) {
+    if (!state.active) return;
+    const now = Date.now();
+    if (now - (state.lastRearm || 0) < REARM_COOLDOWN_MS) return;
+    state.lastRearm = now;
+    const ws = state.ws;
+    if (ws && ws.readyState === 1) {
+      try { ws.send(JSON.stringify({ jsonrpc: "2.0", method: "camera.start_monitor", params: { domain: "lan", interval: 0 }, id: 952 })); } catch {}
+    } else if (!ws) capOpenSocket(state);
+  }
+
+  // One layer's frame: keep asking until monitor.jpg is a NEW picture, re-
+  // arming the monitor when it is not, for up to FRESH_WAIT_MS. Gives up
+  // (returns null) rather than saving a stale repeat - a skipped layer is a
+  // tiny gap, a stale one is a frozen video.
+  async function capGrabFresh(state) {
+    const deadline = Date.now() + FRESH_WAIT_MS;
+    while (state.active) {
+      const g = await grabFrame(state.base);
+      if (g) {
+        const f = frameFreshness(g.lastModified, g.date, state.lastFrameMod);
+        const h = sha1(g.buf);
+        if (f.known ? f.fresh : h !== state.lastFrameHash) {
+          if (f.known) state.lastFrameMod = f.mod;
+          state.lastFrameHash = h;
+          return g.buf;
+        }
+        capRearm(state);
+      }
+      if (Date.now() >= deadline) return null;
+      await sleep(700);
+    }
+    return null;
   }
 
   async function readCurrentLayer(base) {
@@ -355,9 +477,29 @@ function register(ctx) {
     try { ws = new WebSocket(wsUrl); } catch { return; }
     state.ws = ws;
     ws.onopen = () => {
+      state.lastRearm = Date.now();
       try {
         ws.send(JSON.stringify({ jsonrpc: "2.0", method: "camera.start_monitor", params: { domain: "lan", interval: 0 }, id: 950 }));
+        // Layer changes pushed to us as they happen (verified on a U1
+        // 2026-09-30: the monitor keeps running with this subscription on
+        // the same socket), so the frame is taken right at the layer change
+        // instead of up to CAPTURE_POLL_MS into the next layer.
+        ws.send(JSON.stringify({ jsonrpc: "2.0", method: "printer.objects.subscribe", params: { objects: { print_stats: ["info"] } }, id: 953 }));
       } catch {}
+    };
+    ws.onmessage = (ev) => {
+      let j; try { j = JSON.parse(ev.data); } catch { return; }
+      if (j.method === "notify_camera_status_change" && Array.isArray(j.params) && j.params[0] && j.params[0].monitoring === false) {
+        // The firmware's 6-minute cutoff (or anyone else) stopped the monitor
+        // - start it again for as long as this capture runs.
+        setTimeout(() => capRearm(state), 1000);
+        return;
+      }
+      const ps = j.method === "notify_status_update" && Array.isArray(j.params) && j.params[0] && j.params[0].print_stats;
+      const layer = ps && ps.info && ps.info.current_layer;
+      if (typeof layer === "number") {
+        capPollOnce(state, layer).catch((e) => ctx.hublog("warn", "timelapse: capture failed for " + state.printer + " - " + (e && e.message || e)));
+      }
     };
     ws.onerror = () => {};
     ws.onclose = () => {
@@ -371,14 +513,29 @@ function register(ctx) {
   // unchanged layer is a normal, silent no-op - print_stats not answering
   // for one poll (a busy printer, a Wi-Fi blip) just means "try again in
   // CAPTURE_POLL_MS", not "stop capturing".
-  async function capPollOnce(state) {
-    if (!state.active) return;
-    const layer = await readCurrentLayer(state.base);
+  //
+  // `layerHint` comes from the socket subscription; the timer passes none and
+  // asks the printer. `busy` keeps the two from grabbing the same layer twice.
+  async function capPollOnce(state, layerHint) {
+    if (!state.active || state.busy) return;
+    state.busy = true;
+    try { await capTick(state, layerHint); } finally { state.busy = false; }
+  }
+  async function capTick(state, layerHint) {
+    const layer = typeof layerHint === "number" ? layerHint : await readCurrentLayer(state.base);
     if (layer == null) return;
     const isFirst = typeof state.lastLayer !== "number";
     if (!isFirst && layer <= state.lastLayer) return;
     state.lastLayer = layer;
-    const frame = await grabFrame(state.base);
+    const frame = await capGrabFresh(state);
+    if (!frame) {
+      state.skipped = (state.skipped || 0) + 1;
+      if (!state.warnedStale) {
+        state.warnedStale = true;
+        ctx.hublog("warn", "timelapse: " + state.printer + "'s camera is not giving new pictures - skipping layer " + layer +
+          " rather than repeating an old frame (the monitor is being restarted)");
+      }
+    }
     if (frame) {
       const idx = state.frameIdx + 1;
       try {
@@ -429,11 +586,13 @@ function register(ctx) {
       printer: printerName, filename, base, dir,
       frameIdx, lastLayer, startedAtMs,
       ws: null, active: true, pollTimer: null,
+      busy: false, lastFrameMod: 0, lastFrameHash: null, lastRearm: 0, skipped: 0, warnedStale: false,
     };
     CAPTURE.set(printerName, state);
     persistCaptureState(state);
     capOpenSocket(state);
     state.pollTimer = setInterval(() => {
+      if (Date.now() - (state.lastRearm || 0) >= MONITOR_KEEPALIVE_MS) capRearm(state);
       capPollOnce(state).catch((e) => ctx.hublog("warn", "timelapse: capture poll failed for " + printerName + " - " + (e && e.message || e)));
     }, CAPTURE_POLL_MS);
     if (state.pollTimer.unref) state.pollTimer.unref();
@@ -458,6 +617,7 @@ function register(ctx) {
       try { state.ws.send(JSON.stringify({ jsonrpc: "2.0", method: "camera.stop_monitor", params: { domain: "lan" }, id: 951 })); } catch {}
       try { state.ws.close(); } catch {}
     }
+    if (state.skipped) ctx.hublog("info", "timelapse: " + printerName + " skipped " + state.skipped + " layer(s) with no new camera picture");
     return state;
   }
 
@@ -517,6 +677,54 @@ function register(ctx) {
         if (code !== 0) reject(new Error("ffmpeg exited " + code + " - " + stderr.slice(-300)));
         else resolve();
       });
+    });
+  }
+
+  // Drops black and repeated frames (keepFrames above) and renumbers what is
+  // left into an unbroken frame_000001.. sequence for assembleArgs. Returns
+  // how many frames remain. Brightness comes from one ffmpeg pass over tiny
+  // scaled copies; if that pass fails, only repeats are dropped.
+  async function cullFrames(state) {
+    const files = (await fs.promises.readdir(state.dir)).filter((n) => /^frame_\d{6}\.jpg$/.test(n)).sort();
+    if (!files.length) return 0;
+    const hashes = [];
+    for (const n of files) hashes.push(sha1(await fs.promises.readFile(path.join(state.dir, n))));
+    let yavgs = [];
+    try {
+      // frame numbers are contiguous here (frameIdx only advances on a
+      // saved frame), so ffmpeg's image2 reader walks every file.
+      yavgs = parseYavg(await ffmpegText(["-hide_banner", "-framerate", "1", "-i", path.join(state.dir, FRAME_GLOB),
+        "-vf", "scale=64:-2,signalstats,metadata=print:key=lavfi.signalstats.YAVG", "-f", "null", "-"], COMPOSE_STEP_TIMEOUT_MS));
+      if (yavgs.length !== files.length) yavgs = []; // can't line them up - judge by repeats only
+    } catch { yavgs = []; }
+    const kept = keepFrames(yavgs, hashes, DARK_YAVG);
+    const keptSet = new Set(kept);
+    for (let i = 0; i < files.length; i++) if (!keptSet.has(i)) await fs.promises.unlink(path.join(state.dir, files[i]));
+    // Monotone renumbering: kept[j] >= j, so each target name is already free.
+    for (let j = 0; j < kept.length; j++) {
+      const from = files[kept[j]], to = frameFileName(j + 1);
+      if (from !== to) await fs.promises.rename(path.join(state.dir, from), path.join(state.dir, to));
+    }
+    const dark = yavgs.length ? yavgs.filter((y) => y < DARK_YAVG).length : 0;
+    if (kept.length < files.length) {
+      ctx.hublog("info", "timelapse: " + state.printer + " kept " + kept.length + " of " + files.length + " frames (" + dark + " dark, " +
+        (files.length - kept.length - dark) + " repeats)");
+    }
+    return kept.length;
+  }
+  // Like runFfmpeg, but resolves with everything ffmpeg printed (the
+  // metadata filter logs to stderr).
+  function ffmpegText(args, timeoutMs) {
+    return new Promise((resolve, reject) => {
+      let child;
+      try { child = spawn("ffmpeg", args, { windowsHide: true }); }
+      catch (e) { return reject(e); }
+      const killTimer = setTimeout(() => { try { child.kill(); } catch {} }, timeoutMs);
+      let text = "";
+      if (child.stdout) child.stdout.on("data", (d) => { text += d; });
+      if (child.stderr) child.stderr.on("data", (d) => { text += d; });
+      child.on("error", (e) => { clearTimeout(killTimer); reject(e); });
+      child.on("close", (code) => { clearTimeout(killTimer); code === 0 ? resolve(text) : reject(new Error("ffmpeg exited " + code)); });
     });
   }
 
@@ -849,6 +1057,15 @@ function register(ctx) {
       discardFrames(state);
       return;
     }
+    let usable;
+    try { usable = await cullFrames(state); }
+    catch (e) { usable = state.frameIdx; ctx.hublog("warn", "timelapse: could not check frames for " + ev.printer + " - using all of them. " + (e && e.message || e)); }
+    if (usable < MIN_CAPTURE_FRAMES) {
+      ctx.hublog("info", "timelapse: only " + usable + " of " + state.frameIdx + " frame(s) for " + ev.printer + "/" + ev.filename +
+        " are usable (the rest were dark - chamber light off? - or repeats) - too few to be worth a video, discarding");
+      discardFrames(state);
+      return;
+    }
     let rawVideoPath;
     try {
       rawVideoPath = await assembleVideo(state);
@@ -942,4 +1159,5 @@ function register(ctx) {
 module.exports = {
   register, slugify, buildR2Key, fmtPrintedAt, scaleFitFilter, stillSegmentFilter,
   mainSegmentFilter, mainEncodeArgs, stillEncodeArgs, frameFileName, assembleArgs,
+  frameFreshness, parseYavg, keepFrames, FRESH_MAX_AGE_MS, DARK_YAVG,
 };

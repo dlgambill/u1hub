@@ -121,6 +121,14 @@ printing camera), and even when on, nothing is captured until there is a
 folder to save into. The storefront upload is still there for anyone who
 configures it by hand, but no upload address is built in anymore.
 
+**Timelapses that show the whole print.** The U1 switches its camera feed
+off six minutes after it was last asked for it, and the Hub only asked once,
+so most videos repeated one old picture for most of the print and then jumped
+to the end. The Hub now keeps renewing the feed while it records, saves a
+picture only when it is a new one, takes it right when each layer starts, and
+leaves out black frames (a print with the chamber light off) and repeats. The
+same fix stops a live camera view from freezing after six minutes.
+
 **Open in Orca from a Windows service.** If you run the Hub as a Windows
 service (so it starts with Windows and restarts itself), programs it opens for
 you would start invisibly in the service's own session. Set the environment
