@@ -7,7 +7,7 @@ name: release
 # on real macOS.
 #
 # Every platform publishes TWO artifacts from ONE build: the full Hub, and a
-# "Lite" copy that is byte-identical — the Hub detects "lite" in its own
+# "Lite" copy that is byte-identical - the Hub detects "lite" in its own
 # filename at boot and switches off spools / match / mixer / beta types
 # (U1HUB_PROFILE=lite does the same thing for any binary). No second compile,
 # no fork, nothing to drift.
@@ -28,6 +28,12 @@ on:
 permissions:
   contents: write
 
+# 3MF Explorer (github.com/dlgambill/3mf-explorer) ships beside the Hub from
+# 2.40 on: each native runner also builds it from this tag of its own repo and
+# attaches it to the same release. Bump when Explorer cuts a new version.
+env:
+  EXPLORER_REF: v1.0.0
+
 jobs:
   build:
     name: build ${{ matrix.out }}
@@ -37,9 +43,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { runner: ubuntu-latest,  target: node22-linux-x64,    out: U1-Print-Hub-Linux-x64,             lite: U1-Print-Hub-Lite-Linux-x64 }
-          - { runner: windows-latest, target: node22-win-x64,      out: U1-Print-Hub-Windows-x64.exe,       lite: U1-Print-Hub-Lite-Windows-x64.exe }
-          - { runner: macos-14,       target: node22-macos-arm64,  out: U1-Print-Hub-macOS-AppleSilicon,    lite: U1-Print-Hub-Lite-macOS-AppleSilicon }
+          - { runner: ubuntu-latest,  target: node22-linux-x64,    out: U1-Print-Hub-Linux-x64,             lite: U1-Print-Hub-Lite-Linux-x64,             explorer: linux,   explorer_out: 3MF-Explorer-Linux-x64 }
+          - { runner: windows-latest, target: node22-win-x64,      out: U1-Print-Hub-Windows-x64.exe,       lite: U1-Print-Hub-Lite-Windows-x64.exe,       explorer: win,     explorer_out: 3MF-Explorer-Windows-x64.exe }
+          - { runner: macos-14,       target: node22-macos-arm64,  out: U1-Print-Hub-macOS-AppleSilicon,    lite: U1-Print-Hub-Lite-macOS-AppleSilicon,    explorer: mac-arm, explorer_out: 3MF-Explorer-macOS-AppleSilicon }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -52,13 +58,32 @@ jobs:
         run: npm install
       - name: Build executable
         run: npx @yao-pkg/pkg . --targets ${{ matrix.target }} --output dist/${{ matrix.out }}
-      - name: Make Lite copy (same binary — the Hub keys off "lite" in its filename)
+      - name: Make Lite copy (same binary - the Hub keys off "lite" in its filename)
         run: cp dist/${{ matrix.out }} dist/${{ matrix.lite }}
+      - name: Check out 3MF Explorer
+        uses: actions/checkout@v4
+        with:
+          repository: dlgambill/3mf-explorer
+          ref: ${{ env.EXPLORER_REF }}
+          path: explorer
+      - name: Build 3MF Explorer
+        shell: bash
+        run: |
+          cd explorer
+          npm ci
+          npm run build -- ${{ matrix.explorer }}
+          cp "dist/${{ matrix.explorer_out }}" "../dist/${{ matrix.explorer_out }}"
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.out }}
           path: dist/${{ matrix.out }}
+          if-no-files-found: error
+      - name: Upload 3MF Explorer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.explorer_out }}
+          path: dist/${{ matrix.explorer_out }}
           if-no-files-found: error
       - name: Upload Lite artifact
         uses: actions/upload-artifact@v4
@@ -87,16 +112,26 @@ jobs:
           body: |
             ## U1 Print Hub
 
-            Download the build for your OS, put it in its own folder, and run it —
+            Download the build for your OS, put it in its own folder, and run it -
             no Node.js needed. A browser opens to the dashboard; use **Settings**
             to add your printers.
 
             **Full or Lite?** Each platform has two downloads built from the same
             binary. **Lite** starts with spool tracking, Spool Match, the FS
-            Mixer, and beta printer types switched off — just files, fleet,
+            Mixer, and beta printer types switched off - just files, fleet,
             queue, and Dispatch, for the single-color farm. You can turn any
-            feature on or off later in **Settings → Features**, so neither
-            choice is permanent.
+            feature on or off later in **Settings**, so neither choice is
+            permanent.
+
+            ## 3MF Explorer (optional companion app)
+
+            The `3MF-Explorer-...` downloads are a separate app: a fast, searchable
+            index of your whole 3D model library, with thumbnails, designers,
+            duplicates, tags and batch renaming. Paired with the Hub, its **Mark
+            for print** sends a model to the Hub's Models tab, and the Hub queues
+            it once the gcode is saved. Put it in its own folder and run it; it
+            opens at http://localhost:7333. Details:
+            https://github.com/dlgambill/3mf-explorer
 
             **First-launch security warning (the apps are unsigned):**
             - **Windows:** SmartScreen may say "Windows protected your PC" -> **More info -> Run anyway**.
@@ -124,11 +159,24 @@ jobs:
         run: npm install
       - name: Build executable
         run: npx @yao-pkg/pkg . --targets node22-macos-x64 --output dist/U1-Print-Hub-macOS-Intel
-      - name: Make Lite copy (same binary — the Hub keys off "lite" in its filename)
+      - name: Make Lite copy (same binary - the Hub keys off "lite" in its filename)
         run: cp dist/U1-Print-Hub-macOS-Intel dist/U1-Print-Hub-Lite-macOS-Intel
+      - name: Check out 3MF Explorer
+        uses: actions/checkout@v4
+        with:
+          repository: dlgambill/3mf-explorer
+          ref: ${{ env.EXPLORER_REF }}
+          path: explorer
+      - name: Build 3MF Explorer
+        run: |
+          cd explorer
+          npm ci
+          npm run build -- mac-intel
+          cp dist/3MF-Explorer-macOS-Intel ../dist/3MF-Explorer-macOS-Intel
       - name: Attach to release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/U1-Print-Hub-macOS-Intel
             dist/U1-Print-Hub-Lite-macOS-Intel
+            dist/3MF-Explorer-macOS-Intel
