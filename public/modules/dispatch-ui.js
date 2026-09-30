@@ -521,7 +521,17 @@
         <span class="dsp-gsub">detail</span>${zoom}
         <button class="dsp-gjump" id="dsp-gnowbtn">⊙ now</button>
         ${lockBtn}${lockNote}
-        <span class="dsp-gkey"><i class="dsp-krun"></i>printing now <i class="dsp-kblk"></i>planned <i class="dsp-kmiss"></i>misses deadline <i class="dsp-kclosed"></i>you're away</span>
+        <span class="dsp-gkey">
+          <span class="dsp-kit"><i class="dsp-krun"></i>printing now</span>
+          <span class="dsp-kit"><i class="dsp-kblk"></i>planned</span>
+          <span class="dsp-kit"><i class="dsp-kmiss"></i>misses deadline</span>
+          <span class="dsp-kit"><i class="dsp-kclosed"></i>you're away</span>
+          <span class="dsp-kbadges">
+            <span class="dsp-kit" title="How many spools you mount before this print starts"><b class="dsp-swapn">2⇄</b>spool swaps first</span>
+            <span class="dsp-kit" title="Another printer needs the same color at the same time"><b class="dsp-clash">⚠</b>color also needed elsewhere</span>
+            <span class="dsp-kit" title="The printer then sits idle until you clear the bed"><b class="dsp-idle">\u{1F4A4}</b>waits for bed clear</span>
+          </span>
+        </span>
       </div>
       <div class="dsp-guide" id="dsp-guide">
         <div class="dsp-gtrack" style="width:${LANE_W + W}px">
@@ -1081,7 +1091,13 @@
       .dsp-glock-on{border-color:var(--signal,#FFB200);color:var(--signal,#FFB200);font-weight:700;
         background:color-mix(in srgb, var(--signal,#FFB200) 12%, var(--panel,#1b1e24))}
       .dsp-gnewlock{font-size:11px;color:var(--signal,#FFB200);white-space:nowrap;cursor:default}
-      .dsp-gkey{display:flex;gap:8px;align-items:center;margin-left:auto;color:var(--ink-faint,#828B9A);font-size:11px;flex-wrap:wrap}
+      .dsp-gkey{display:flex;gap:4px 10px;align-items:center;margin-left:auto;color:var(--ink-faint,#828B9A);font-size:11px;flex-wrap:wrap}
+      /* v2.40.2: each swatch or badge stays glued to its words when the key
+         wraps, and the three bar badges get their own group so a phone reads
+         them as one line of "what the marks on a bar mean". */
+      .dsp-kit{display:inline-flex;align-items:center;gap:4px;white-space:nowrap}
+      .dsp-kbadges{display:inline-flex;gap:4px 10px;flex-wrap:wrap;padding-left:10px;border-left:1px solid var(--line-soft,#2a2d33)}
+      .dsp-kit b.dsp-swapn,.dsp-kit b.dsp-clash,.dsp-kit b.dsp-idle{margin-left:0;font-size:11px}
       .dsp-gkey i{display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:3px;vertical-align:-1px}
       .dsp-krun{background:#1d5c3a;border:1px solid var(--ok,#3DD68C)}
       .dsp-kblk{background:#274a72;border:1px solid #3a6ca8}
@@ -1209,6 +1225,8 @@
       @media (max-width:560px){
         .dsp-gcell{width:104px;min-width:104px;padding:5px 7px}
         .dsp-chgfile{min-width:0}
+        .dsp-gkey{margin-left:0;width:100%}
+        .dsp-kbadges{padding-left:0;border-left:0}
       }
     </style>
     <div class="dsp-wrap" style="position:relative">

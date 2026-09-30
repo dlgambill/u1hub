@@ -4511,6 +4511,19 @@ async function stopHub() {
     ok(bare.length === 0,
       "every non-key colour in dispatch-ui.js resolves through a token",
       [...new Set(bare)].slice(0, 12));
+
+    // v2.40.2: the three marks a timeline bar can carry (spool swaps, a color
+    // another printer needs at the same time, waiting for a bed clear) were
+    // unlabeled glyphs - the owner had to ask what they meant. The key that
+    // explains the bar colors must explain them too, using the same classes
+    // the bars use, so a restyle of a badge restyles its legend entry with it.
+    const keyAt = dsp.indexOf('<span class="dsp-gkey">');
+    const keyEnd = dsp.indexOf("</div>", keyAt);
+    const keyHtml = keyAt >= 0 && keyEnd > keyAt ? dsp.slice(keyAt, keyEnd) : "";
+    const badgeMiss = ["dsp-swapn", "dsp-clash", "dsp-idle"]
+      .filter(c => !keyHtml.includes('class="' + c + '"'));
+    ok(keyHtml && badgeMiss.length === 0,
+      "the timeline key explains every badge a bar can carry", badgeMiss);
   }
 
   // ---- KLIPPER: each printer's own UI, proxied through the Hub (v2.21) ----
