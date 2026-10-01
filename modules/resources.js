@@ -878,6 +878,14 @@ function register(ctx) {
   //     before/after, so a wrong one can be undone by hand in ten seconds.
   //   * One switch (settings.auto_deduct) turns it off.
   const DEDUCT_LOG_MAX = 200;
+  // A listener that throws must not undo the deduction that already happened.
+  const emitLocal = (type, rec) => {
+    try { if (ctx.events) ctx.events.emit(type, rec); }
+    catch (e) { hublog("warn", "resources: a " + type + " listener failed - " + (e && e.message || e)); }
+  };
+  // Read access to the log for modules that annotate it (Spoolman write-back
+  // retries), plus the save that persists their annotations.
+  ctx.provide("resources.deductionLog", () => store.state.deductions || []);
   async function deductFor(ev) {
     if (store.state.settings.auto_deduct === false) return { skipped: "auto_deduct off" };
     const idx = Number(ev.id);
@@ -925,6 +933,10 @@ function register(ctx) {
     store.state.deductions.push(rec);
     if (store.state.deductions.length > DEDUCT_LOG_MAX) store.state.deductions.splice(0, store.state.deductions.length - DEDUCT_LOG_MAX);
     store.save();
+    // v2.41: tell anyone who mirrors inventory elsewhere (modules/spoolman.js
+    // write-back). They get the live record and may annotate it; this module
+    // does not know or care who listens.
+    if (entries.length) emitLocal("resources.deducted", rec);
     if (entries.length)
       hublog("info", "resources: " + p.name + " finished " + name + " — " + entries.map(e => "-" + e.grams + " g " + (e.color_name || e.spool_id) + (e.empty ? " (EMPTY)" : "")).join(", "));
     else if (misses.length) hublog("info", "resources: " + p.name + " finished " + name + " — nothing deducted: " + misses.join("; "));
@@ -954,6 +966,7 @@ function register(ctx) {
     }
     rec.undone = Date.now();
     store.save();
+    emitLocal("resources.undone", rec);
     res.json({ ok: true, deduction: rec });
   });
 

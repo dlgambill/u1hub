@@ -611,7 +611,18 @@
     body.className = "";
     body.style.marginTop = "8px";
     body.innerHTML = list.map(r => {
-      const parts = (r.entries || []).map(e => "−" + e.grams + " g " + esc(e.color_name || e.spool_id) + (e.cost != null ? " (" + money(e.cost) + ")" : "") + (e.empty ? ' <b style="color:var(--bad)">EMPTY</b>' : "")).join(" · ");
+      // v2.41 Spoolman write-back: where this entry's grams stand in Spoolman.
+      // Silent when the roll is not from Spoolman or write-back is off.
+      const SMW = { sent: ["in Spoolman", ""], reverted: ["taken back out of Spoolman", ""],
+                    pending: ["Spoolman: waiting", "var(--warn,#e0a526)"], revert_pending: ["Spoolman undo: waiting", "var(--warn,#e0a526)"],
+                    cancelled: ["", ""] };
+      const smTag = e => {
+        const s = e.spoolman && SMW[e.spoolman.state];
+        if (!s || !s[0]) return "";
+        const tip = "Spoolman spool #" + e.spoolman.id + (e.spoolman.error ? "\nLast try: " + e.spoolman.error + "\nRetried automatically." : "");
+        return ' <span class="hint smw smw-' + esc(e.spoolman.state) + '" title="' + esc(tip) + '"' + (s[1] ? ' style="color:' + s[1] + '"' : "") + ">" + s[0] + "</span>";
+      };
+      const parts = (r.entries || []).map(e => "−" + e.grams + " g " + esc(e.color_name || e.spool_id) + (e.cost != null ? " (" + money(e.cost) + ")" : "") + (e.empty ? ' <b style="color:var(--bad)">EMPTY</b>' : "") + smTag(e)).join(" · ");
       const miss = (r.misses || []).length ? ' <span class="hint" title="' + esc(r.misses.join("\n")) + '">' + r.misses.length + " head" + (r.misses.length === 1 ? "" : "s") + " not deducted</span>" : "";
       const tot = (r.entries || []).length ? '<span style="font-family:var(--mono);font-size:11px;color:var(--ink-dim)">' + r.grams + " g" + (r.cost != null ? " · " + money(r.cost) + (r.cost_partial ? "+" : "") : "") + "</span>" : "";
       return '<div class="spoolrow" style="align-items:flex-start;gap:10px' + (r.undone ? ";opacity:.5" : "") + '">' +

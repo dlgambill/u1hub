@@ -3264,6 +3264,28 @@ async function stopHub() {
     ok(r.status === 200, "roll 1 loaded in T1 of the mock", r.body);
     r = await jpost("/api/slots/assign", { printer: U1ID, slot: 1, spool_id: "spoolman_2" });
     ok(r.status === 200, "roll 2 loaded in T2 of the mock", r.body);
+    // v2.41 Spoolman write-back. A second mock Spoolman that ACCEPTS writes,
+    // recording every PUT /use body. smFail makes it answer 503.
+    const smUses = []; let smFail = false;
+    const smw = http.createServer((rq, rs) => {
+      let body = "";
+      rq.on("data", c => body += c);
+      rq.on("end", () => {
+        const m = rq.method === "PUT" && rq.url.match(/^\/api\/v1\/spool\/(\d+)\/use$/);
+        if (!m) { rs.writeHead(404).end(); return; }
+        if (smFail) { rs.writeHead(503).end("down"); return; }
+        let j = null; try { j = JSON.parse(body); } catch {}
+        smUses.push({ id: m[1], ...(j || {}) });
+        rs.writeHead(200, { "Content-Type": "application/json" }); rs.end("{}");
+      });
+    });
+    await new Promise(r2 => smw.listen(45994, "127.0.0.1", r2));
+    r = await jpost("/api/spoolman/settings", { url: "http://127.0.0.1:45994" });
+    ok(r.status === 200 && r.body.writeback === false, "write-back is OFF until asked for", r.body);
+    r = await jpost("/api/spoolman/settings", { writeback: true });
+    ok(r.status === 200 && r.body.writeback === true && r.body.writeback_pending === 0, "write-back switched on", r.body);
+    ok(JSON.parse(fs.readFileSync(path.join(hubDir, "config.json"), "utf8")).spoolman.writeback === true, "…and persisted in config.json");
+    const waitUses = async n => { for (let i = 0; i < 40 && smUses.length < n; i++) await sleep(100); return smUses.length; };
     mockU1.state.printState = "printing"; mockU1.state.filename = "deduct.gcode";
     let ev = await settle();
     ok(ev.some(e => e.type === "print.started" && /deduct/.test(e.filename)), "standby → printing raises print.started", ev);
@@ -3301,12 +3323,28 @@ async function stopHub() {
       ok(r.body.auto_deduct === true, "auto_deduct is on by default");
       ok(d && d.grams === 22.5 && d.cost === 0.64 && d.cost_partial === false,
         "cost per print: 10 g of a $29.99 roll + 12.5 g of a $27.50 roll = $0.64", d && { grams: d.grams, cost: d.cost, entries: d.entries.map(e => e.cost) });
+      // Write-back: the same grams, per roll, as Spoolman "use" deltas.
+      await waitUses(2);
+      const byId = id => smUses.filter(u => u.id === id).map(u => u.use_weight);
+      ok(JSON.stringify(byId("1")) === "[10]" && JSON.stringify(byId("2")) === "[12.5]",
+        "write-back: Spoolman #1 used 10 g and #2 used 12.5 g - exactly what the Hub deducted", smUses);
+      ok(smUses.every(u => Object.keys(u).sort().join() === "id,use_weight"), "…sent as use_weight only, never a weight, name or color", smUses);
+      let d1 = ((await jget("/api/resources/deductions")).body.deductions || [])[0];
+      ok(d1 && d1.entries.every(e => e.spoolman && e.spoolman.state === "sent"), "…and each log entry says it reached Spoolman", d1 && d1.entries.map(e => e.spoolman));
       r = await jpost("/api/resources/deductions/undo", { at: d.at });
       ok(r.status === 200 && r.body.deduction.undone, "a deduction can be undone", r.body);
       const inv2 = (await jget("/api/resources/spools")).body.spools || [];
       ok(inv2.find(s => s.id === "spoolman_1").remaining_g === 700 && inv2.find(s => s.id === "spoolman_2").remaining_g === 400, "…and the grams are back exactly");
+      await waitUses(4);
+      ok(JSON.stringify(byId("1")) === "[10,-10]" && JSON.stringify(byId("2")) === "[12.5,-12.5]",
+        "write-back: Undo hands the same grams back to Spoolman as a negative use", smUses);
+      d1 = ((await jget("/api/resources/deductions")).body.deductions || [])[0];
+      ok(d1 && d1.entries.every(e => e.spoolman && e.spoolman.state === "reverted"), "…and the log entries say so", d1 && d1.entries.map(e => e.spoolman));
       r = await jpost("/api/resources/deductions/undo", { at: d.at });
       ok(r.status === 409, "…but only once", r.status);
+      ok(smUses.length === 4, "…and a refused second Undo sends nothing", smUses.length);
+      // Spoolman down: the Hub deducts anyway, the use waits, a retry delivers it once.
+      smFail = true;
       // A roll with no recorded weight is never touched; a cancelled print deducts nothing.
       await jpost("/api/resources/inventory", { spool_id: "spoolman_1", remaining_g: null });
       mockU1.state.printState = "printing"; await settle();
@@ -3319,12 +3357,44 @@ async function stopHub() {
       const inv4 = (await jget("/api/resources/spools")).body.spools || [];
       ok(inv4.find(s => s.id === "spoolman_1").remaining_g === null, "a roll with no recorded grams stays unknown rather than going negative");
       ok(inv4.find(s => s.id === "spoolman_2").remaining_g === 387.5, "…while its neighbor with a weight is deducted normally");
+      // That print ran with Spoolman answering 503 (smFail above). Cancelled
+      // print first: nothing deducted, so nothing may be sent either.
+      await sleep(500);
+      ok(smUses.length === 4, "write-back: a cancelled print and a refused request add nothing to Spoolman", smUses);
+      let sv = (await jget("/api/spoolman")).body;
+      ok(sv.writeback_pending === 1, "write-back: Spoolman down - the 12.5 g use is held as pending", sv);
+      let dP = ((await jget("/api/resources/deductions")).body.deductions || [])[0];
+      const eP = dP && dP.entries.find(e => e.spool_id === "spoolman_2");
+      ok(eP && eP.spoolman && eP.spoolman.state === "pending" && /503/.test(eP.spoolman.error || ""), "…with the reason on the log entry", eP && eP.spoolman);
+      ok(dP && !dP.entries.some(e => e.spool_id === "spoolman_1"), "…and the roll the Hub did not deduct is not sent at all", dP && dP.entries);
+      r = await jpost("/api/spoolman/retry", {});
+      ok(r.status === 200 && r.body.writeback_pending === 1 && smUses.length === 4, "retry while still down: still pending, nothing recorded", r.body);
+      smFail = false;
+      r = await jpost("/api/spoolman/retry", {});
+      ok(r.status === 200 && r.body.writeback_pending === 0, "retry once Spoolman is back: nothing left pending", r.body);
+      ok(smUses.length === 5 && smUses[4].id === "2" && smUses[4].use_weight === 12.5, "…and the held use landed exactly once", smUses);
+      r = await jpost("/api/spoolman/retry", {});
+      ok(smUses.length === 5, "a second retry sends nothing more", smUses.length);
+      // Off means off: the next finished print reaches nobody.
+      r = await jpost("/api/spoolman/settings", { writeback: false });
+      ok(r.status === 200 && r.body.writeback === false, "write-back switched off", r.body);
+      mockU1.state.printState = "printing"; await settle();
+      mockU1.state.printState = "complete"; ev = await settle();
+      await sleep(500);
+      ok((await jget("/api/resources/spools")).body.spools.find(s => s.id === "spoolman_2").remaining_g === 375,
+        "write-back off: the Hub still deducts its own copy (387.5 → 375)");
+      ok(smUses.length === 5, "…and Spoolman hears nothing about it", smUses);
+      dP = ((await jget("/api/resources/deductions")).body.deductions || [])[0];
+      ok(dP && dP.entries.every(e => !e.spoolman), "…and the log entry carries no Spoolman state", dP && dP.entries);
       r = await jpost("/api/resources/settings", { auto_deduct: false });
       mockU1.state.printState = "printing"; await settle();
       mockU1.state.printState = "complete"; ev = await settle();
-      ok((await jget("/api/resources/spools")).body.spools.find(s => s.id === "spoolman_2").remaining_g === 387.5, "auto_deduct off: a finished print changes nothing");
+      ok((await jget("/api/resources/spools")).body.spools.find(s => s.id === "spoolman_2").remaining_g === 375, "auto_deduct off: a finished print changes nothing");
       await jpost("/api/resources/settings", { auto_deduct: true });
       await jpost("/api/slots/clear", { spool_id: "spoolman_1" }); await jpost("/api/slots/clear", { spool_id: "spoolman_2" });
+      await jpost("/api/spoolman/settings", { url: "" });
+      if (smw.closeAllConnections) smw.closeAllConnections();
+      await new Promise(r2 => smw.close(r2));
     }
 
     // OFF means no request is made at all.

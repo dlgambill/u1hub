@@ -6,6 +6,9 @@
 // One URL field, one Import button, one line of result. Nothing refreshes on
 // its own: an import is a deliberate action with a visible count, never a
 // background sync that quietly changes the shelf while you are looking at it.
+// v2.41 adds one opt-in checkbox for writing used grams back to Spoolman, and
+// a "waiting" line with a Retry button that only appears when Spoolman did
+// not answer.
 "use strict";
 (function () {
   const esc = s => String(s ?? "").replace(/[&<>"']/g, c =>
@@ -41,7 +44,11 @@
       ".smstate{font-family:var(--mono); font-size:11.5px; color:var(--ink-dim); min-height:16px; margin-top:8px; white-space:pre-wrap;}",
       ".smstate.err{color:var(--bad,#e5484d);}",
       ".smstate.ok{color:var(--good,#46a758);}",
-      ".smnote{font-size:12px; color:var(--ink-faint); margin-top:6px; line-height:1.45;}"
+      ".smnote{font-size:12px; color:var(--ink-faint); margin-top:6px; line-height:1.45;}",
+      ".smwb{display:flex; gap:8px; align-items:flex-start; margin-top:12px; font-size:13px; color:var(--ink); cursor:pointer;}",
+      ".smwb input{margin-top:3px; flex:none; accent-color:var(--signal,#FFB200);}",
+      "#smcard a{color:var(--signal,#FFB200);}",
+      ".smwb input:disabled + span{opacity:.5;}"
     ].join("\n");
     document.head.appendChild(s);
   }
@@ -58,19 +65,29 @@
     CARD.innerHTML =
       '<div class="fshead">Spoolman</div>' +
       '<div class="smnote">Already keep your rolls in <a href="https://github.com/Donkie/Spoolman" target="_blank" rel="noopener">Spoolman</a>? ' +
-      'Pull them in here instead of typing them twice. One way only: the Hub reads Spoolman and never writes to it. ' +
+      'Pull them in here instead of typing them twice. ' +
       'Import again any time to pick up new rolls and updated weights; a roll archived in Spoolman goes inactive here.</div>' +
       '<div class="smrow">' +
       '<input id="smurl" type="url" placeholder="http://spoolman.local:7912" autocomplete="off" spellcheck="false">' +
       '<button class="gear" id="smtest">Test</button>' +
       '<button class="gear" id="smimport">Import</button>' +
       '</div>' +
+      // v2.41: opt-in write-back. Off by default; the import stays one-way
+      // unless this is ticked.
+      '<label class="smwb"><input type="checkbox" id="smwb"> ' +
+      '<span>Record each print\'s filament use in Spoolman too' +
+      '<span class="smnote" style="display:block;margin-top:2px">When a print finishes, the grams the Hub takes off an imported roll are also used up in Spoolman, ' +
+      'so Spoolman stays the master of what is left. Undo here takes them back out. Only grams are sent - never names, colors or weights.</span></span></label>' +
+      '<div class="smrow" id="smpendrow" style="display:none"><span class="smstate err" id="smpend" style="margin:0"></span>' +
+      '<button class="gear" id="smretry">Retry now</button></div>' +
       '<div class="smstate" id="smstate"></div>';
     const attrib = wrap.querySelector(".attrib");
     if (attrib) wrap.insertBefore(CARD, attrib); else wrap.appendChild(CARD);
     CARD.querySelector("#smtest").addEventListener("click", test);
     CARD.querySelector("#smimport").addEventListener("click", doImport);
     CARD.querySelector("#smurl").addEventListener("change", saveUrl);
+    CARD.querySelector("#smwb").addEventListener("change", saveWriteback);
+    CARD.querySelector("#smretry").addEventListener("click", retry);
     paint(state);
   }
 
@@ -89,6 +106,27 @@
     st.className = "smstate" + (L && !L.ok ? " err" : "");
     st.textContent = msg;
     CARD.querySelector("#smimport").disabled = !state.configured || !state.available;
+    const wb = CARD.querySelector("#smwb");
+    wb.checked = !!state.writeback;
+    wb.disabled = !state.configured;
+    const n = state.writeback_pending || 0;
+    CARD.querySelector("#smpendrow").style.display = n ? "" : "none";
+    CARD.querySelector("#smpend").textContent = n ? n + " use" + (n === 1 ? " is" : "s are") + " waiting to reach Spoolman (it did not answer). The Hub keeps retrying." : "";
+  }
+
+  async function saveWriteback(e) {
+    const r = await jpost("/api/spoolman/settings", { writeback: e.target.checked });
+    if (!r.ok) { e.target.checked = !e.target.checked; return say("err", r.d.error || "Could not save"); }
+    paint(r.d);
+    say("", r.d.writeback ? "On. The next finished print's grams will be recorded in Spoolman." : "Off. Spoolman is only read from now on.");
+  }
+
+  async function retry() {
+    say("", "Sending …");
+    const r = await jpost("/api/spoolman/retry", {});
+    if (!r.ok) return say("err", r.d.error || "Retry failed");
+    paint(r.d);
+    say(r.d.writeback_pending ? "err" : "ok", r.d.writeback_pending ? "Spoolman still did not answer; will keep trying." : "Everything waiting has reached Spoolman.");
   }
 
   function say(cls, text) {

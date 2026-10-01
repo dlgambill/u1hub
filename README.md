@@ -120,8 +120,10 @@ color, and temps, tracks which machine each spool is loaded in, and tracks
 grams left and price per roll. When a print finishes, the grams each head used
 come off the roll that was in it, with the cost of that print at the price you
 paid, and an Undo if it got one wrong. Already keep your rolls in
-[Spoolman](https://github.com/Donkie/Spoolman)? Import them in one click; the
-Hub reads Spoolman and never writes to it.
+[Spoolman](https://github.com/Donkie/Spoolman)? Import them in one click. If
+you want Spoolman to stay your master list, tick one box and the grams each
+print uses get recorded there too - only the grams, nothing else about your
+rolls is ever changed.
 
 ![Spools: every roll you own, where it is, and what is left on it](docs/spools-inventory.png)
 
