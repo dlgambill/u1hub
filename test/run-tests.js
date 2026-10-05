@@ -1094,9 +1094,17 @@ async function stopHub() {
       };
       const MAP3 = { 0: 0, 1: 1, 2: 2 };          // red T1, green T2, blue T3
       let u = await sends("multi.gcode", MAP3);
-      ok(u.status === 200 && u.flags === "[0,0,0,0]", "unload-for-next OFF (default): the printer is told to unload nothing", u);
-      let st = await jpost("/api/dispatch/settings", { unload_for_next: true });
-      ok(st.status === 200 && st.body.settings.unload_for_next === true, "unload_for_next switched on", st.body.settings);
+      ok(u.status === 200 && u.flags === "[0,0,0,0]" && (await jget("/api/dispatch")).body.settings.unload_mode === "never",
+        "unload mode 'never' (default): the printer is told to unload nothing", u);
+      let st = await jpost("/api/dispatch/settings", { unload_mode: "always" });
+      ok(st.status === 200 && st.body.settings.unload_mode === "always", "unload mode 'always' saved", st.body.settings.unload_mode);
+      u = await sends("multi.gcode", MAP3);
+      ok(u.flags === "[1,1,1,0]", "'always': every head this print uses unloads (T1-T3), the unused T4 does not", u);
+      st = await jpost("/api/dispatch/settings", { unload_mode: "sometimes" });
+      ok(st.body.settings.unload_mode === "always", "an unknown mode is ignored, not stored", st.body.settings.unload_mode);
+      st = await jpost("/api/dispatch/settings", { unload_for_next: true });     // the first build's boolean
+      ok(st.status === 200 && st.body.settings.unload_mode === "unneeded" && !("unload_for_next" in st.body.settings),
+        "the old on/off flag still works and maps to 'unneeded'", st.body.settings);
       u = await sends("multi.gcode", MAP3);
       ok(u.flags === "[0,0,0,0]", "next planned here is copy 2 of the same job - every roll is reused, nothing unloads", u);
       // Make the next job on printer 0 a single RED print: only red stays.
@@ -1116,10 +1124,11 @@ async function stopHub() {
       // Restore what the rest of this section expects.
       await jpost("/api/dispatch/jobs/update", { id: JOBID, qty: 2 });
       await jpost("/api/dispatch/maintenance", { printer: 1, down: false });
-      st = await jpost("/api/dispatch/settings", { unload_for_next: false });
-      ok(st.body.settings.unload_for_next === false, "…and switched back off", st.body.settings.unload_for_next);
-      ok(/id="dsp-unload"/.test(fs.readFileSync(path.join(REPO, "public/modules/dispatch-ui.js"), "utf8")),
-        "the setting is reachable: a checkbox on the Dispatch tab");
+      st = await jpost("/api/dispatch/settings", { unload_mode: "never" });
+      ok(st.body.settings.unload_mode === "never", "…and set back to 'never'", st.body.settings.unload_mode);
+      const dui = fs.readFileSync(path.join(REPO, "public/modules/dispatch-ui.js"), "utf8");
+      ok(/<select id="dsp-unload"/.test(dui) && ["never", "unneeded", "always"].every(m => dui.includes('value="' + m + '"')),
+        "the setting is reachable: a three-way choice on the Dispatch tab");
       r = await jpost("/api/dispatch/clear-bed", { printer: 0 });
     }
     r = await jpost("/api/print", { file: r.body.next.file, printer: 0, type: "u1", start: true });

@@ -230,6 +230,8 @@ function register(ctx) {
   // v2.22: frozen holds the snapshot a "locked" schedule serves — the placed
   // slots from the plan at the moment you locked, kept still while running/
   // attended/printers stay live. null whenever the mode is fluid.
+  // v2.41: what happens to the rolls when a print finishes (see unloadPlan).
+  const UNLOAD_MODES = ["never", "unneeded", "always"];
   let D = { jobs: [], bundles: [], maintenance: {}, frozen: null, settings: JSON.parse(JSON.stringify(DEFAULT_SETTINGS)) };
   try {
     const raw = JSON.parse(fs.readFileSync(FILE, "utf8"));
@@ -251,6 +253,10 @@ function register(ctx) {
   // A locked mode with no snapshot to serve is just fluid wearing the wrong
   // label — normalise so plan() never has to second-guess it.
   if (D.settings.schedule_mode !== "locked") D.settings.schedule_mode = "fluid";
+  // v2.41 unload after a print: one of three modes, default never.
+  if (!UNLOAD_MODES.includes(D.settings.unload_mode))
+    D.settings.unload_mode = D.settings.unload_for_next ? "unneeded" : "never";
+  delete D.settings.unload_for_next;
   if (D.settings.schedule_mode === "locked" && !D.frozen) D.settings.schedule_mode = "fluid";
   // Priority is a 1-5 scale, 5 = runs first (higher number = hotter). 3 is
   // "normal" and is what an unset or legacy priority (0) reads as, so old jobs
@@ -1372,7 +1378,11 @@ function register(ctx) {
     }
     if (typeof b.clearOverride === "string") delete D.settings.weekOverrides[b.clearOverride];
     if (b.finish_policy === "anytime" || b.finish_policy === "attended") D.settings.finish_policy = b.finish_policy;
-    if (typeof b.unload_for_next === "boolean") D.settings.unload_for_next = b.unload_for_next;
+    // v2.41: unload_mode never | unneeded | always. The first build had a
+    // boolean unload_for_next; it is still accepted and maps onto the mode.
+    if (UNLOAD_MODES.includes(b.unload_mode)) D.settings.unload_mode = b.unload_mode;
+    else if (typeof b.unload_for_next === "boolean") D.settings.unload_mode = b.unload_for_next ? "unneeded" : "never";
+    delete D.settings.unload_for_next;
     if (newTarget !== undefined) D.settings.target = newTarget;
     // Legacy pair still accepted \u2014 maps onto the template (Mon\u2013Fri / Sat+Sun)
     const win = (w, cur) => {
@@ -1565,19 +1575,31 @@ function register(ctx) {
     } catch (e) { res.status(500).json({ error: "Cleared, but planning the next job failed: " + e.message }); }
   });
 
-  // v2.41 unload-for-next (setting `unload_for_next`, off by default).
+  // v2.41 unload after a print. Setting `unload_mode`, chosen by the owner:
+  //   never    - default; the printer is told to unload nothing.
+  //   always   - every head this print uses unloads when it finishes.
+  //   unneeded - a head unloads only when the job planned next on the same
+  //              printer does not use its color (that roll is coming off
+  //              anyway, onto the shelf or into another printer). Nothing
+  //              planned next = keep everything loaded; a head printing two
+  //              colors (mid-print M600 swap) = leave it, its end color is
+  //              not known.
   // Called by the /api/print start path for the print about to start on
-  // `idx`: which heads should the firmware unload when THIS print ends?
-  // A head is unloaded when the job planned next on the same printer does not
-  // use the color it is printing - that roll is coming off anyway (onto the
-  // shelf, or into another printer). Nothing planned next = keep everything
-  // loaded; a head printing two colors (mid-print M600 swap) = leave it alone,
-  // the color it ends on is not known. Advisory: decided once, at start, from
-  // the plan as it is then; if the plan changes during the print, the cost is
-  // a reload or a manual unload, as before this existed.
+  // `idx`. Advisory: decided once, at start, from the plan as it is then; if
+  // the plan changes during the print, the cost is a reload or a manual
+  // unload, as before this existed. The firmware itself never unloads soft
+  // filament (TPU) and never unloads on a cancelled print.
+  function unloadModeOf() {
+    const m = D.settings.unload_mode;
+    if (UNLOAD_MODES.includes(m)) return m;
+    return D.settings.unload_for_next ? "unneeded" : "never";     // pre-mode dispatch.json
+  }
   async function unloadPlan(idx, file, headHex) {
-    const off = { unload: [0, 0, 0, 0], next: null };
-    if (!D.settings.unload_for_next) return off;
+    const off = { unload: [0, 0, 0, 0], next: null, mode: unloadModeOf() };
+    const mode = off.mode;
+    if (mode === "never") return off;
+    if (mode === "always")
+      return { unload: [0, 1, 2, 3].map(h => (headHex && h in headHex) ? 1 : 0), next: null, mode };
     const p = await plan();
     const mine = (p.slots || []).filter(s => s.printer === idx && !s.unplannable)
       .sort((a, b) => (a.est_start || 0) - (b.est_start || 0));
@@ -1593,7 +1615,7 @@ function register(ctx) {
       const hx = headHex && headHex[h];
       return hx && !nextColors.has(norm(hx)) ? 1 : 0;
     });
-    return { unload, next: { file: next.file, colors: [...nextColors].map(h => "#" + h) } };
+    return { unload, mode, next: { file: next.file, colors: [...nextColors].map(h => "#" + h) } };
   }
   ctx.provide("dispatch.unloadPlan", unloadPlan);
 
