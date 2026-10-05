@@ -1079,6 +1079,49 @@ async function stopHub() {
       ok(jj && !jj.file_missing, "putting the file back clears the flag on the next library refresh", jj && jj.file_missing);
       r = await jpost("/api/dispatch/clear-bed", { printer: 0 });
     }
+    // v2.41 unload-for-next. The U1 firmware unloads a head at print end when
+    // print_task_config.end_unload_filament[head] is set; the Hub decides the
+    // flags per print, at start, from what Dispatch plans next on that
+    // printer. Asserted on what the printer actually receives.
+    {
+      const sends = async (file, map) => {
+        mockU1.state.gcodeScripts.length = 0;
+        const s = await jpost("/api/print", { file, printer: 0, type: "u1", map, start: false });
+        let jb = null;
+        for (let i = 0; i < 40 && !(jb && jb.done); i++) { await sleep(250); jb = (await jget("/api/print-status?job=" + s.body.jobId)).body; }
+        const sc = mockU1.state.gcodeScripts.find(x => /SET_PRINT_PREFERENCES/.test(x)) || "";
+        return { status: s.status, job: jb, flags: (/END_UNLOAD_FILAMENT=(\[[\d,]*\])/.exec(sc) || [])[1] || null };
+      };
+      const MAP3 = { 0: 0, 1: 1, 2: 2 };          // red T1, green T2, blue T3
+      let u = await sends("multi.gcode", MAP3);
+      ok(u.status === 200 && u.flags === "[0,0,0,0]", "unload-for-next OFF (default): the printer is told to unload nothing", u);
+      let st = await jpost("/api/dispatch/settings", { unload_for_next: true });
+      ok(st.status === 200 && st.body.settings.unload_for_next === true, "unload_for_next switched on", st.body.settings);
+      u = await sends("multi.gcode", MAP3);
+      ok(u.flags === "[0,0,0,0]", "next planned here is copy 2 of the same job - every roll is reused, nothing unloads", u);
+      // Make the next job on printer 0 a single RED print: only red stays.
+      await jpost("/api/dispatch/maintenance", { printer: 1, down: true, note: "harness: keep the next job on printer 0" });
+      await jpost("/api/dispatch/jobs/update", { id: JOBID, qty: 1 });
+      const nj = await jpost("/api/dispatch/jobs", { again: true, file: "single.gcode", type: "u1", qty: 1, deadline: Date.now() + 20 * 86400000 });
+      const NEXTID = nj.body.job && nj.body.job.id;
+      const pl = ((await jget("/api/dispatch/plan")).body.slots || []).filter(s => s.printer === 0 && !s.unplannable).map(s => s.file);
+      ok(pl[0] === "multi.gcode" && pl[1] === "single.gcode", "setup: printer 0 plans multi, then single (red)", pl);
+      u = await sends("multi.gcode", MAP3);
+      ok(u.flags === "[0,1,1,0]", "next job only needs red: green (T2) and blue (T3) unload, red (T1) stays, unused T4 untouched", u);
+      ok(u.job && u.job.done && !u.job.error && u.job.result && u.job.result.mapped === 3, "…and the send itself completes normally", u.job);
+      // Nothing planned after this print: keep everything loaded.
+      await jpost("/api/dispatch/jobs/remove", { id: NEXTID });
+      u = await sends("multi.gcode", MAP3);
+      ok(u.flags === "[0,0,0,0]", "nothing planned next on this printer: nothing unloads", u);
+      // Restore what the rest of this section expects.
+      await jpost("/api/dispatch/jobs/update", { id: JOBID, qty: 2 });
+      await jpost("/api/dispatch/maintenance", { printer: 1, down: false });
+      st = await jpost("/api/dispatch/settings", { unload_for_next: false });
+      ok(st.body.settings.unload_for_next === false, "…and switched back off", st.body.settings.unload_for_next);
+      ok(/id="dsp-unload"/.test(fs.readFileSync(path.join(REPO, "public/modules/dispatch-ui.js"), "utf8")),
+        "the setting is reachable: a checkbox on the Dispatch tab");
+      r = await jpost("/api/dispatch/clear-bed", { printer: 0 });
+    }
     r = await jpost("/api/print", { file: r.body.next.file, printer: 0, type: "u1", start: true });
     ok(r.status === 200 && r.body.jobId, "the handed-off start rides the normal guarded print path", r.body);
     await sleep(1200);

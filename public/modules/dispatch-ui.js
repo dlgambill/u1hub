@@ -174,6 +174,7 @@
     $$("#dsp-days").querySelectorAll(".dsp-wins").forEach(bindWinRemove);
     $$("#dsp-clearov").style.display = Object.keys(ov).length ? "" : "none";
     $$("#dsp-policy").value = (STATE.settings || {}).finish_policy || "anytime";
+    $$("#dsp-unload").checked = !!(STATE.settings || {}).unload_for_next;
     $$("#dsp-hours-sum").textContent = hoursSummary();
   }
   // A day is a list of windows; legacy {start,end} days read as one window.
@@ -1250,6 +1251,12 @@
             </select>
           </label>
         </div>
+        <div class="dsp-row" style="margin:2px 0">
+          <label style="font-size:12.5px;display:flex;gap:6px;align-items:flex-start;cursor:pointer" title="Decided when each print starts, from the plan at that moment. Soft filament like TPU is never unloaded (the printer's own rule).">
+            <input type="checkbox" id="dsp-unload" style="margin-top:2px;accent-color:var(--signal,#FFB200)">
+            <span>Unload a roll when the print ends if the next job planned on that printer doesn't use its color</span>
+          </label>
+        </div>
         <div style="color:var(--ink-faint, #889);font-size:12px;margin:2px 0 6px">Jobs always START inside these hours - that is when you are around to swap spools and clear beds. Add a second block for days you're out in the middle. • = overridden day. Auto-start stays off — a human taps "Bed cleared".</div>
         <div class="dsp-days" id="dsp-days"></div>
       </div>
@@ -1297,6 +1304,7 @@
     };
     $$("#dsp-week").onchange = renderWeek;
     $$("#dsp-policy").onchange = async () => { await jpost("/api/dispatch/settings", { finish_policy: $$("#dsp-policy").value }); load(); };
+    $$("#dsp-unload").onchange = async () => { await jpost("/api/dispatch/settings", { unload_for_next: $$("#dsp-unload").checked }); load(); };
     $$("#dsp-save-all").onclick = async () => { await jpost("/api/dispatch/settings", { week: readDays() }); load(); };
     $$("#dsp-save-one").onclick = async () => { await jpost("/api/dispatch/settings", { weekOverride: { key: selectedWeekKey(), days: readDays() } }); load(); };
     $$("#dsp-clearov").onclick = async () => { await jpost("/api/dispatch/settings", { clearOverride: selectedWeekKey() }); load(); };

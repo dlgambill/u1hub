@@ -214,7 +214,38 @@ app.post("/api/print", async (req, res) => {
         // USED_EXTRUDERS is a set of PHYSICAL heads: when two same-color tools
         // share one head it must be listed once, not "3,3".
         lines.push("SET_PRINT_USED_EXTRUDERS EXTRUDERS=" + [...new Set(tools.map(t => map[t]))].join(","));
-        lines.push("SET_PRINT_PREFERENCES BED_LEVEL=0 FLOW_CALIBRATE=0 TIME_LAPSE_CAMERA=0");
+        // v2.41 unload-for-next. The U1 firmware already unloads a head at the
+        // end of a print when print_task_config.end_unload_filament[head] is
+        // true (its PRINT_END -> SM_PRINT_END_AUTO_UNLOAD_FILAMENT; soft
+        // filament like TPU is skipped by the firmware itself). The flags can
+        // only be set while the printer is NOT printing and the firmware
+        // resets them to all-false when a print finishes, so they are decided
+        // here, per print, right before it starts. Dispatch says which heads
+        // the next job planned on this printer will not reuse; off, unknown
+        // or failing all mean [0,0,0,0] - an unload nobody asked for costs a
+        // cut and a reload, a missed one only costs what it cost before.
+        let unload = [0, 0, 0, 0];
+        try {
+          const decide = hub.CAPS_PROVIDED && hub.CAPS_PROVIDED.get("dispatch.unloadPlan");
+          if (decide) {
+            const hexByIdx = ((await hub.paletteForFileAsync(name, t)) || {}).hexByIdx || {};
+            const headHex = {};                        // physical head -> the one color it prints, or null if two
+            for (const tool of tools) {
+              const h = map[tool], hx = String(hexByIdx[tool] || "").replace(/^#/, "").slice(0, 6).toUpperCase();
+              headHex[h] = (h in headHex && headHex[h] !== hx) ? null : (hx || null);
+            }
+            const d = await decide(Number(printer), name, headHex);
+            if (d && Array.isArray(d.unload)) {
+              unload = d.unload.slice(0, 4).map(x => (x ? 1 : 0));
+              while (unload.length < 4) unload.push(0);
+              if (unload.some(Boolean))
+                hublog("info", "print: " + p.name + " will unload " + unload.map((u, i) => u ? "T" + (i + 1) : null).filter(Boolean).join(", ") +
+                  " after " + name + (d.next ? " (next here: " + d.next.file + ")" : ""));
+            }
+          }
+        } catch (e) { hublog("warn", "print: unload-for-next skipped - " + e.message); unload = [0, 0, 0, 0]; }
+        lines.push("SET_PRINT_PREFERENCES BED_LEVEL=0 FLOW_CALIBRATE=0 TIME_LAPSE_CAMERA=0 END_UNLOAD_FILAMENT=[" + unload.join(",") + "]");
+        job.unload = unload;
         await gcode(lines.join("\n"));
       }
       if (start) { job.phase = "starting"; await gcode(`SDCARD_PRINT_FILE FILENAME="${name}"`); dequeueFile(name, t.slug); }

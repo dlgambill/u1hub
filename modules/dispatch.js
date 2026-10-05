@@ -1372,6 +1372,7 @@ function register(ctx) {
     }
     if (typeof b.clearOverride === "string") delete D.settings.weekOverrides[b.clearOverride];
     if (b.finish_policy === "anytime" || b.finish_policy === "attended") D.settings.finish_policy = b.finish_policy;
+    if (typeof b.unload_for_next === "boolean") D.settings.unload_for_next = b.unload_for_next;
     if (newTarget !== undefined) D.settings.target = newTarget;
     // Legacy pair still accepted \u2014 maps onto the template (Mon\u2013Fri / Sat+Sun)
     const win = (w, cur) => {
@@ -1563,6 +1564,38 @@ function register(ctx) {
       res.json({ ok: true, next });
     } catch (e) { res.status(500).json({ error: "Cleared, but planning the next job failed: " + e.message }); }
   });
+
+  // v2.41 unload-for-next (setting `unload_for_next`, off by default).
+  // Called by the /api/print start path for the print about to start on
+  // `idx`: which heads should the firmware unload when THIS print ends?
+  // A head is unloaded when the job planned next on the same printer does not
+  // use the color it is printing - that roll is coming off anyway (onto the
+  // shelf, or into another printer). Nothing planned next = keep everything
+  // loaded; a head printing two colors (mid-print M600 swap) = leave it alone,
+  // the color it ends on is not known. Advisory: decided once, at start, from
+  // the plan as it is then; if the plan changes during the print, the cost is
+  // a reload or a manual unload, as before this existed.
+  async function unloadPlan(idx, file, headHex) {
+    const off = { unload: [0, 0, 0, 0], next: null };
+    if (!D.settings.unload_for_next) return off;
+    const p = await plan();
+    const mine = (p.slots || []).filter(s => s.printer === idx && !s.unplannable)
+      .sort((a, b) => (a.est_start || 0) - (b.est_start || 0));
+    // The print being started is normally this printer's first slot still;
+    // skip exactly one copy of it, whatever comes after is "next".
+    const at = mine.findIndex(s => s.file === file);
+    const rest = at === 0 ? mine.slice(1) : mine;
+    const next = rest[0];
+    if (!next) return off;
+    const job = D.jobs.find(j => j.id === next.job_id);
+    const nextColors = new Set(((job && job.colors) || []).map(norm).filter(Boolean));
+    const unload = [0, 1, 2, 3].map(h => {
+      const hx = headHex && headHex[h];
+      return hx && !nextColors.has(norm(hx)) ? 1 : 0;
+    });
+    return { unload, next: { file: next.file, colors: [...nextColors].map(h => "#" + h) } };
+  }
+  ctx.provide("dispatch.unloadPlan", unloadPlan);
 
   ctx.provide("dispatch.jobs", () => D.jobs);
   // v2.40: see createJob() above - the print-request pipeline (models.js)
