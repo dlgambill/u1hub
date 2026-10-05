@@ -1168,6 +1168,28 @@ function register(ctx) {
   // server-to-server call from 3mf-explorer's own Node process, not a person's
   // browser (Explorer holds the Hub token in ITS config.json and sends it as
   // X-U1-Token; a Hub login session works too, for testing by hand).
+  // v2.40.2: Explorer and the Hub can name the same library differently.
+  // Explorer reads it through a mapped drive (X:\_MMF), while the Hub, running
+  // as a Windows service with no mapped drives, reads the share itself
+  // (\\server\share\_MMF) - and Explorer may be on another PC entirely. So a
+  // request is matched by its place INSIDE the library: the path as given
+  // first, then its tails, longest first, and the first that is a real file
+  // under this Hub's folder wins. Comparing absolute paths across machines
+  // or mount names is what broke: every Mark for print failed "not on the
+  // shelf" once the Hub moved to the UNC path (2026-10-05).
+  async function relOnShelf(abs, folder) {
+    const isFile = p => fs.promises.stat(p).then(s => s.isFile(), () => false);
+    const direct = path.relative(folder, abs).split(path.sep).join("/");
+    const dp = safePath(direct);
+    if (dp && await isFile(dp)) return direct;
+    const parts = String(abs).split(/[\\/]+/).filter(Boolean);
+    for (let k = 1; k < parts.length; k++) {
+      const rel = parts.slice(k).join("/");
+      const p = safePath(rel);
+      if (p && await isFile(p)) return rel;
+    }
+    return null;
+  }
   app.post("/api/models/print-request", async (req, res) => {
     const tok = req.headers["x-u1-token"];
     if (tok !== EXPLORER_TOKEN && !ctx.isAuthed(req)) return res.status(401).json({ error: "bad or missing token" });
@@ -1175,9 +1197,8 @@ function register(ctx) {
     const abs = String(b.path || "").trim();
     if (!abs) return res.status(400).json({ error: "needs { path }" });
     const c = conf();
-    const rel = path.relative(c.folder, abs).split(path.sep).join("/");
-    if (!safePath(rel)) return res.status(404).json({ error: "not on the shelf this Hub reads (" + c.folder + "): " + abs });
-    if (!(await fs.promises.stat(abs).then(() => true, () => false))) return res.status(404).json({ error: "file not found: " + abs });
+    const rel = await relOnShelf(abs, c.folder);
+    if (!rel) return res.status(404).json({ error: "not on the shelf this Hub reads (" + c.folder + "): " + abs });
     const id = identity(rel, ATTRS[rel]);
     // The same file marked again after it moved (library reorg,
     // rename) - drop the still-pending request filed under its old place.

@@ -3918,6 +3918,12 @@ async function stopHub() {
       r = await reqPR({ path: path.join(mroot, "PR Maker", "Tiny Turtle", "Tiny Turtle.3mf"), sha256: "ab12" }, tok);
       ok(r.status === 200 && r.body.rel === "PR Maker/Tiny Turtle/Tiny Turtle.3mf" && r.body.request.status === "requested" && r.body.dispatched === false,
         "print-request: marked, nothing to print yet (no gcode linked)", r.body);
+      // v2.40.2: Explorer on X:\_MMF, the Hub (a service) on \\server\share\_MMF - same file, different names.
+      r = await reqPR({ path: "Z:\\other-name-for-the-library\\PR Maker\\Tiny Turtle\\Tiny Turtle.3mf" }, tok);
+      ok(r.status === 200 && r.body.rel === "PR Maker/Tiny Turtle/Tiny Turtle.3mf",
+        "print-request: the same file named through another drive letter or share is matched by its place inside the library", r.body);
+      r = await reqPR({ path: "Z:\\other-name-for-the-library\\PR Maker\\Tiny Turtle\\No Such Model.3mf" }, tok);
+      ok(r.status === 404 && /not on the shelf/.test(r.body.error), "…but a file that is not in the library is still refused", r.body);
       r = await jget("/api/models?requested=1");
       ok(r.body.requested_total === 1 && r.body.items.length === 1 && r.body.items[0].requested.status === "requested", "the Requested view shows it, with a count", { t: r.body.requested_total, n: r.body.items.length });
       const jobsBefore = (await jget("/api/dispatch")).body;
