@@ -545,6 +545,66 @@ app.post("/api/printer-files/transfer", async (req, res) => {
 });
 
 
+// v2.40.2: the other direction from a print push - copy a file that lives only
+// on a printer into the Hub library (the folder for that printer's type), so a
+// file sliced straight to one machine can be queued, planned and sent to any
+// other. Same rules as a printer-to-printer transfer: streamed, never held in
+// RAM; never overwrites (a name already in the library is refused); written to
+// a ".u1hub-part" file first and only renamed into place once its size matches
+// the printer's listing - the library never shows a half-copied file, and the
+// share's refusal to rename over an existing name stays a guard, not a hazard.
+// Body: { from: printerIdx, name } -> { jobId } (poll /api/print-status)
+app.post("/api/printer-files/to-hub", async (req, res) => {
+  const src = hub.PRINTERS[(req.body || {}).from];
+  if (!src) return res.status(400).json({ error: "Unknown printer" });
+  const name = cleanRel((req.body || {}).name);
+  if (!name) return res.status(400).json({ error: "Bad file name" });
+  if (name.includes("/")) return res.status(400).json({ error: "Files in subfolders can't be copied yet" });
+  const t = typeBySlug(src.type || "u1") || typeBySlug("u1");
+  const dest = safeFile(name, t);
+  if (!dest || path.basename(dest) !== name) return res.status(400).json({ error: "Bad file name" });
+  const exists = p => fs.promises.stat(p).then(() => true, () => false);
+  if (await exists(dest))
+    return res.status(409).json({ error: "'" + name + "' is already in the Hub library - rename or delete one of them first (the Hub never overwrites)." });
+  let f;
+  try { f = (await listOnboard(src)).find(x => x.name === name); }
+  catch (e) { return res.status(502).json({ error: "Printer unreachable: " + String(e.message || e) }); }
+  if (!f) return res.status(404).json({ error: "'" + name + "' not found on " + src.name });
+  const jobId = hub.newJobId();
+  const job = { file: name, phase: "transfer", sent: 0, total: f.size, done: false, error: null, result: null, ts: Date.now() };
+  hub.JOBS.set(jobId, job);
+  res.json({ jobId });
+  const part = dest + ".u1hub-part";
+  (async () => {
+    try {
+      const srcBase = String(src.url).replace(/\/+$/, "");
+      await new Promise((resolve, reject) => {
+        http.get(srcBase + "/server/files/gcodes/" + encPath(name), dl => {
+          if (dl.statusCode !== 200) { dl.resume(); return reject(new Error("Download from " + src.name + " failed: HTTP " + dl.statusCode)); }
+          const out = fs.createWriteStream(part, { flags: "wx" });
+          out.on("error", reject);
+          dl.on("data", c => { job.sent += c.length; });
+          dl.on("error", reject);
+          out.on("finish", resolve);
+          dl.pipe(out);
+        }).on("error", reject);
+      });
+      job.phase = "verify";
+      const got = (await fs.promises.stat(part)).size;
+      if (got !== f.size) throw new Error("Copy came out " + got + " bytes, " + src.name + " lists " + f.size + " - not added");
+      if (await exists(dest)) throw new Error("'" + name + "' appeared in the Hub library while copying - not overwritten");
+      await fs.promises.rename(part, dest);
+      await refreshLibrary(t).catch(() => {});
+      job.result = { from: src.name, to: "Hub library", size: got, sizeVerified: true };
+      job.phase = "done"; job.done = true;
+    } catch (e) {
+      try { await fs.promises.unlink(part); } catch {}
+      job.error = String(e.message || e); job.done = true; job.phase = "error";
+    }
+  })();
+});
+
+
 // --- queue routes -------------------------------------------------------------
 // GET returns the whole queue (entries carry their type slug); pass ?type= to
 // filter server-side. POST requires the file to exist in that type's folder.

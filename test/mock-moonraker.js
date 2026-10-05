@@ -79,6 +79,17 @@ function createMock(profile) {
     if (u.pathname === "/server/files/list")
       return send(200, { result: state.files.map(f => ({ path: f.name, size: f.size, modified: Date.now() / 1000, permissions: "rw" })) });
 
+    // v2.40.2: download a stored file (copy-to-Hub). Bytes are the file's own
+    // `data` when the test gave one, else `size` deterministic bytes.
+    if (u.pathname.startsWith("/server/files/gcodes/") && req.method === "GET") {
+      const name = decodeURIComponent(u.pathname.slice("/server/files/gcodes/".length));
+      const f = state.files.find(x => x.name === name);
+      if (!f) return send(404, { error: "not found" });
+      const body = f.data || Buffer.alloc(f.size || 0, 0x47);
+      res.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Length": body.length });
+      return res.end(body);
+    }
+
     if (u.pathname === "/server/files/upload" && req.method === "POST") {
       let bytes = 0;
       let head = Buffer.alloc(0);

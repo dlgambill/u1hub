@@ -4756,6 +4756,38 @@ async function stopHub() {
     }
   }
 
+  console.log("\n== TOHUB: copy a printer-only file into the Hub library (v2.40.2) ==");
+  {
+    const UID = (((await jget("/api/fleet")).body || []).find(p => String(p.url || "").endsWith(":" + portU1)) || {}).id;
+    const libDir = path.join(hubDir, "gcode");
+    const bytes = Buffer.from("; sliced straight to the printer\nG28\n" + "G1 X1 Y1\n".repeat(4000));
+    const keepFiles = mockU1.state.files.slice();
+    mockU1.state.files.push({ name: "Printer Only Part.gcode", size: bytes.length, data: bytes });
+    let r = await jpost("/api/printer-files/to-hub", { from: UID, name: "Printer Only Part.gcode" });
+    ok(r.status === 200 && r.body.jobId, "a printer-only file can be sent to the Hub library", r.body);
+    let job = null;
+    for (let i = 0; i < 40 && !(job && job.done); i++) { await sleep(150); job = (await jget("/api/print-status?job=" + r.body.jobId)).body; }
+    const dest = path.join(libDir, "Printer Only Part.gcode");
+    ok(job && job.done && !job.error && job.result && job.result.sizeVerified === true, "…the copy finishes with its size checked against the printer's listing", job);
+    ok(fs.existsSync(dest) && Buffer.compare(fs.readFileSync(dest), bytes) === 0, "…and the library file is byte-for-byte what the printer had");
+    ok(!fs.existsSync(dest + ".u1hub-part"), "…with no half-copied .u1hub-part file left behind");
+    r = await jget("/api/files");
+    ok((r.body.files || []).some(f => f.name === "Printer Only Part.gcode"), "…and the library listing shows it straight away", (r.body.files || []).length);
+    r = await jpost("/api/printer-files/to-hub", { from: UID, name: "Printer Only Part.gcode" });
+    ok(r.status === 409 && /never overwrites/.test(r.body.error), "sending it again is refused - the Hub never overwrites a library file", r.body);
+    r = await jpost("/api/printer-files/to-hub", { from: UID, name: "Not On The Printer.gcode" });
+    ok(r.status === 404, "a name the printer doesn't have is refused", r.body);
+    r = await jpost("/api/printer-files/to-hub", { from: UID, name: "../escape.gcode" });
+    ok(r.status === 400, "a path that tries to leave the library is refused", r.body);
+    const libSrc = fs.readFileSync(path.join(REPO, "core", "library.js"), "utf8");
+    const route = libSrc.slice(libSrc.indexOf('app.post("/api/printer-files/to-hub"'), libSrc.indexOf("// --- queue routes"));
+    ok(route.length > 500 && !/Sync\(/.test(route), "the copy-to-Hub route does no synchronous file IO (the library can be a share)");
+    const appSrc = fs.readFileSync(path.join(REPO, "public", "app.js"), "utf8");
+    ok(/data-t="hub"[^>]*>Hub library</.test(appSrc), "the printer file's Send to... strip offers Hub library");
+    try { fs.unlinkSync(dest); } catch {}
+    mockU1.state.files = keepFiles;
+  }
+
   console.log("\n== LIB: wildcard filter (v2.24) ==");
   {
     // nameMatcher is a pure function in app.js with no DOM dependency, so the

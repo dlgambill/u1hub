@@ -302,8 +302,11 @@ function renderList(){
           const x=s.querySelector('[data-a="x"]'); if(x) x.addEventListener("click",()=>{ XFER=null; renderList(); });
         } else if(ACT.send){
           const targets=(ONBOARD||[]).filter(pr=>pr.id!==loc.pid);
-          s.innerHTML=`<span>Send "${esc(f.name)}" to:</span> `+targets.map(pr=>`<span class="sb" role="button" data-t="${pr.id}">${esc(pr.name)}</span>`).join(" ")+` <span class="sb" role="button" data-a="x">✕</span>`;
+          // v2.40.2: a file that lives only on a printer can be copied into the Hub library too.
+          const toHub=f.src!=="lib";
+          s.innerHTML=`<span>Send "${esc(f.name)}" to:</span> `+(toHub?`<span class="sb" role="button" data-t="hub" title="Copy into the Hub library, so it can be queued and sent to any printer">Hub library</span> `:"")+targets.map(pr=>`<span class="sb" role="button" data-t="${pr.id}">${esc(pr.name)}</span>`).join(" ")+` <span class="sb" role="button" data-a="x">✕</span>`;
           targets.forEach(pr=>{ s.querySelector(`[data-t="${pr.id}"]`).addEventListener("click",()=>startTransfer(loc.pid,loc.pname,pr.id,pr.name,f.name,loc.size)); });
+          if(toHub) s.querySelector('[data-t="hub"]').addEventListener("click",()=>startTransfer(loc.pid,loc.pname,"hub","the Hub library",f.name,loc.size));
           s.querySelector('[data-a="x"]').addEventListener("click",()=>{ ACT.send=false; renderList(); });
         } else {
           s.innerHTML=`<span>${esc(loc.pname)} storage:</span> <span class="sb" role="button" data-a="ren">✎ Rename</span> <span class="sb" role="button" data-a="del">🗑 Delete</span> <span class="sb" role="button" data-a="send">→ Send to…</span> <span class="sb" role="button" data-a="x">✕</span>`;
@@ -359,7 +362,9 @@ async function startTransfer(fromPid,fromName,toPid,toName,name,size){
   if(XFER && !XFER.done){ alert("A transfer is already running — one at a time."); return; }
   if(!confirm('Copy "'+name+'" ('+fmtSize(size||0)+')\nfrom '+fromName+' to '+toName+'?')) return;
   try{
-    const d=await post("/api/printer-files/transfer",{from:fromPid,name,to:toPid});
+    const d=toPid==="hub"
+      ? await post("/api/printer-files/to-hub",{from:fromPid,name})
+      : await post("/api/printer-files/transfer",{from:fromPid,name,to:toPid});
     XFER={ name, fromPid, toName, jobId:d.jobId, msg:"starting…", err:null, done:false };
     ACT={ name, pid:fromPid }; renderList(); pollXfer();
   }catch(e){ alert("Transfer failed to start: "+e.message); }
@@ -375,6 +380,7 @@ async function pollXfer(){
       else{
         XFER.msg="done"+(d.result&&d.result.sizeVerified?" ✓ size verified":" — SIZE MISMATCH, check the copy");
         loadPrinterFiles();
+        if(XFER.toName==="the Hub library") loadFiles();
       }
     } else {
       XFER.msg = d.phase==="verify" ? "verifying…"
