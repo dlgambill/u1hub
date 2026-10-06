@@ -113,8 +113,14 @@
   .job:hover .jact{display:flex;}
   .jact .ab{cursor:pointer; border:1px solid var(--line-soft); border-radius:6px; padding:3px 7px; font-size:12px; color:var(--ink-dim);}
   .jact .ab:hover{color:var(--ink); border-color:var(--signal);}
-  .actstrip{display:flex; align-items:center; gap:8px; margin:-2px 0 6px 52px; font-size:12px; color:var(--ink-dim);}
-  .actstrip .sb{cursor:pointer; border:1px solid var(--line-soft); border-radius:6px; padding:3px 9px; font-size:11.5px; color:var(--ink);}
+  /* 2026-10-06: the strip wraps. With nine printers plus "Hub library" and a
+     long file name in the label, a single unwrapped row was ~600px wide and
+     pushed the whole file list sideways on a phone (and spilled out of the
+     narrow list column on desktop). The label gets its own line and breaks
+     inside long names; the buttons flow onto as many rows as they need. */
+  .actstrip{display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin:-2px 0 6px 52px; min-width:0; font-size:12px; color:var(--ink-dim);}
+  .actstrip > span:not(.sb){flex:1 1 100%; min-width:0; overflow-wrap:anywhere;}
+  .actstrip .sb{cursor:pointer; border:1px solid var(--line-soft); border-radius:6px; padding:3px 9px; font-size:11.5px; color:var(--ink); white-space:nowrap; flex:none;}
   .actstrip .sb:hover{border-color:var(--signal);}
   .empty-list{padding:26px 18px; color:var(--ink-dim); font-size:13px; line-height:1.55;}
   .empty-list code{font-family:var(--mono); font-size:12px; color:var(--ink);}
@@ -500,6 +506,7 @@
     .shell{grid-template-columns:1fr; overflow-x:clip;}
     .side{height:auto; position:static; min-height:auto; border-right:none; border-bottom:1px solid var(--line);}
     .list{max-height:38vh; -webkit-overflow-scrolling:touch;}
+    .actstrip{margin-left:12px;}
     .fleet{grid-template-columns:1fr;}
     .main{padding:14px 14px calc(56px + env(safe-area-inset-bottom));}
     /* The view switcher is the phone's main nav — pin it. Sticky bar with a

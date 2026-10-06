@@ -4652,6 +4652,16 @@ async function stopHub() {
       .filter(c => !keyHtml.includes('class="' + c + '"'));
     ok(keyHtml && badgeMiss.length === 0,
       "the timeline key explains every badge a bar can carry", badgeMiss);
+
+    // 2026-10-06: the file list's "Send to..." strip (nine printers + Hub
+    // library + a long file name) was one unwrapped flex row ~600px wide and
+    // pushed the whole list sideways on a phone. It must wrap, and its buttons
+    // must not shrink into broken labels.
+    const idx = fs.readFileSync(path.join(REPO, "public", "index.html"), "utf8");
+    const stripRule = (idx.match(/\.actstrip\{[^}]*\}/) || [""])[0];
+    const sbRule = (idx.match(/\.actstrip \.sb\{[^}]*\}/) || [""])[0];
+    ok(/flex-wrap:\s*wrap/.test(stripRule) && /white-space:\s*nowrap/.test(sbRule),
+      "the Send-to strip wraps onto more rows instead of overflowing a phone", { stripRule, sbRule });
   }
 
   // ---- KLIPPER: each printer's own UI, proxied through the Hub (v2.21) ----
