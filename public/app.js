@@ -56,9 +56,31 @@ async function loadTypes(){
   if(!TYPES.find(t=>t.slug===ACTIVETYPE)) ACTIVETYPE=TYPES[0].slug; // stored type may have been deleted
   applyAccent(); renderTypeBar();
 }
+// v2.41 contrast pass (same method as 3MF Explorer 1.4.0): the accent is also
+// a TEXT color - section heads, the active zoom, Dispatch's day labels - and
+// an owner can pick any color for a type. readableAccent() lightens a dark
+// pick toward white just until it reads at 4.5:1 on the lightest surface it
+// is written on (--panel-2, #31363F), so every type passes; the U1 gold and
+// most presets need no change at all. onAccent() picks the label color for an
+// accent fill (primary buttons, the active type tab): near-black or white,
+// whichever contrasts more.
+function _lum(hex){
+  const v=[1,3,5].map(i=>parseInt(hex.slice(i,i+2),16)/255).map(c=>c<=0.03928?c/12.92:Math.pow((c+0.055)/1.055,2.4));
+  return 0.2126*v[0]+0.7152*v[1]+0.0722*v[2];
+}
+function _cr(a,b){ const x=_lum(a), y=_lum(b); return (Math.max(x,y)+0.05)/(Math.min(x,y)+0.05); }
+function readableAccent(hex){
+  if(!/^#[0-9a-fA-F]{6}$/.test(hex||"")) return "#FFB200";
+  let out=hex;
+  for(let t=0.02; _cr(out,"#31363F")<4.5 && t<=1; t+=0.02)
+    out="#"+[1,3,5].map(i=>{ const c=parseInt(hex.slice(i,i+2),16); return Math.round(c+(255-c)*t).toString(16).padStart(2,"0"); }).join("");
+  return out;
+}
+function onAccent(hex){ return _cr("#1A1400",hex)>=_cr("#FFFFFF",hex) ? "#1A1400" : "#FFFFFF"; }
 function applyAccent(){
-  const a=activeType().accent||"#FFB200";
+  const a=readableAccent(activeType().accent||"#FFB200");
   document.documentElement.style.setProperty("--signal", a);
+  document.documentElement.style.setProperty("--on-accent", onAccent(a));
   const th=document.querySelector('meta[name="theme-color"]'); if(th) th.setAttribute("content","#0F1115");
 }
 function renderTypeBar(){
@@ -1250,7 +1272,7 @@ function renderScanCtl(){
     ? "Camera access needs HTTPS. Open the Hub through its tunnel address (Settings → Remote access), or on this computer as http://localhost:" + (location.port || 80) + "."
     : "This browser has no camera API.";
   const qrBtn = camOk
-    ? `<button class="scanbtn" id="qrscan" style="background:var(--panel-2);color:var(--ink);border:1px solid var(--line)">⌗ Scan QR label</button>`
+    ? `<button class="scanbtn" id="qrscan" style="background:var(--panel-2);color:var(--ink);border:1px solid var(--field)">⌗ Scan QR label</button>`
     : `<button class="scanbtn" id="qrscan-off" disabled title="${esc(qrWhy)}" style="background:var(--panel-2);color:var(--ink-faint);border:1px dashed var(--line)">⌗ Scan QR label</button>`;
   const qrNote = camOk ? "" : `<div class="subnote" style="margin-top:6px">QR scanning is off here: ${esc(qrWhy)}</div>`;
   const labelLink = `<a class="gear" href="/labels.html" target="_blank" style="text-decoration:none">🏷 Print QR labels</a>`;
@@ -1259,7 +1281,7 @@ function renderScanCtl(){
   // optional and mints a tagless spool_id without it — but the ONLY caller was
   // handleUid(), so every route in started with a tag you don't have. This is
   // that missing door: identity first, printed QR label second, no NFC anywhere.
-  const newBtn = `<button class="scanbtn" id="newroll" style="background:var(--panel-2);color:var(--ink);border:1px solid var(--line)">＋ New roll (no tag)</button>`;
+  const newBtn = `<button class="scanbtn" id="newroll" style="background:var(--panel-2);color:var(--ink);border:1px solid var(--field)">＋ New roll (no tag)</button>`;
   if(nfcSupported()){
     ctl.innerHTML=`<div class="row" style="gap:10px;flex-wrap:wrap"><button class="scanbtn" id="nfcscan">📶 Tap to scan a spool tag</button>${qrBtn}${newBtn}${labelLink}</div>
       <div class="subnote" style="margin-top:8px">NFC: hold the tag to the back of the phone (HTTPS + Android Chrome). QR: point the camera at a printed spool label. No tag at all? <b>New roll</b> makes the record first and prints its own label.</div>${qrNote}

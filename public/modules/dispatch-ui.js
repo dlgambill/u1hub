@@ -968,26 +968,26 @@
     <style>
       .dsp-wrap{padding:6px 0}
       .dsp-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:8px 0}
-      .dsp-row input,.dsp-row select{font:inherit;padding:6px 8px;border-radius:6px;border:1px solid var(--line, #444);background:var(--panel, #1b1e24);color:inherit}
-      .dsp-row button,.dsp-clear{font:inherit;font-size:13px;padding:6px 12px;border:1px solid var(--line, #666);border-radius:6px;background:var(--panel-2, #23262d);color:inherit;cursor:pointer}
+      .dsp-row input,.dsp-row select{font:inherit;padding:6px 8px;border-radius:6px;border:1px solid var(--field, #818793);background:var(--panel, #1b1e24);color:inherit}
+      .dsp-row button,.dsp-clear{font:inherit;font-size:13px;padding:6px 12px;border:1px solid var(--field, #818793);border-radius:6px;background:var(--panel-2, #23262d);color:inherit;cursor:pointer}
       .dsp-hoursbar{margin:6px 0}
-      .dsp-toggle{font:inherit;font-size:12.5px;padding:6px 12px;border:1px solid var(--line-soft, #333);border-radius:8px;background:var(--panel, #1b1e24);color:var(--ink-dim, #aab);cursor:pointer;text-align:left;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      .dsp-toggle{font:inherit;font-size:12.5px;padding:6px 12px;border:1px solid var(--field, #818793);border-radius:8px;background:var(--panel, #1b1e24);color:var(--ink-dim, #aab);cursor:pointer;text-align:left;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       .dsp-toggle b{color:var(--signal, #FFB200)}
       .dsp-days{display:flex;gap:8px;flex-wrap:wrap;margin:6px 0}
       .dsp-wins{display:flex;flex-direction:column;gap:3px}
       .dsp-win{display:flex;align-items:center;gap:4px;flex-wrap:wrap}
       .dsp-win b{cursor:pointer;color:var(--bad, #a55);font-size:13px;padding:4px 7px;line-height:1}
-      .dsp-addwin{font:inherit;font-size:11px;padding:2px 7px;border:1px dashed var(--line, #4a4f57);border-radius:5px;background:transparent;color:var(--ink-faint, #889);cursor:pointer}
+      .dsp-addwin{font:inherit;font-size:11px;padding:2px 7px;border:1px dashed var(--field, #818793);border-radius:5px;background:transparent;color:var(--ink-faint, #889);cursor:pointer}
       .dsp-day{display:flex;flex-direction:column;gap:4px;padding:7px 9px;border:1px solid var(--line-soft, #2f333a);border-radius:8px;font-size:12px;flex:1 1 240px;min-width:0;max-width:340px}
       .dsp-day.dsp-ov{border-color:var(--signal, #FFB200)}
-      .dsp-day input[type=time]{font-size:12px;padding:4px 6px;border-radius:5px;border:1px solid var(--line, #444);background:var(--panel, #1b1e24);color:inherit;width:auto;min-width:112px;flex:1 1 auto;box-sizing:content-box}
+      .dsp-day input[type=time]{font-size:12px;padding:4px 6px;border-radius:5px;border:1px solid var(--field, #818793);background:var(--panel, #1b1e24);color:inherit;width:auto;min-width:112px;flex:1 1 auto;box-sizing:content-box}
       .dsp-chipbox{min-height:56px;border:1px dashed var(--line, #3a3f47);border-radius:8px;padding:8px;display:flex;gap:6px;flex-wrap:wrap;align-items:center}
       .dsp-chipbox.dsp-over{border-color:var(--ok, #4cd07a);background:#12281a}
       #dsp-drop{display:none;position:absolute;inset:0;z-index:9;align-items:center;justify-content:center;background:rgba(18,40,26,.82);border:2px dashed var(--ok, #4cd07a);border-radius:12px;pointer-events:none}
       #dsp-drop div{font-size:16px;font-weight:700;color:var(--ok, #4cd07a)}
       .dsp-cname{max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-      .dsp-q{font:inherit;font-size:13px;line-height:1;width:24px;height:24px;border:1px solid var(--line, #4a4f57);border-radius:5px;background:var(--panel, #1b1e24);color:inherit;cursor:pointer;padding:0}
-      .dsp-qty{width:46px;font:inherit;font-size:12.5px;padding:2px 4px;text-align:center;border:1px solid var(--line, #444);border-radius:5px;background:var(--chassis, #12151a);color:inherit}
+      .dsp-q{font:inherit;font-size:13px;line-height:1;width:24px;height:24px;border:1px solid var(--field, #818793);border-radius:5px;background:var(--panel, #1b1e24);color:inherit;cursor:pointer;padding:0}
+      .dsp-qty{width:46px;font:inherit;font-size:12.5px;padding:2px 4px;text-align:center;border:1px solid var(--field, #818793);border-radius:5px;background:var(--chassis, #12151a);color:inherit}
       .dsp-bump{outline:2px solid var(--ok, #4cd07a)}
       .dsp-chip{display:inline-flex;align-items:center;gap:5px;background:var(--panel-2, #23262d);border:1px solid var(--line, #444);border-radius:14px;padding:4px 10px;font-size:12.5px}
       .dsp-chip b{margin-left:7px;cursor:pointer;color:var(--bad, #c66)}
@@ -1005,7 +1005,7 @@
       .dsp-done{opacity:.55}
       /* v2.22 priority picker in the job list. Compact; color-cued so a P5
          (top) and a P1 (low) read at a glance without opening anything. */
-      .dsp-jprio{font:inherit;font-size:12px;padding:2px 4px;border:1px solid var(--line,#3C4250);
+      .dsp-jprio{font:inherit;font-size:12px;padding:2px 4px;border:1px solid var(--field, #818793);
         border-radius:5px;background:var(--chassis,#12151a);color:var(--ink-dim,#AEB6C4);cursor:pointer}
       .dsp-jprio.dsp-prio5{border-color:var(--signal,#FFB200);color:var(--signal,#FFB200);font-weight:700}
       .dsp-jprio.dsp-prio4{border-color:color-mix(in srgb, var(--signal,#FFB200) 55%, var(--line,#3C4250))}
@@ -1016,15 +1016,15 @@
         background:color-mix(in srgb, var(--ok,#3DD68C) 7%, transparent)}
       .dsp-job.dsp-printing .dsp-jstate{color:var(--ok,#3DD68C);font-weight:700}
       .dsp-swatches i{display:inline-block;width:13px;height:13px;border-radius:3px;border:1px solid #0006;margin-right:2px;vertical-align:middle}
-      .dsp-job button,.dsp-bhead button{font-size:12px;padding:3px 9px;border:1px solid var(--line, #555);border-radius:5px;background:var(--panel-2, #23262d);color:inherit;cursor:pointer}
+      .dsp-job button,.dsp-bhead button{font-size:12px;padding:3px 9px;border:1px solid var(--field, #818793);border-radius:5px;background:var(--panel-2, #23262d);color:inherit;cursor:pointer}
       /* .dsp-lane/.dsp-track/.dsp-blk went with the percentage-width timeline
          the guide replaced in v2.15 — don't reintroduce them. */
-      .dsp-clear{border-color:#0a7a33;color:var(--ok, #4cd07a);font-size:11.5px;padding:3px 8px;align-self:flex-start}
-      .dsp-idleclear{border-color:var(--line, #555);color:var(--ink-dim, #9aa)}
+      .dsp-clear{border-color:var(--ok, #3DD68C);color:var(--ok, #4cd07a);font-size:11.5px;padding:3px 8px;align-self:flex-start}
+      .dsp-idleclear{border-color:var(--field, #818793);color:var(--ink-dim, #9aa)}
     /* v2.19 maintenance. Reads as neither "running" green nor "fault" red:
        taking a machine down is a decision, not an incident. */
     .dsp-maint{font:inherit;font-size:11.5px;padding:3px 8px;align-self:flex-start;
-      border:1px dashed var(--line,#3C4250);border-radius:var(--r-sm,6px);
+      border:1px dashed var(--field, #818793);border-radius:var(--r-sm,6px);
       background:transparent;color:var(--ink-faint,#828B9A);cursor:pointer;white-space:nowrap}
     .dsp-maint:hover{color:var(--ink,#F4F6FA);border-color:var(--ink-faint,#828B9A)}
     .dsp-maint-on{border-style:solid;color:var(--signal,#FFB200);
@@ -1049,12 +1049,12 @@
       .dsp-mounts{list-style:none;padding:0;margin:0;font-size:13px}
       .dsp-mounts li{display:flex;align-items:center;gap:8px;padding:3px 0}
       .dsp-mounts i{width:15px;height:15px;border-radius:4px;border:1px solid #0006;flex:none}
-      .dsp-sheetclose{margin-top:14px;width:100%;font:inherit;font-size:13px;padding:9px;border:1px solid var(--line, #555);border-radius:8px;background:var(--panel-2, #23262d);color:inherit;cursor:pointer}
+      .dsp-sheetclose{margin-top:14px;width:100%;font:inherit;font-size:13px;padding:9px;border:1px solid var(--field, #818793);border-radius:8px;background:var(--panel-2, #23262d);color:inherit;cursor:pointer}
       .dsp-blk{cursor:pointer}
-      .dsp-clash{color:#ff9f43;font-weight:800;margin-left:4px}
+      .dsp-clash{color:#ffb066;font-weight:800;margin-left:4px}
       .dsp-moverow{display:flex;gap:6px;margin-top:4px}
-      .dsp-moveto{flex:1;font:inherit;font-size:13px;padding:7px;border:1px solid var(--line, #444);border-radius:7px;background:var(--panel, #1b1e24);color:inherit}
-      .dsp-movego{font:inherit;font-size:13px;padding:7px 14px;border:1px solid var(--line, #555);border-radius:7px;background:var(--panel-2, #23262d);color:inherit;cursor:pointer}
+      .dsp-moveto{flex:1;font:inherit;font-size:13px;padding:7px;border:1px solid var(--field, #818793);border-radius:7px;background:var(--panel, #1b1e24);color:inherit}
+      .dsp-movego{font:inherit;font-size:13px;padding:7px 14px;border:1px solid var(--field, #818793);border-radius:7px;background:var(--panel-2, #23262d);color:inherit;cursor:pointer}
       .dsp-targetbar{border:1px solid var(--line-soft, #2f333a);border-radius:8px;padding:7px 10px;font-size:12.5px}
       .dsp-targetbar span{color:var(--ink-dim, #c9cbd1)}
       .dsp-rep{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:8px 11px;border-radius:8px;font-size:13px;margin:6px 0}
@@ -1062,7 +1062,7 @@
       .dsp-rep-ok{background:#12261a;border:1px solid #2c6b41;color:#8fe0ac}
       .dsp-rep-bad{background:#2a1414;border:1px solid #8a3b32;color:#f0a89f}
       .dsp-rep-none{background:var(--panel, #1b1e24);border:1px solid var(--line-soft, #2f333a);color:var(--ink-faint, #889)}
-      .dsp-repmore{margin-left:auto;font:inherit;font-size:12px;padding:3px 10px;border:1px solid #7a4c46;border-radius:6px;background:transparent;color:inherit;cursor:pointer}
+      .dsp-repmore{margin-left:auto;font:inherit;font-size:12px;padding:3px 10px;border:1px solid #b0645a;border-radius:6px;background:transparent;color:inherit;cursor:pointer}
       .dsp-replist{border:1px solid var(--line-soft, #2a2d33);border-radius:8px;overflow:hidden;margin-bottom:8px}
       .dsp-repitem{padding:8px 11px;border-bottom:1px solid var(--panel-2, #23262d);font-size:12.5px}
       .dsp-repitem:last-child{border-bottom:0}
@@ -1082,11 +1082,15 @@
          the ruler are sticky so you never lose the machine or the day. */
       .dsp-gtools{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:6px 0 4px}
       .dsp-gsub{color:var(--ink-faint,#828B9A);font-size:11.5px}
-      .dsp-gz,.dsp-gjump{font:inherit;font-size:11.5px;padding:3px 9px;border:1px solid var(--line,#3C4250);border-radius:6px;background:var(--panel,#1b1e24);color:var(--ink-dim,#AEB6C4);cursor:pointer}
+      /* v2.41: replan / claim running prints had no style at all and drew the
+   browser's light-gray default button on the dark board. */
+.dsp-mini{font:inherit;font-size:11px;padding:2px 8px;border:1px solid var(--field, #818793);border-radius:6px;background:var(--panel-2, #31363F);color:var(--ink, #F8F9FC);cursor:pointer}
+.dsp-mini:hover{border-color:var(--signal, #FFB200)}
+.dsp-gz,.dsp-gjump{font:inherit;font-size:11.5px;padding:3px 9px;border:1px solid var(--field, #818793);border-radius:6px;background:var(--panel,#1b1e24);color:var(--ink-dim,#AEB6C4);cursor:pointer}
       .dsp-gzon{border-color:var(--signal, #FFB200);color:var(--signal, #FFB200);font-weight:700}
       /* v2.22 fluid/locked toggle. Fluid reads calm; locked reads deliberate
          (solid amber, the "you decided this" color used for maintenance). */
-      .dsp-glock{font:inherit;font-size:11.5px;padding:3px 10px;border:1px solid var(--line,#3C4250);
+      .dsp-glock{font:inherit;font-size:11.5px;padding:3px 10px;border:1px solid var(--field, #818793);
         border-radius:6px;background:var(--panel,#1b1e24);color:var(--ink-dim,#AEB6C4);cursor:pointer;white-space:nowrap}
       .dsp-glock:hover{border-color:var(--ink-faint,#828B9A);color:var(--ink,#F4F6FA)}
       .dsp-glock-on{border-color:var(--signal,#FFB200);color:var(--signal,#FFB200);font-weight:700;
@@ -1138,9 +1142,10 @@
         border-radius:5px;padding:0 5px;overflow:hidden;cursor:pointer;display:flex;align-items:center;gap:4px}
       .dsp-grun:hover{filter:brightness(1.18)}
       .dsp-grun .dsp-gtext span{color:#bff0d4}
-      .dsp-grunicon{flex:none;font-size:10px;color:var(--ok,#3DD68C)}
-      .dsp-grunp{background:#5c4a1d;border-color:var(--signal, #FFB200)}
-      .dsp-grunp .dsp-grunicon{color:var(--signal, #FFB200)}
+      .dsp-grunicon{flex:none;font-size:10px;color:#8fe0ac}
+      .dsp-grunp{background:color-mix(in srgb, var(--signal, #FFB200) 26%, var(--panel, #262A33));border-color:var(--signal, #FFB200)}
+.dsp-rowrun .dsp-maint,.dsp-rowrun .dsp-idleclear{color:var(--ink-dim,#C7CDD8)}
+      .dsp-grunp .dsp-grunicon{color:var(--ink, #F8F9FC)}
       /* ETA unknown: striped, so an 8-hour pessimistic bar never reads as a measurement */
       .dsp-grunq{background:repeating-linear-gradient(45deg,#1d5c3a,#1d5c3a 6px,#164a2e 6px,#164a2e 12px)}
       .dsp-grunning{color:var(--ok,#3DD68C);font-weight:700}
@@ -1171,7 +1176,7 @@
         border-radius:8px 8px 0 0;background:var(--panel,#1b1e24);font-size:13px}
       .dsp-chg span{color:var(--ink-faint,#828B9A);font-weight:400}
       .dsp-chgnone{border-radius:8px;color:var(--ink-dim,#AEB6C4)}
-      .dsp-chgx{margin-left:auto;font:inherit;font-size:12px;line-height:1;padding:3px 7px;border:1px solid var(--line,#3C4250);
+      .dsp-chgx{margin-left:auto;font:inherit;font-size:12px;line-height:1;padding:3px 7px;border:1px solid var(--field, #818793);
         border-radius:5px;background:transparent;color:inherit;cursor:pointer}
       .dsp-chglist{border:1px solid var(--line,#3C4250);border-top:0;border-radius:0 0 8px 8px;overflow:hidden;margin-bottom:8px}
       .dsp-chgrow{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;padding:6px 11px;font-size:12.5px;
@@ -1198,7 +1203,7 @@
         border-radius:12px;padding:10px;box-shadow:var(--elev-2,0 10px 28px rgba(0,0,0,.5));font-size:13px}
       .dsp-phead{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}
       .dsp-pmon{font-weight:800;font-size:13px}
-      .dsp-pnav{font:inherit;font-size:16px;line-height:1;width:28px;height:28px;border:1px solid var(--line,#3C4250);
+      .dsp-pnav{font:inherit;font-size:16px;line-height:1;width:28px;height:28px;border:1px solid var(--field, #818793);
         border-radius:6px;background:transparent;color:inherit;cursor:pointer}
       .dsp-pdow{display:grid;grid-template-columns:repeat(7,1fr);gap:2px;margin-bottom:2px}
       .dsp-pdow span{text-align:center;font-size:10.5px;color:var(--ink-faint,#828B9A)}
@@ -1212,15 +1217,15 @@
       .dsp-ptime{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:9px;padding-top:9px;
         border-top:1px solid var(--line-soft,#2a2d33)}
       .dsp-pclock{font-size:13px}
-      .dsp-ptin{font:inherit;font-size:12.5px;padding:5px 7px;border:1px solid var(--line,#444);border-radius:6px;
+      .dsp-ptin{font:inherit;font-size:12.5px;padding:5px 7px;border:1px solid var(--field, #818793);border-radius:6px;
         background:var(--chassis,#12151a);color:inherit}
       .dsp-pchips{display:flex;gap:3px;flex-wrap:wrap}
-      .dsp-pchip{font:inherit;font-size:11px;padding:4px 7px;border:1px solid var(--line,#3C4250);border-radius:11px;
+      .dsp-pchip{font:inherit;font-size:11px;padding:4px 7px;border:1px solid var(--field, #818793);border-radius:11px;
         background:transparent;color:var(--ink-dim,#AEB6C4);cursor:pointer}
       .dsp-pchip:hover{border-color:var(--signal, #FFB200);color:var(--signal, #FFB200)}
       .dsp-pfoot{display:flex;align-items:center;gap:8px;margin-top:9px;padding-top:9px;border-top:1px solid var(--line-soft,#2a2d33)}
       .dsp-ppreview{flex:1;font-size:11.5px;color:var(--ink-faint,#828B9A);text-align:center}
-      .dsp-pclear,.dsp-pset{font:inherit;font-size:12.5px;padding:6px 12px;border-radius:7px;cursor:pointer;border:1px solid var(--line,#555)}
+      .dsp-pclear,.dsp-pset{font:inherit;font-size:12.5px;padding:6px 12px;border-radius:7px;cursor:pointer;border:1px solid var(--field, #818793)}
       .dsp-pclear{background:transparent;color:var(--ink-dim,#AEB6C4)}
       .dsp-pset{background:var(--signal, #FFB200);border-color:var(--signal, #FFB200);color:var(--chassis, #12151a);font-weight:800}
       @media (max-width:560px){
@@ -1279,7 +1284,7 @@
       <div class="dsp-chipbox" id="dsp-chips"></div>
       <button id="dsp-jobs-toggle" class="dsp-toggle">JOBS <span id="dsp-jobs-sum"></span> <b id="dsp-jobs-caret">▾</b></button>
       <div id="dsp-jobs"></div>
-      <div class="dsp-h">PLAN <button id="dsp-replan" style="font-size:11px;padding:2px 8px">↻ replan</button> <button id="dsp-adopt" style="font-size:11px;padding:2px 8px" title="Match prints already running on your printers to queued jobs, so Dispatch stops scheduling work the farm is already doing">⤓ claim running prints</button></div>
+      <div class="dsp-h">PLAN <button id="dsp-replan" class="dsp-mini">↻ replan</button> <button id="dsp-adopt" class="dsp-mini" title="Match prints already running on your printers to queued jobs, so Dispatch stops scheduling work the farm is already doing">⤓ claim running prints</button></div>
       <div class="dsp-pbar" id="dsp-progress" style="display:none">
         <div class="dsp-pbtrack"><div class="dsp-pbfill"></div></div>
         <div class="dsp-pblabel"></div>

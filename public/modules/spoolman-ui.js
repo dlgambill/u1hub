@@ -39,7 +39,7 @@
     s.textContent = [
       ".smrow{display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:10px;}",
       ".smrow input{flex:1 1 220px; min-width:0; font:inherit; font-size:13px; background:var(--bg,#14161b);",
-      "  color:var(--ink); border:1px solid var(--line); border-radius:8px; padding:8px 10px;}",
+      "  color:var(--ink); border:1px solid var(--field); border-radius:8px; padding:8px 10px;}",
       ".smrow .gear{font-size:12px; padding:7px 12px;}",
       ".smstate{font-family:var(--mono); font-size:11.5px; color:var(--ink-dim); min-height:16px; margin-top:8px; white-space:pre-wrap;}",
       ".smstate.err{color:var(--bad,#e5484d);}",

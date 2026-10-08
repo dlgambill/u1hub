@@ -4630,7 +4630,10 @@ async function stopHub() {
     // Every remaining bare hex must be one of the Gantt's semantic key colours,
     // which stay literal on purpose: the legend tells the user what they mean,
     // so they must not follow the accent.
-    const KEY = /#(274a72|3a6ca8|1d5c3a|164a2e|6e2020|c0392b|2c6b41|8fe0ac|f0a89f|2a1414|8a3b32|12261a|12281a|171a20|5c4a1f|5c4a1d|7a4c46|c07a2b|ffd166|ff9f43|bff0d4|cfe0f5|8fb7e0|0a7a33|0006|fff|000)$/i;
+    // v2.41: #ffb066 (clash mark) and #b0645a ("why?" border) are the
+    // contrast-pass replacements for #ff9f43 and #7a4c46 - same meaning,
+    // measured to 4.5:1 and 3:1 on their bars.
+    const KEY = /#(274a72|3a6ca8|1d5c3a|164a2e|6e2020|c0392b|2c6b41|8fe0ac|f0a89f|2a1414|8a3b32|12261a|12281a|171a20|5c4a1f|5c4a1d|7a4c46|b0645a|c07a2b|ffd166|ff9f43|ffb066|bff0d4|cfe0f5|8fb7e0|0a7a33|0006|fff|000)$/i;
     const bare = [];
     dsp.replace(/(var\(\s*--[a-z0-9-]+\s*,\s*)?#([0-9a-fA-F]{3,8})\b/gi, (m, inVar, hex) => {
       if (!inVar && !KEY.test("#" + hex)) bare.push("#" + hex);
@@ -4662,6 +4665,41 @@ async function stopHub() {
     const sbRule = (idx.match(/\.actstrip \.sb\{[^}]*\}/) || [""])[0];
     ok(/flex-wrap:\s*wrap/.test(stripRule) && /white-space:\s*nowrap/.test(sbRule),
       "the Send-to strip wraps onto more rows instead of overflowing a phone", { stripRule, sbRule });
+
+    // v2.41 contrast pass (3MF Explorer 1.4.0's method). The full measurement
+    // is scripts/contrast-audit.js against a live throwaway Hub; these are the
+    // static guards that keep its findings fixed.
+    // (a) Controls are bordered in --field (3:1), never the decorative --line.
+    const ruleOf = sel => { const m = idx.match(new RegExp(sel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\{[^}]*\\}")); return m ? m[0] : ""; };
+    const ctlSel = [".refresh", ".gear", ".field", ".filter input", ".sortsel", ".qbtn", ".pcard .statsbtn",
+      ".bedrow .bedset", ".btn.ghost", ".pcard .camopen", ".vtab", ".ttab", ".prow .rm", ".typerow .rm"];
+    const ctlBad = ctlSel.filter(s => { const r = ruleOf(s); return !r || /var\(--line/.test(r) || !/--field/.test(r); });
+    ok(/--field:\s*#[0-9a-fA-F]{6}/.test(idx) && ctlBad.length === 0,
+      "inputs, selects and buttons are bordered in --field, not the decorative --line", ctlBad);
+    // (b) Cancel drew the browser's light-gray default button under red text.
+    ok(/background:\s*transparent/.test(ruleOf(".btn.danger")),
+      "the danger button has a background of its own", ruleOf(".btn.danger"));
+    // (c) Any type accent reads as text: run app.js's own readableAccent() on
+    // every preset and on a deliberately dark pick.
+    const appSrc = fs.readFileSync(path.join(REPO, "public", "app.js"), "utf8");
+    const accAt = appSrc.indexOf("function _lum("), accEnd = appSrc.indexOf("function applyAccent(");
+    let accBad = ["readableAccent() not found in app.js"];
+    if (accAt >= 0 && accEnd > accAt) {
+      const A = new Function(appSrc.slice(accAt, accEnd) + "; return { readableAccent, onAccent, _cr };")();
+      const cfgSrc = fs.readFileSync(path.join(REPO, "core", "config.js"), "utf8");
+      const presets = ((cfgSrc.match(/ACCENT_PRESETS\s*=\s*\[([^\]]*)\]/) || [])[1] || "").match(/#[0-9a-fA-F]{6}/g) || [];
+      accBad = ["#FFB200", ...presets, "#3A2A6B", "#000000"]
+        .map(c => ({ c, r: A.readableAccent(c), text: A._cr(A.readableAccent(c), "#31363F"), label: A._cr(A.onAccent(A.readableAccent(c)), A.readableAccent(c)) }))
+        .filter(x => x.text < 4.5 || x.label < 4.5);
+      if (presets.length < 8) accBad.push("ACCENT_PRESETS not found in core/config.js");
+      if (A.readableAccent("#FFB200") !== "#FFB200") accBad.push("the U1 gold was altered");
+    }
+    ok(accBad.length === 0, "every type accent reads at 4.5:1 as text and under its label", accBad);
+    // (d) The tab icon, drawn like Explorer's: an SVG with a 32px PNG fallback.
+    const favOk = ["favicon.svg", "favicon-32.png"].every(f => fs.existsSync(path.join(REPO, "public", f))) &&
+      /^<svg[\s>]/.test(fs.readFileSync(path.join(REPO, "public", "favicon.svg"), "utf8")) &&
+      idx.includes('href="/favicon.svg"') && idx.includes('href="/favicon-32.png"');
+    ok(favOk, "the Hub has an SVG favicon with a 32px fallback, linked from the page");
   }
 
   // ---- KLIPPER: each printer's own UI, proxied through the Hub (v2.21) ----

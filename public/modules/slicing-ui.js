@@ -58,7 +58,7 @@
         '<div style="font-size:12px;margin:8px 0 3px">Slicer executable ' + found(st.exeFound) + '</div>' +
         '<input id="slc-cfg-exe" value="' + esc(st.exe) + '" style="width:100%;font-size:12px;padding:5px 8px;box-sizing:border-box" spellcheck="false">' +
         '<div style="display:flex;gap:8px;align-items:center;margin-top:8px">' +
-        '<button class="btn" id="slc-cfg-save" style="font-size:12px;padding:4px 12px">Save</button>' +
+        '<button class="btn ghost" id="slc-cfg-save" style="font-size:12px;padding:4px 12px">Save</button>' +
         '<span id="slc-cfg-msg" style="font-size:12px;opacity:.7"></span>' +
         '<span style="flex:1"></span><span style="font-size:11px;opacity:.5">applies immediately — no restart</span></div>' +
       "</div></div>";

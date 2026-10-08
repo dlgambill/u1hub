@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- U1 Print Hub: the four toolheads of a U1, drawn the way 3MF Explorer's
+       cube is - flat shapes on a solid panel tile, so it holds up on light and
+       dark tab bars. icon-192's "U1" lettering is left out on purpose: at
+       16px it is a smudge, four colored heads are not. Gold first, because
+       gold is the Hub's accent (Explorer's tab is violet). -->
+  <rect width="32" height="32" rx="7" fill="#161920"/>
+  <rect x="5" y="6.5" width="10" height="8" rx="2" fill="#FFB200"/>
+  <rect x="17" y="6.5" width="10" height="8" rx="2" fill="#F26B3A"/>
+  <rect x="5" y="17.5" width="10" height="8" rx="2" fill="#3DB06A"/>
+  <rect x="17" y="17.5" width="10" height="8" rx="2" fill="#4A8CF0"/>
+</svg>

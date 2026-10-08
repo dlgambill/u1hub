@@ -43,7 +43,7 @@
       // v2.29: the price row. Same mono voice as the line above it; the input
       // is the one sans element, because a number you type is not a readout.
       ".mgprice{display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:2px;}",
-      ".mgprice input{font:inherit; font-family:var(--sans); font-size:13px; width:76px; color:var(--ink); background:var(--panel-2); border:1px solid var(--line); border-radius:var(--r-sm,6px); padding:3px 7px;}",
+      ".mgprice input{font:inherit; font-family:var(--sans); font-size:13px; width:76px; color:var(--ink); background:var(--panel-2); border:1px solid var(--field); border-radius:var(--r-sm,6px); padding:3px 7px;}",
       ".mgprice input:focus{outline:none; border-color:color-mix(in srgb, var(--signal) 55%, var(--line)); box-shadow:0 0 0 3px color-mix(in srgb, var(--signal) 16%, transparent);}",
       ".mgprice .btn{font-size:11.5px; padding:3px 10px;}",
       // 2.30.2: never nowrap here. .main is a grid item (min-width:auto), so an

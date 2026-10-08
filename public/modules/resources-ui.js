@@ -98,7 +98,7 @@
   #modview-resources .rtag.orph{border-color:color-mix(in srgb,var(--busy) 60%,var(--line));color:var(--busy);
     background:color-mix(in srgb,var(--busy) 12%,transparent)}
   #modview-resources .rtag.map{border-color:color-mix(in srgb,var(--ok) 45%,var(--line));color:var(--ok)}
-  #modview-resources .redit{background:transparent;border:1px dashed var(--line);border-radius:6px;
+  #modview-resources .redit{background:transparent;border:1px dashed var(--field);border-radius:6px;
     color:var(--ink);padding:3px 7px;font:inherit;font-size:12.5px;cursor:text;min-width:62px;text-align:right}
   #modview-resources .redit.unset{color:var(--ink-faint);font-style:italic}
   #modview-resources .redit.editing{border-style:solid;cursor:text}
@@ -116,7 +116,7 @@
   #modview-resources a.rbuy:hover{border-color:color-mix(in srgb,var(--signal) 45%,var(--line));color:var(--ink)}
   #modview-resources .rbuy.go{border-color:color-mix(in srgb,var(--signal) 50%,var(--line));color:var(--signal)}
   #modview-resources .rbuy:disabled{opacity:.35;cursor:default}
-  #modview-resources select.rmap{background:var(--chassis);color:var(--ink);border:1px solid var(--line);
+  #modview-resources select.rmap{background:var(--chassis);color:var(--ink);border:1px solid var(--field);
     border-radius:6px;padding:3px 6px;font:inherit;font-size:11.5px;max-width:190px}
   /* Wide content scrolls INSIDE its own box. Never let the table push the
      document sideways — and never reach for html/body overflow to stop it:
@@ -189,7 +189,7 @@
             <button data-r="30">30 days</button>
           </div>
           <label class="rchk"><input type="checkbox" id="res-dl"> deadline only</label>
-          <button class="btn" id="res-refresh">Refresh</button>
+          <button class="btn ghost" id="res-refresh">Refresh</button>
         </div>
       </div>
       <div id="res-warn"></div>
@@ -303,7 +303,7 @@
         <b style="color:var(--ink)">${T.unknown_on_hand} color${T.unknown_on_hand > 1 ? "s have" : " has"}
         no on-hand amount set.</b> Shortfall and cost stay blank for those rows rather than
         assuming the shelf is empty — click a dash in the ON HAND column to set one.
-        <button class="btn" id="res-assume" style="margin-left:10px;padding:3px 9px;font-size:11.5px">
+        <button class="btn ghost" id="res-assume" style="margin-left:10px;padding:3px 9px;font-size:11.5px">
         ${DATA.settings.assume_empty_when_unset ? "Stop assuming empty" : "Assume empty (worst case)"}</button>
       </div>`);
     }
@@ -323,13 +323,13 @@
         <span class="rdisctxt">The "Replenish on Amazon" links on this page are Amazon affiliate links —
         if you buy through one, this project earns a small commission at no extra cost to you.
         Prices and availability are Amazon's; the Hub does not check them.</span>
-        <button class="btn" id="res-aff" style="margin-left:10px;padding:3px 9px;font-size:11.5px">Turn off</button>
+        <button class="btn ghost" id="res-aff" style="margin-left:10px;padding:3px 9px;font-size:11.5px">Turn off</button>
       </div>`);
     } else if (A.enabled === false) {
       disc.push(`<div class="rwarn rdisc" style="border-color:var(--line);background:transparent">
         <span class="rdisctxt">Affiliate links are off — the "Replenish on Amazon" links go out untagged.${
           A.tag_set ? "" : " No associate tag is stored, so turning this on will do nothing until one is set."}</span>
-        <button class="btn" id="res-aff" style="margin-left:10px;padding:3px 9px;font-size:11.5px">Turn on</button>
+        <button class="btn ghost" id="res-aff" style="margin-left:10px;padding:3px 9px;font-size:11.5px">Turn on</button>
       </div>`);
     }
     $$("#res-warn").innerHTML = w.join("");
@@ -541,7 +541,7 @@
         dot = document.createElement("span");
         dot.className = "resbadge";
         dot.style.cssText = "margin-left:7px;padding:1px 6px;border-radius:9px;font-size:10px;" +
-          "font-weight:700;background:var(--bad);color:#fff;cursor:pointer";
+          "font-weight:700;background:var(--bad);color:#16191f;cursor:pointer";
         dot.addEventListener("click", e => { e.stopPropagation(); setView("resources"); });
         tab.appendChild(dot);
       }
