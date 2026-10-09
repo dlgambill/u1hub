@@ -24,12 +24,16 @@ own key in place.
 status, progress, loaded colors, camera, and bed temperature. A print that
 paused or failed says why, in the firmware's own words, so you know whether to
 walk over. A printer that is down for maintenance says so right on the card,
-and the scheduler routes work around it until you bring it back.
+and the scheduler routes work around it until you bring it back. Tap a
+head's color on an idle printer to change it, pick the material, and it stays
+on the printer just like a color set on the touchscreen.
 
 **Send prints without walking over.** Pick a file, see the colors it needs,
 choose which head prints which color, and push it to any idle machine. Files
 live in one merged list: the Hub's library plus whatever is stored on each
-printer, with thumbnails.
+printer, with thumbnails. A file that only lives on one printer (sliced
+straight to it) can be copied into the Hub library with one tap, so you can
+queue it, plan it, or send it to any other machine.
 
 **Know whether it is worth printing.** Under every file you select, one line
 says what its filament costs, the least it has to sell for (per piece when the
@@ -81,8 +85,9 @@ Models tab under Requested. As soon as that model's gcode is saved from Orca
 (or you link one by hand with Link gcode behind the ⋯), the Hub queues one
 print of it in Dispatch on its own. To pair them, open Models, then ⚙ Folder:
 the Hub shows its address and a token to copy into 3MF Explorer's settings.
-Both apps need to be looking at the same model folder, since a request names
-the file by where it sits on disk.
+Both apps need to be looking at the same model library, but they don't have
+to reach it the same way - one can use a mapped drive letter and the other the
+network path, or 3MF Explorer can run on a different computer.
 
 ![Models, filtered to Requested: what was marked for print in 3MF Explorer, one already queued, and Link gcode open on a card](docs/print-requests.png)
 
@@ -103,7 +108,12 @@ project's colors to your loaded heads when it can, and lists what to watch.
 **Plan your whole printing day.** The Dispatch tab schedules your queue across
 every printer, inside the hours you are actually home to swap plates. It flags
 jobs that want the same spool at the same time, lets you push a job back a
-place, and adopts prints that are already running.
+place, and adopts prints that are already running. The key under the timeline
+explains every mark a bar can carry: spool swaps before it starts, a color
+another printer needs at the same time, and a wait for someone to clear the
+bed. You also choose what a printer does with its rolls when a print
+finishes: keep them all loaded, unload only the ones the next job on that
+printer doesn't use, or unload every roll the print used.
 
 ![Dispatch: the week's prints laid out across the fleet](docs/dispatch.png)
 
@@ -170,7 +180,9 @@ exactly as they do when you visit the printer on its own.
 ![A printer's own Fluidd page, one click from the dashboard](docs/klipper-proxy.png)
 
 **Use it from your phone.** The whole thing is built for a phone screen. Add
-it to your home screen and it behaves like an app. (The Models tab and its
+it to your home screen and it behaves like an app. Every label, button and
+field is checked for contrast, so it stays readable on a dim shop screen or a
+phone in daylight, whatever accent color your printer types use. (The Models tab and its
 Open in Orca button are desktop only, because they open a program on the Hub
 computer.)
 
