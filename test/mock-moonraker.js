@@ -135,7 +135,25 @@ function createMock(profile) {
           if (ptc.filament_exist[i] && ptc.filament_edit[i] !== false) {
             ptc.filament_type[i] = tm[2].toUpperCase();
             if (sm) ptc.filament_sub_type[i] = sm[2] || "NONE";
+            const vm = /(^|\s)VENDOR=('?)([^' ]+)\2/.exec(script);
+            if (vm) ptc.filament_vendor[i] = vm[3];
           }
+        }
+      }
+      // v2.41.1: the spool-tag re-read the firmware runs on a reboot, a load
+      // or unload and feeder events (filament_detect.request_update_filament_info,
+      // also reachable as FILAMENT_DT_UPDATE). For a head with no RFID tag,
+      // print_task_config._rfid_filament_info_update_cb keeps the head's
+      // settings ONLY if its vendor is not 'NONE'; otherwise the blank read
+      // overwrites them with white / NONE. This is the rule that made Hub-set
+      // colors "not save to the machine".
+      if (profile === "u1" && /^FILAMENT_DT_UPDATE\b/.test(script)) {
+        const ch = /CHANNEL=(\d)/.exec(script);
+        const i = ch ? Number(ch[1]) : -1;
+        if (i >= 0 && ptc.filament_exist[i] && !ptc.filament_official?.[i] && (ptc.filament_vendor[i] || "NONE") === "NONE") {
+          ptc.filament_color_rgba[i] = "FFFFFFFF";
+          ptc.filament_type[i] = "NONE";
+          ptc.filament_vendor[i] = "NONE";
         }
       }
       if (/^SDCARD_PRINT_FILE/.test(script)) {

@@ -752,10 +752,37 @@ async function stopHub() {
       ok(r.status === 200 && r.body.material && r.body.material.sent === null && r.body.material.confirmed === false
          && /touchscreen/.test(r.body.warning || "") && !mockU1.state.gcodeScripts.slice(b2).some(s => /FILAMENT_TYPE/.test(s)),
         "unknown material → nothing bogus written; the warning points at the touchscreen", r.body);
-      // No material in the request → exactly the pre-2.22.1 response shape.
+      // v2.41.1 (field bug 2026-10-09, "it doesn't actually save to the
+      // machine"): a color-only write left the head's vendor at NONE, and the
+      // firmware's next spool-tag re-read (modeled by the mock as
+      // FILAMENT_DT_UPDATE, per print_task_config._rfid_filament_info_update_cb)
+      // wiped it back to white. The old contract above ("send only a color,
+      // get only a color") was the bug. Start from a head in exactly the
+      // field state - typed PLA, vendor NONE - and prove the color survives.
+      const dtUpdate = () => fetch("http://127.0.0.1:" + portU1 + "/printer/gcode/script?script=" + encodeURIComponent("FILAMENT_DT_UPDATE CHANNEL=0"), { method: "POST" });
+      mockU1.state.ptc.filament_vendor[0] = "NONE"; mockU1.state.ptc.filament_type[0] = "PLA";
+      const b3 = nScripts();
       r = await jpost("/api/setcolor", { printer: 0, slot: 0, hex: "#123ABC" });
-      ok(r.status === 200 && r.body.ok === true && r.body.material === undefined && r.body.warning === undefined,
-        "callers that send only a color get the old contract back, untouched", r.body);
+      const sent3 = mockU1.state.gcodeScripts.slice(b3);
+      ok(r.status === 200 && r.body.ok === true && r.body.material && r.body.material.source === "head"
+         && r.body.material.confirmed === true && r.body.warning === undefined
+         && sent3[0] === "SET_PRINT_FILAMENT_CONFIG CONFIG_EXTRUDER=0 VENDOR=Snapmaker FILAMENT_TYPE=PLA FILAMENT_SUBTYPE='Basic'",
+        "a color with no material re-sends the head's own type, which stamps VENDOR=Snapmaker", { body: r.body, sent3 });
+      await dtUpdate();
+      ok(mockU1.state.ptc.filament_color_rgba[0] === "123ABCFF" && mockU1.state.ptc.filament_vendor[0] === "Snapmaker",
+        "…and the color survives the printer's next spool-tag re-read", mockU1.state.ptc);
+      // A head with no material at all: the Hub cannot guess one, so the
+      // color goes on but the reply says, in words, that it will not last.
+      mockU1.state.ptc.filament_vendor[0] = "NONE"; mockU1.state.ptc.filament_type[0] = "NONE";
+      r = await jpost("/api/setcolor", { printer: 0, slot: 0, hex: "#456DEF" });
+      ok(r.status === 200 && r.body.material && r.body.material.source === "none" && r.body.material.confirmed === false
+         && /resets this color to white/.test(r.body.warning || "") && /Pick a material/.test(r.body.warning || ""),
+        "no material anywhere → color set, with a warning that it will reset - never a silent ✓", r.body);
+      await dtUpdate();
+      ok(mockU1.state.ptc.filament_color_rgba[0] === "FFFFFFFF",
+        "(control) the mock really does wipe a vendor-NONE head on a re-read", mockU1.state.ptc.filament_color_rgba[0]);
+      // Put slot 0 back the way the sections below expect it.
+      r = await jpost("/api/setcolor", { printer: 0, slot: 0, hex: "#123ABC", material: "PLA" });
     }
     // Mid-print, colors are untouchable — replay must refuse, not queue.
     mockU1.state.printState = "printing";
@@ -4672,7 +4699,7 @@ async function stopHub() {
     // (a) Controls are bordered in --field (3:1), never the decorative --line.
     const ruleOf = sel => { const m = idx.match(new RegExp(sel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\{[^}]*\\}")); return m ? m[0] : ""; };
     const ctlSel = [".refresh", ".gear", ".field", ".filter input", ".sortsel", ".qbtn", ".pcard .statsbtn",
-      ".bedrow .bedset", ".btn.ghost", ".pcard .camopen", ".vtab", ".ttab", ".prow .rm", ".typerow .rm"];
+      ".bedrow .bedset", ".btn.ghost", ".pcard .camopen", ".vtab", ".ttab", ".prow .rm", ".typerow .rm", ".cpop .cpin", ".cpop .cpmat"];
     const ctlBad = ctlSel.filter(s => { const r = ruleOf(s); return !r || /var\(--line/.test(r) || !/--field/.test(r); });
     ok(/--field:\s*#[0-9a-fA-F]{6}/.test(idx) && ctlBad.length === 0,
       "inputs, selects and buttons are bordered in --field, not the decorative --line", ctlBad);

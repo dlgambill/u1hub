@@ -2163,6 +2163,7 @@ function diskChip(p){
 // sentinel pre-fills distinguish "invalid input" from a real parse.
 let PICKOPEN=null; // {id, slot, val}
 const COMMON_COLORS=[["White","FFFFFF"],["Silver","C0C0C0"],["Gray","808080"],["Black","000000"],["Red","FF0000"],["Orange","FFA500"],["Gold","FFD700"],["Yellow","FFFF00"],["Tan","D2B48C"],["Brown","8B4513"],["Lime","00FF00"],["Green","008000"],["Teal","008080"],["Cyan","00FFFF"],["Blue","0000FF"],["Navy","000080"],["Purple","800080"],["Magenta","FF00FF"],["Pink","FFC0CB"],["Beige","F5F5DC"]];
+const CP_MATS=["PLA","PETG","ABS","ASA","TPU","PVA","PA","PC"];   // the base types core/filament.js may send
 function resolveColor(str){
   str=String(str||"").trim();
   if(!str) return null;
@@ -2182,12 +2183,19 @@ function colorPopHtml(p){
   const val=(PICKOPEN.val!==undefined)?PICKOPEN.val:cur;
   const res=resolveColor(val);
   const grid=COMMON_COLORS.map(([n,h])=>`<span class="cpsw" data-pickswatch="#${h}" title="${n}" style="background:#${h}"></span>`).join("");
+  // v2.41.1: the material rides with the color, the way the touchscreen does
+  // it. Without one the printer keeps the head's vendor at NONE and resets
+  // the color to white at its next spool read (see core/filament.js).
+  const curMat=String((p.heads&&p.heads[PICKOPEN.slot]&&p.heads[PICKOPEN.slot].material)||"").toUpperCase();
+  const matSel=(PICKOPEN.mat!==undefined)?PICKOPEN.mat:(CP_MATS.includes(curMat)?curMat:"PLA");
+  const matOpts=CP_MATS.map(m=>`<option value="${m}"${m===matSel?" selected":""}>${m}</option>`).join("");
   return `<div class="cpop">
     <div class="cpophdr">T${PICKOPEN.slot+1} color — tap one, or type a hex / name (e.g. tan)</div>
     <div class="cpgrid">${grid}</div>
     <div class="cprow">
       <input class="cpin" id="cpin" value="${esc(val)}" placeholder="#RRGGBB or name" spellcheck="false" autocomplete="off">
       <input type="color" class="cpprev${res?"":" dim"}" id="cpprev" value="${res||"#888888"}" title="Open full color picker">
+      <select class="cpmat" id="cpmat" title="Material - the printer only keeps the color when the head has one">${matOpts}</select>
       <button class="btn primary" id="cpapply" ${res?"":"disabled"}>Apply</button>
       <button class="btn ghost" id="cpcancel">Cancel</button>
     </div>
@@ -2214,6 +2222,8 @@ function wirePickPopover(wrap){
     if(e.key==="Enter") commitPick();
     else if(e.key==="Escape"){ PICKOPEN=null; renderFleet(); }
   });
+  const cpmat=document.getElementById("cpmat");
+  if(cpmat) cpmat.addEventListener("change",()=>{ if(PICKOPEN) PICKOPEN.mat=cpmat.value; });
   wrap.querySelectorAll("[data-pickswatch]").forEach(s=>{
     s.addEventListener("click",()=>{ cpin.value=s.dataset.pickswatch; cpin.dispatchEvent(new Event("input")); cpin.focus(); });
   });
@@ -2267,20 +2277,25 @@ function commitPick(){
   const hex=inp?resolveColor(inp.value):null;
   if(!hex) return;
   const {id,slot}=PICKOPEN;
+  const ms=document.getElementById("cpmat");
+  const mat=ms?ms.value:"";
   PICKOPEN=null;
-  setColor(id,slot,hex);
+  setColor(id,slot,hex,mat);
 }
 
 // ---- Filament color: tap a swatch on an idle printer to change it ----
 // Server verifies the write against print_task_config before reporting ok,
 // so a green status here means the printer itself confirmed the new color.
-async function setColor(printer, slot, hex){
+async function setColor(printer, slot, hex, material){
   const st=$("pst-"+printer);
   if(st){ st.className="pstatus work"; st.textContent="Setting T"+(slot+1)+" color…"; }
   try{
-    const r=await fetch("/api/setcolor",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({printer,slot,hex})});
+    const r=await fetch("/api/setcolor",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({printer,slot,hex,material:material||undefined})});
     const d=await r.json(); if(!r.ok||d.error) throw new Error(d.error||("HTTP "+r.status));
-    if(st){ st.className="pstatus ok"; st.textContent="T"+(slot+1)+" set to "+d.hex+" — confirmed by printer"; }
+    // v2.41.1: a warning means the color is on the head now but will not
+    // survive the printer's next spool read - show it, never a bare tick.
+    if(st && d.warning){ st.className="pstatus err"; st.textContent=d.warning; }
+    else if(st){ st.className="pstatus ok"; st.textContent="T"+(slot+1)+" set to "+d.hex+" — confirmed by printer"; }
     loadFleet();
   }catch(e){ if(st){ st.className="pstatus err"; st.textContent=e.message; } }
 }

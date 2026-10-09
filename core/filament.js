@@ -50,7 +50,8 @@ function splitMaterial(material, variant) {
 }
 
 app.post("/api/setcolor", async (req, res) => {
-  const { printer, slot, hex, material, material_variant } = req.body || {};
+  const { printer, slot, hex } = req.body || {};
+  let { material, material_variant } = req.body || {};
   const p = hub.PRINTERS[printer];
   if (!p) return res.status(400).json({ error: "Unknown printer" });
   const s = parseInt(slot, 10);
@@ -81,9 +82,29 @@ app.post("/api/setcolor", async (req, res) => {
     // color is always the last word on the head, and a material refusal can
     // never undo it. Skipped entirely when the caller sent no material or one
     // the firmware has no base type for.
+    //
+    // v2.41.1 (field bug, 2026-10-09: "whenever I set the filament colors in
+    // the hub it doesn't actually save to the machine"): a color written with
+    // no material only lasts until the printer next re-reads that head's spool
+    // tag (a reboot, a load or unload, a feeder event). Firmware
+    // print_task_config._rfid_filament_info_update_cb keeps a non-RFID head's
+    // settings ONLY when its filament_vendor is not 'NONE'; otherwise the
+    // blank tag read overwrites it with white / NONE. The touchscreen never
+    // hits this because it always sends VENDOR + FILAMENT_TYPE with a color.
+    // Live fleet read the same day: every head still showing a Hub-set color
+    // had vendor 'Snapmaker'; every head the Hub colored without a material had
+    // gone back to white with vendor 'NONE'. So the material write is no longer
+    // optional: when the caller sends none, the head's own current type is
+    // re-sent, which is what stamps VENDOR=Snapmaker and makes the color stick.
+    const curType = String(((st.print_task_config || {}).filament_type || [])[s] || "").toUpperCase();
     let matInfo = null;
-    const matGiven = String(material || "").trim() || String(material_variant || "").trim();
-    if (matGiven) {
+    let matGiven = String(material || "").trim() || String(material_variant || "").trim();
+    let matSource = "caller";
+    if (!matGiven && BASE_TYPES.includes(curType)) { material = curType; material_variant = ""; matGiven = curType; matSource = "head"; }
+    if (!matGiven) {
+      matInfo = { sent: null, sub: null, confirmed: false, source: "none",
+                  reason: "no material given and the head reports none" };
+    } else {
       const { base: mat, sub } = splitMaterial(material, material_variant);
       if (!mat) {
         matInfo = { sent: null, sub: sub || null, confirmed: false,
@@ -91,7 +112,7 @@ app.post("/api/setcolor", async (req, res) => {
       } else {
         const tScript = `SET_PRINT_FILAMENT_CONFIG CONFIG_EXTRUDER=${s} VENDOR=Snapmaker FILAMENT_TYPE=${mat} FILAMENT_SUBTYPE='Basic'`;
         const tr = await fetch(base + "/printer/gcode/script?script=" + encodeURIComponent(tScript), { method: "POST" });
-        matInfo = { sent: mat, sub: sub || null, confirmed: false,
+        matInfo = { sent: mat, sub: sub || null, confirmed: false, source: matSource,
                     reason: tr.ok ? undefined : "Moonraker " + tr.status + ": " + (await tr.text()).slice(0, 120) };
       }
     }
@@ -111,13 +132,20 @@ app.post("/api/setcolor", async (req, res) => {
     let warning;
     if (matInfo) {
       const gotT = String((ptc.filament_type || [])[s] || "").toUpperCase();
+      const gotV = String((ptc.filament_vendor || [])[s] || "NONE");
       matInfo.printer_reports = gotT || "nothing";
-      matInfo.confirmed = !!matInfo.sent && gotT === matInfo.sent;
+      matInfo.vendor = gotV;
+      matInfo.confirmed = !!matInfo.sent && gotT === matInfo.sent && gotV !== "NONE";
+      // Whatever the reason, a head left with vendor NONE will lose this
+      // color at the next spool read - say so instead of a silent green tick.
+      const willReset = " Until it has one, the printer resets this color to white the next time it re-reads the spool.";
       if (!matInfo.confirmed)
-        warning = matInfo.sent
-          ? "Color set, but the printer did not take the material (" + matInfo.sent + ") — it still reports " +
-            matInfo.printer_reports + ". Set the material on the touchscreen."
-          : "Color set, but '" + String(material || material_variant || "") + "' isn't a material this printer knows — set it on the touchscreen.";
+        warning = matInfo.source === "none"
+          ? "Color set, but T" + (s + 1) + " has no material on the printer." + willReset + " Pick a material and apply again."
+          : matInfo.sent
+          ? "Color set, but the printer did not take the material (" + matInfo.sent + ") - it still reports " +
+            matInfo.printer_reports + "." + willReset + " Set the material on the touchscreen."
+          : "Color set, but '" + String(material || material_variant || "") + "' isn't a material this printer knows." + willReset + " Set it on the touchscreen.";
     }
     res.json({ ok: true, slot: s, hex: "#" + m[1].toUpperCase(), material: matInfo || undefined,
                warning, heads: decodeHeads(ptc) });
