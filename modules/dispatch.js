@@ -232,6 +232,15 @@ function register(ctx) {
   // attended/printers stay live. null whenever the mode is fluid.
   // v2.41: what happens to the rolls when a print finishes (see unloadPlan).
   const UNLOAD_MODES = ["never", "unneeded", "always"];
+  // 2.40.2 emergency pause. Clogs (broken filament in the nozzle) started
+  // showing up across the fleet once heads were unloaded at the end of every
+  // print. The firmware's unload heats properly (250 C, waits for it), so the
+  // suspect is how OFTEN the stock unload now runs, not how. Paused while we
+  // watch whether the clogs stop: the printer is told to unload nothing and
+  // the setting cannot be turned back on from the UI. Remove this switch (or
+  // set U1HUB_UNLOAD_PAUSED=0) only once the clog question is answered. The
+  // harness sets it to 0 to keep the decision logic covered.
+  const UNLOAD_PAUSED = process.env.U1HUB_UNLOAD_PAUSED !== "0";
   let D = { jobs: [], bundles: [], maintenance: {}, frozen: null, settings: JSON.parse(JSON.stringify(DEFAULT_SETTINGS)) };
   try {
     const raw = JSON.parse(fs.readFileSync(FILE, "utf8"));
@@ -257,6 +266,8 @@ function register(ctx) {
   if (!UNLOAD_MODES.includes(D.settings.unload_mode))
     D.settings.unload_mode = D.settings.unload_for_next ? "unneeded" : "never";
   delete D.settings.unload_for_next;
+  if (UNLOAD_PAUSED) D.settings.unload_mode = "never";
+  D.settings.unload_paused = UNLOAD_PAUSED;          // recomputed every boot, never trusted from disk
   if (D.settings.schedule_mode === "locked" && !D.frozen) D.settings.schedule_mode = "fluid";
   // Priority is a 1-5 scale, 5 = runs first (higher number = hotter). 3 is
   // "normal" and is what an unset or legacy priority (0) reads as, so old jobs
@@ -1380,7 +1391,9 @@ function register(ctx) {
     if (b.finish_policy === "anytime" || b.finish_policy === "attended") D.settings.finish_policy = b.finish_policy;
     // v2.41: unload_mode never | unneeded | always. The first build had a
     // boolean unload_for_next; it is still accepted and maps onto the mode.
-    if (UNLOAD_MODES.includes(b.unload_mode)) D.settings.unload_mode = b.unload_mode;
+    // While UNLOAD_PAUSED, any other mode is ignored and it stays "never".
+    if (UNLOAD_PAUSED) D.settings.unload_mode = "never";
+    else if (UNLOAD_MODES.includes(b.unload_mode)) D.settings.unload_mode = b.unload_mode;
     else if (typeof b.unload_for_next === "boolean") D.settings.unload_mode = b.unload_for_next ? "unneeded" : "never";
     delete D.settings.unload_for_next;
     if (newTarget !== undefined) D.settings.target = newTarget;
@@ -1590,6 +1603,7 @@ function register(ctx) {
   // unload, as before this existed. The firmware itself never unloads soft
   // filament (TPU) and never unloads on a cancelled print.
   function unloadModeOf() {
+    if (UNLOAD_PAUSED) return "never";
     const m = D.settings.unload_mode;
     if (UNLOAD_MODES.includes(m)) return m;
     return D.settings.unload_for_next ? "unneeded" : "never";     // pre-mode dispatch.json

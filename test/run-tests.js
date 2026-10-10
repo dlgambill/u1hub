@@ -168,6 +168,10 @@ async function stopHub() {
   // v2.10: run the print-start/complete watcher at 400 ms so the filament-
   // memory section can drive a full lifecycle in seconds (production: 15 s).
   process.env.U1HUB_POLL_MS = "400";
+  // 2.40.2: unload-after-print ships paused (see UNLOAD_PAUSED in dispatch.js).
+  // Run the harness with it un-paused so the decision logic stays covered;
+  // the PAUSE block below starts a Hub without this and checks the pause.
+  process.env.U1HUB_UNLOAD_PAUSED = "0";
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "u1hub-test-"));
   const hubDir = path.join(tmp, "app");
   stageHub(hubDir);
@@ -2916,6 +2920,29 @@ async function stopHub() {
       const afterInstall = fs.existsSync(installDispatch) ? fs.readFileSync(installDispatch, "utf8") : null;
       ok(afterInstall === beforeInstall,
         "U1HUB_DIR: and the install dir's own state was not touched at all");
+    }
+
+    // --- 2.40.2: unload after a print is paused by default --------------------
+    // A Hub started WITHOUT U1HUB_UNLOAD_PAUSED=0 (production) must tell the
+    // printer to unload nothing, whatever the stored or posted setting says.
+    {
+      mockU1.state.printState = "standby"; mockU1.state.filename = "";
+      await startHub(hubDir, { U1HUB_UNLOAD_PAUSED: "" });
+      let st = await jpost("/api/dispatch/settings", { unload_mode: "always" });
+      ok(st.status === 200 && st.body.settings.unload_mode === "never" && st.body.settings.unload_paused === true,
+        "PAUSE: 'always' is refused while unloading is paused - the mode stays 'never'", st.body.settings);
+      st = await jpost("/api/dispatch/settings", { unload_for_next: true });
+      ok(st.body.settings.unload_mode === "never", "PAUSE: the old on/off flag cannot turn it back on either", st.body.settings.unload_mode);
+      mockU1.state.gcodeScripts.length = 0;
+      const s = await jpost("/api/print", { file: "multi.gcode", printer: 0, type: "u1", map: { 0: 0, 1: 1, 2: 2 }, start: false });
+      let jb = null;
+      for (let i = 0; i < 40 && !(jb && jb.done); i++) { await sleep(250); jb = (await jget("/api/print-status?job=" + s.body.jobId)).body; }
+      const sc = mockU1.state.gcodeScripts.find(x => /SET_PRINT_PREFERENCES/.test(x)) || "";
+      ok(/END_UNLOAD_FILAMENT=\[0,0,0,0\]/.test(sc), "PAUSE: the printer is told to unload nothing", sc);
+      const dui = fs.readFileSync(path.join(REPO, "public/modules/dispatch-ui.js"), "utf8");
+      ok(/\$\$\("#dsp-unload"\)\.disabled = unloadPaused/.test(dui) && dui.includes('id="dsp-unload-paused"'),
+        "PAUSE: the Dispatch setting is locked and says why");
+      await stopHub();
     }
   }
 

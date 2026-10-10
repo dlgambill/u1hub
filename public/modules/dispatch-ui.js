@@ -175,6 +175,11 @@
     $$("#dsp-clearov").style.display = Object.keys(ov).length ? "" : "none";
     $$("#dsp-policy").value = (STATE.settings || {}).finish_policy || "anytime";
     $$("#dsp-unload").value = (STATE.settings || {}).unload_mode || "never";
+    // 2.40.2: unloading after a print is paused Hub-side while we check
+    // whether it is behind the nozzle clogs; the choice is locked to "keep".
+    const unloadPaused = !!(STATE.settings || {}).unload_paused;
+    $$("#dsp-unload").disabled = unloadPaused;
+    $$("#dsp-unload-paused").style.display = unloadPaused ? "" : "none";
     $$("#dsp-hours-sum").textContent = hoursSummary();
   }
   // A day is a list of windows; legacy {start,end} days read as one window.
@@ -1264,6 +1269,7 @@
               <option value="always">unload every roll it used</option>
             </select>
           </label>
+          <span id="dsp-unload-paused" style="display:none;font-size:12px;color:var(--ink-faint, #889);margin-left:8px">Paused for now - we're checking whether unloading after prints is causing nozzle clogs.</span>
         </div>
         <div style="color:var(--ink-faint, #889);font-size:12px;margin:2px 0 6px">Jobs always START inside these hours - that is when you are around to swap spools and clear beds. Add a second block for days you're out in the middle. • = overridden day. Auto-start stays off — a human taps "Bed cleared".</div>
         <div class="dsp-days" id="dsp-days"></div>
