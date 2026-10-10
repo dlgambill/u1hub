@@ -29,7 +29,10 @@ head's color on an idle printer to change it, pick the material, and it stays
 on the printer just like a color set on the touchscreen.
 
 **Send prints without walking over.** Pick a file, see the colors it needs,
-choose which head prints which color, and push it to any idle machine. Files
+choose which head prints which color, and push it to any idle machine. The Hub
+suggests a head for each color by matching the material first and the color
+second, so a PETG part goes to the PETG roll even when PLA in the same color is
+loaded too, and it warns you if the head you pick holds something else. Files
 live in one merged list: the Hub's library plus whatever is stored on each
 printer, with thumbnails. A file that only lives on one printer (sliced
 straight to it) can be copied into the Hub library with one tap, so you can
@@ -111,9 +114,11 @@ jobs that want the same spool at the same time, lets you push a job back a
 place, and adopts prints that are already running. The key under the timeline
 explains every mark a bar can carry: spool swaps before it starts, a color
 another printer needs at the same time, and a wait for someone to clear the
-bed. You also choose what a printer does with its rolls when a print
-finishes: keep them all loaded, unload only the ones the next job on that
-printer doesn't use, or unload every roll the print used.
+bed. There is also a setting for what a printer does with its rolls when a
+print finishes: keep them all loaded, unload only the ones the next job on
+that printer doesn't use, or unload every roll the print used. As of 2.40.2
+it is switched off and every roll stays loaded, while we check whether
+unloading after every print is behind some nozzle clogs.
 
 ![Dispatch: the week's prints laid out across the fleet](docs/dispatch.png)
 
