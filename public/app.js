@@ -822,21 +822,34 @@ function hexRGB(h){ if(!h) return null; const m=/^#?([0-9a-f]{6})$/i.exec(h.trim
 // recolored to the same value (the Orca workaround for un-mergeable extruders)
 // need fewer physical rolls than they have tools, and the server now allows
 // same-color tools to share a head.
+//
+// v2.40.2: material first, then color. With PLA and PETG loaded in the same
+// color, a PETG part used to land on whichever head came first (reported by a
+// user on 2.26). A head whose material differs from the file's is now only
+// picked when no head with the right material is free, and the row says so.
+// Material is compared only when BOTH sides name one - an unnamed side keeps
+// the old color-only behavior, because that is all there is to go on.
+function normMat(x){ return String(x==null?"":x).trim().toUpperCase(); }
+function matMismatch(needType, headMat){ const a=normMat(needType), b=normMat(headMat); return !!(a && b && a!==b); }
+function matWarnText(needType, headMat){ return matMismatch(needType, headMat) ? `needs ${normMat(needType)} - this head has ${normMat(headMat)}` : ""; }
+const MAT_PENALTY = 1e6;     // bigger than any color distance, so material always wins
 function defaultMapping(need, heads){
   const taken=new Set(), map={};
   const normh=x=>String(x==null?"":x).trim().replace(/^#/,"").slice(0,6).toUpperCase();
   need.forEach(n=>{
-    let bestD=1e9, bestIdx=-1;
+    let bestD=1e9, bestIdx=-1;     // a side with no color is never auto-picked, as before
     heads.forEach((h,hi)=>{
       if(!h||!h.loaded||taken.has(hi)) return;
-      const d=(n.hex&&h.hex)?colorDist(n.hex,h.hex):1e9;
+      const d=((n.hex&&h.hex)?colorDist(n.hex,h.hex):1e9) + (matMismatch(n.type, h.material)?MAT_PENALTY:0);
       if(d<bestD){ bestD=d; bestIdx=hi; }
     });
     if(bestIdx>=0){ map[n.i]=bestIdx; taken.add(bestIdx); }
   });
   need.forEach(n=>{
     if(map[n.i]!=null || !n.hex) return;
-    const twin=need.find(o=>o!==n && map[o.i]!=null && normh(o.hex)===normh(n.hex));
+    // Two tools can share one head only if they are the same roll: same color
+    // AND, when both name one, the same material.
+    const twin=need.find(o=>o!==n && map[o.i]!=null && normh(o.hex)===normh(n.hex) && !matMismatch(o.type, n.type));
     if(twin) map[n.i]=map[twin.i];
   });
   return map;
@@ -1999,11 +2012,14 @@ function renderFleet(){
             // subtle dot marks the head the matcher recommends (greedy nearest)
             const rec=(dft[n.i]!==undefined && String(dft[n.i])===String(hi))?" rec":"";
             const tip=`T${hi+1}${h.hex?(" · "+h.hex):""}${h.material?(" "+esc(h.material)):""}`;
-            return `<button type="button" class="cmsw${sel}${rec}" data-card="${p.id}" data-pi="${n.i}" data-hi="${hi}" style="background:${bg}" title="${esc(tip)}"><span class="cmswt">T${hi+1}</span></button>`;
+            return `<button type="button" class="cmsw${sel}${rec}" data-card="${p.id}" data-pi="${n.i}" data-hi="${hi}" data-mat="${esc(h.material||'')}" style="background:${bg}" title="${esc(tip)}"><span class="cmswt">T${hi+1}</span></button>`;
           }).join("");
-          return `<div class="cmaprow" data-card="${p.id}"><span class="fsw" style="background:${n.hex||'#3a3f49'}"></span>`+
-                 `<span class="flab">P${n.i+1} ${n.hex||''}</span><span class="arrow">→</span>`+
-                 `<div class="cmswatches">${sws}</div></div>`;
+          // v2.40.2: say so when the chosen head holds a different material.
+          const warn=matWarnText(n.type, heads[+chosen] && heads[+chosen].material);
+          return `<div class="cmaprow" data-card="${p.id}" data-need="${esc(n.type||'')}"><span class="fsw" style="background:${n.hex||'#3a3f49'}"></span>`+
+                 `<span class="flab">P${n.i+1} ${n.hex||''}${n.type?(" "+esc(n.type)):""}</span><span class="arrow">→</span>`+
+                 `<div class="cmswatches">${sws}</div>`+
+                 `<span class="cmwarn" style="color:var(--bad);font-size:11.5px;margin-left:6px${warn?"":";display:none"}">${esc(warn)}</span></div>`;
         }).join("");
         mapHtml=`<div class="cmap"><div class="cmaphdr">Send each color from →</div>${rows}</div>`;
       }
@@ -2067,6 +2083,8 @@ function renderFleet(){
       const row=sw.closest(".cmaprow");
       if(row){ row.querySelectorAll(".cmsw").forEach(x=>x.classList.remove("sel")); }
       sw.classList.add("sel");
+      const w=row && row.querySelector(".cmwarn");
+      if(w){ const t=matWarnText(row.dataset.need, sw.dataset.mat); w.textContent=t; w.style.display=t?"":"none"; }
     });
   });
   wrap.querySelectorAll("button[data-bed]").forEach(b=>{

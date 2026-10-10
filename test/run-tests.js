@@ -4749,6 +4749,38 @@ async function stopHub() {
       if (A.readableAccent("#FFB200") !== "#FFB200") accBad.push("the U1 gold was altered");
     }
     ok(accBad.length === 0, "every type accent reads at 4.5:1 as text and under its label", accBad);
+    // v2.40.2: head auto-mapping matches MATERIAL first, then color. Reported
+    // on 2.26: with PLA and PETG loaded in the same color, a PETG part could
+    // be mapped to the PLA roll. Runs app.js's own defaultMapping().
+    {
+      const mAt = appSrc.indexOf("const MATCH_THRESHOLD"), mEnd = appSrc.indexOf("function fmtDur(");
+      let M = null;
+      try { M = new Function(appSrc.slice(mAt, mEnd) + "; return { defaultMapping, matWarnText };")(); } catch (e) { M = null; }
+      ok(!!M && mAt >= 0 && mEnd > mAt, "MAPMAT: defaultMapping() can be lifted out of app.js for testing");
+      if (M) {
+        const H = (hex, material) => ({ loaded: true, hex, material });
+        let mp = M.defaultMapping([{ i: 0, hex: "#FF0000", type: "PETG" }], [H("#FF0000", "PLA"), H("#FF0000", "PETG")]);
+        ok(mp[0] === 1, "MAPMAT: a PETG part goes to the PETG head when PLA and PETG are loaded in the same color", mp);
+        mp = M.defaultMapping([{ i: 0, hex: "#FF0000", type: "PETG" }], [H("#FF0000", "PLA"), H("#E01010", "PETG")]);
+        ok(mp[0] === 1, "MAPMAT: the right material beats a closer color on the wrong material", mp);
+        mp = M.defaultMapping([{ i: 0, hex: "#FF0000", type: "petg" }], [H("#00FF00", "PLA"), H("#FF0000", " PETG ")]);
+        ok(mp[0] === 1, "MAPMAT: material names compare without case or spaces", mp);
+        mp = M.defaultMapping([{ i: 0, hex: "#FF0000", type: "PETG" }], [H("#FF0000", "PLA"), H("#0000FF", "PLA")]);
+        ok(mp[0] === 0, "MAPMAT: no free head has the material - falls back to the nearest color (the row then warns)", mp);
+        mp = M.defaultMapping([{ i: 0, hex: "#FF0000", type: "" }], [H("#0000FF", "PETG"), H("#FF0000", "PLA")]);
+        ok(mp[0] === 1, "MAPMAT: a file that names no material keeps the color-only match", mp);
+        mp = M.defaultMapping([{ i: 0, hex: "#FF0000", type: "PLA" }], [H("#0000FF", ""), H("#FF0000", "")]);
+        ok(mp[0] === 1, "MAPMAT: heads that name no material keep the color-only match", mp);
+        mp = M.defaultMapping([{ i: 0, hex: "#FF0000", type: "PLA" }, { i: 1, hex: "#FF0000", type: "PETG" }], [H("#FF0000", "PLA")]);
+        ok(mp[0] === 0 && mp[1] === undefined, "MAPMAT: two same-color tools only share a head when the material matches too", mp);
+        mp = M.defaultMapping([{ i: 0, hex: "#FF0000", type: "PLA" }, { i: 1, hex: "#FF0000", type: "PLA" }], [H("#FF0000", "PLA")]);
+        ok(mp[0] === 0 && mp[1] === 0, "MAPMAT: same color and same material still share one head", mp);
+        ok(M.matWarnText("PETG", "PLA") === "needs PETG - this head has PLA" && M.matWarnText("PLA", "pla") === "" && M.matWarnText("", "PLA") === "",
+          "MAPMAT: the mismatch warning text, and no warning when it matches or is unknown");
+      }
+      ok(/data-need="\$\{esc\(n\.type/.test(appSrc) && /class="cmwarn"/.test(appSrc) && /matWarnText\(row\.dataset\.need, sw\.dataset\.mat\)/.test(appSrc),
+        "MAPMAT: the mapping row warns on a material mismatch and updates when another head is tapped");
+    }
     // (d) The tab icon, drawn like Explorer's: an SVG with a 32px PNG fallback.
     const favOk = ["favicon.svg", "favicon-32.png"].every(f => fs.existsSync(path.join(REPO, "public", f))) &&
       /^<svg[\s>]/.test(fs.readFileSync(path.join(REPO, "public", "favicon.svg"), "utf8")) &&
