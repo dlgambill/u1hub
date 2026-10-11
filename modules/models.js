@@ -35,6 +35,7 @@ const { spawn } = require("child_process");
 const { launchOnDesktop } = require("./desktop.js");   // v2.39.1: Orca on the desktop when the Hub is a service
 const { zipEntryContent } = require("./slicing.js");
 const U1C = require("./u1convert.js");                  // v2.38: Convert to U1 (pure; the route below does the IO)
+const TUNE = require("./tuning.js");                    // v2.42: Open in Orca with the suggested settings (pure)
 const { qtyFromName } = require("./margin.js");         // v2.40: the "x24" plate count, read one way everywhere
 
 const INDEX_TTL_MS = 10 * 60 * 1000;
@@ -1050,13 +1051,15 @@ function register(ctx) {
   // 2026-08-29: Snapmaker Orca opens a 3MF passed as its one argument).
   let SEQ = 0;
   const SESSIONS = new Map();
-  app.post("/api/models/open", async (req, res) => {
-    const b = req.body || {};
-    const p = safePath(b.file);
-    if (!p || !(await fs.promises.stat(p).then(() => true, () => false))) return res.status(404).json({ error: "not in the models folder: " + String(b.file || "") });
+  // v2.42: the launch-and-watch half as a function. rel is the LIBRARY file
+  // the session belongs to (the gcode it produces is linked to rel); what Orca
+  // actually opens is launchPath - the file itself, or a tuned scratch copy of
+  // it. Resolves { status, body }.
+  async function openSession(rel, launchPath, slug, extra) {
+    const b = { file: rel };
+    const p = launchPath;
     const c = conf();
-    if (!fs.existsSync(c.orcaExe)) return res.status(503).json({ error: "Snapmaker Orca not found at " + c.orcaExe + " - set the path in Settings → Models" });
-    const slug = String(b.type || "u1");
+    if (!fs.existsSync(c.orcaExe)) return { status: 503, body: { error: "Snapmaker Orca not found at " + c.orcaExe + " - set the path in Settings → Models" } };
     let gdir; try { gdir = ctx.gcodeFolderFor(slug); } catch { gdir = null; }
     // v2.35.1: the snapshot is async and rare. It used to be readdirSync plus
     // one statSync per gcode every 3 s for the half hour a session watches.
@@ -1077,9 +1080,9 @@ function register(ctx) {
     const before = await snap();
     let dirMtime = await dirStamp();
     try { await launchOnDesktop(c.orcaExe, p); }
-    catch (e) { return res.status(500).json({ error: "could not launch Orca: " + e.message }); }
+    catch (e) { return { status: 500, body: { error: "could not launch Orca: " + e.message } }; }
     const sid = ++SEQ;
-    const s = { id: sid, file: String(b.file), type: slug, state: "watching", launchedAt: Date.now(), newGcode: null };
+    const s = { id: sid, file: String(b.file), type: slug, state: "watching", launchedAt: Date.now(), newGcode: null, ...(extra || {}) };
     SESSIONS.set(sid, s);
     // v2.40: what this 3MF is called, so a saved gcode can be checked against
     // it rather than trusted on arrival order - see the fix note just below.
@@ -1132,8 +1135,76 @@ function register(ctx) {
       } finally { busy = false; }
     }, 3000);
     if (iv.unref) iv.unref();
-    hublog("info", "models: opened in Orca: " + s.file);
-    res.json({ ok: true, session: s });
+    hublog("info", "models: opened in Orca: " + s.file + (p !== safePath(rel) ? " (tuned copy " + p + ")" : ""));
+    return { status: 200, body: { ok: true, session: s } };
+  }
+  app.post("/api/models/open", async (req, res) => {
+    const b = req.body || {};
+    const p = safePath(b.file);
+    if (!p || !(await fs.promises.stat(p).then(() => true, () => false))) return res.status(404).json({ error: "not in the models folder: " + String(b.file || "") });
+    const r = await openSession(String(b.file), p, String(b.type || "u1"));
+    res.status(r.status).json(r.body);
+  });
+
+  // ---- v2.42: Open in Orca with the suggested settings ----------------------
+  // The ✦ Settings panel's suggestion, loaded into a SCRATCH copy of the 3MF
+  // and opened in Orca. The library file is never written: the copy lives in
+  // <hub>/orca-tuned/<one folder per open>/<same file name>, so Orca's gcode
+  // comes out under the model's own name (Send to Dispatch and print requests
+  // still match it), and a folder is removed three days after it was made.
+  // Keep the tuned project by Save As in Orca; otherwise it simply goes away.
+  // A project for another printer is converted to U1 first, in memory, the
+  // same way Convert to U1 does it - opened as-is, Orca would ask for a
+  // printer and throw the suggested process values away with the designer's.
+  // Uses the cached suggestion when there is one, so no second charge.
+  const TUNED_DIR = path.join(ctx.baseDir, "orca-tuned");
+  const TUNED_KEEP_MS = 3 * 24 * 3600 * 1000;
+  async function pruneTuned() {
+    let names; try { names = await fs.promises.readdir(TUNED_DIR); } catch { return; }
+    await Promise.all(names.map(async n => {
+      const d = path.join(TUNED_DIR, n);
+      try { const st = await fs.promises.stat(d); if (Date.now() - st.mtimeMs > TUNED_KEEP_MS) await fs.promises.rm(d, { recursive: true, force: true }); } catch {}
+    }));
+  }
+  app.post("/api/models/open-tuned", async (req, res) => {
+    const b = req.body || {};
+    const rel = String(b.file || "");
+    const from = safePath(rel);
+    if (!from || !(await fs.promises.stat(from).then(() => true, () => false))) return res.status(404).json({ error: "not in the models folder: " + rel });
+    const c = conf();
+    if (!fs.existsSync(c.orcaExe)) return res.status(503).json({ error: "Snapmaker Orca not found at " + c.orcaExe + " - set the path in Settings → Models" });
+    const suggest = ctx.use("advisor.suggestModel");
+    if (!suggest) return res.status(503).json({ error: "AI pre-flight is turned off - turn it on in Settings to get suggested settings" });
+    const idx = b.printer == null || b.printer === "" ? null : Number(b.printer);
+    const sr = await suggest(rel, Number.isInteger(idx) ? idx : null, false);
+    if (sr.status !== 200) return res.status(sr.status).json(sr.body);
+    const settings = ((sr.body && sr.body.suggestion) || {}).settings || [];
+    let src;
+    try { src = await fs.promises.readFile(from); } catch (e) { return res.status(500).json({ error: "could not read the file: " + e.message }); }
+    let converted = null;
+    if (!U1C.isU1(src)) {
+      const t = await u1Template(true);
+      if (!t.path) return res.status(409).json({ error: "This project is set up for another printer, so it has to become a U1 project first, and that needs the U1 template (the same one Convert to U1 uses). Save one from Snapmaker Orca as u1_template.3mf in " + c.folder + ", or set its path under ⚙ Folder." });
+      let tpl; try { tpl = await fs.promises.readFile(t.path); } catch (e) { return res.status(500).json({ error: "could not read the U1 template: " + e.message }); }
+      const prof = await U1C.profiles(c.orcaExe);
+      let r;
+      try { r = U1C.convert(src, tpl, { keys: prof.keys, names: prof.names }); }
+      catch (e) { return res.status(422).json({ error: e.message }); }
+      if (!r.already) { src = r.buffer; converted = { from: r.printer.from, kept: r.kept }; }
+    }
+    let tuned;
+    try { tuned = TUNE.tuneBuffer(src, settings); }
+    catch (e) { return res.status(422).json({ error: "could not load the settings into the project: " + e.message }); }
+    const dir = path.join(TUNED_DIR, Date.now().toString(36) + "-" + crypto.randomBytes(3).toString("hex"));
+    const out = path.join(dir, path.basename(from));
+    try { await fs.promises.mkdir(dir, { recursive: true }); await fs.promises.writeFile(out, tuned.buffer); }
+    catch (e) { return res.status(500).json({ error: "could not write the scratch copy: " + e.message }); }
+    pruneTuned().catch(() => {});
+    const info = { applied: tuned.applied, skipped: tuned.skipped, converted, cached: !!sr.body.cached, cost: sr.body.cached ? 0 : (sr.body.cost == null ? null : sr.body.cost), copy: out };
+    hublog("info", "models: tuned copy of " + rel + ": " + tuned.applied.length + " setting(s) applied, " + tuned.skipped.length + " not applied" + (converted ? ", converted from " + converted.from : ""));
+    const r = await openSession(rel, out, String(b.type || "u1"), { tuned: info });
+    if (r.status === 200) Object.assign(r.body, info);
+    res.status(r.status).json(r.body);
   });
   app.get("/api/models/sessions", (req, res) => {
     const cutoff = Date.now() - 3600000;

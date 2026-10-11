@@ -109,8 +109,9 @@ const MODEL_SYSTEM = [
   "Recommend the settings a careful operator would set before slicing this specific model for this specific machine and material. Anchor on the designer's profile: keep what is right, change only what the geometry, the material, or the U1 calls for, and say why in a few words. Use Orca's setting keys so a person can find them. Temperatures follow the LOADED material (and the roll's recommended temps when given), not the designer's file.",
   "Do not guess at geometry you were not given; the numbers are the truth, the image is for context (shape, detail, how parts sit). If the file already carries a support or brim choice that the numbers agree with, keep it and say so.",
   "Answer with ONE JSON object and nothing else, no code fence, this shape:",
-  '{"summary":"one sentence on what this model needs","settings":[{"key":"layer_height","label":"Layer height","value":"0.12 mm","from":"0.2 mm","why":"small painted details"}],"heads":[{"color":"#FF0000","head":"T2","note":"red PLA loaded there"}],"watch":["short warnings, most important first"],"orientation":"one sentence, or null if the plate is fine as is"}',
-  "settings: at most 14 entries, most consequential first; \"from\" is the designer's value when yours differs, else null; \"why\" under 20 words. heads: only when the project's filament colors and the loaded rolls let you map them (else an empty array). watch: at most 5. Keep values in the units Orca shows."
+  '{"summary":"one sentence on what this model needs","settings":[{"key":"layer_height","label":"Layer height","value":"0.12 mm","set":"0.12","from":"0.2 mm","why":"small painted details"}],"heads":[{"color":"#FF0000","head":"T2","note":"red PLA loaded there"}],"watch":["short warnings, most important first"],"orientation":"one sentence, or null if the plate is fine as is"}',
+  "settings: at most 14 entries, most consequential first; \"from\" is the designer's value when yours differs, else null; \"why\" under 20 words. heads: only when the project's filament colors and the loaded rolls let you map them (else an empty array). watch: at most 5. Keep values in the units Orca shows.",
+  "\"set\" is the exact value Orca stores for that key, with no units, so the Hub can load it into the project: plain numbers (0.12, 220, 3), percentages with a % sign (15%), on/off as 1 or 0, and choices as Orca's internal value (tree(auto), normal(auto), auto_brim, outer_only, brim_ears, no_brim, aligned, no ironing). One value per key - never a range or a list. Use null for advice that is not a single Orca setting."
 ].join("\n");
 
 // Keys worth carrying from the project's own settings, and their answer.
@@ -183,7 +184,7 @@ function parseSuggestion(text) {
   const str = v => v == null ? null : String(v);
   const out = {
     summary: str(j.summary) || "",
-    settings: (Array.isArray(j.settings) ? j.settings : []).slice(0, 14).map(x => ({ key: str(x.key) || "", label: str(x.label) || str(x.key) || "", value: str(x.value) || "", from: str(x.from), why: str(x.why) || "" })).filter(x => x.key || x.label),
+    settings: (Array.isArray(j.settings) ? j.settings : []).slice(0, 14).map(x => ({ key: str(x.key) || "", label: str(x.label) || str(x.key) || "", value: str(x.value) || "", set: str(x.set), from: str(x.from), why: str(x.why) || "" })).filter(x => x.key || x.label),
     heads: (Array.isArray(j.heads) ? j.heads : []).slice(0, 8).map(x => ({ color: str(x.color) || "", head: str(x.head) || "", note: str(x.note) || "" })),
     watch: (Array.isArray(j.watch) ? j.watch : []).slice(0, 5).map(str).filter(Boolean),
     orientation: str(j.orientation)
@@ -482,28 +483,27 @@ function register(ctx) {
   }
 
   let MBUSY = false;
-  // POST /api/advisor/model { file (rel in the models folder), printer?, force? }
-  ctx.app.post("/api/advisor/model", async (req, res) => {
+  // v2.42: the suggester as a function - the route below, and Models' "Open in
+  // Orca with these settings", which reuses a cached answer instead of paying
+  // twice. Resolves { status, body }: the same answers the route always gave.
+  async function suggestModel(rel, idx, force) {
     const c = conf();
-    if (!c.key) return res.status(409).json({ error: "Add an Anthropic API key in Settings first (Settings → AI pre-flight)." });
-    const b = req.body || {};
-    const rel = String(b.file || "");
-    if (!rel) return res.status(400).json({ error: "Body needs { file }" });
-    const idx = b.printer == null || b.printer === "" ? null : Number(b.printer);
-    if (MBUSY) return res.status(409).json({ error: "A suggestion is already running" });
+    if (!c.key) return { status: 409, body: { error: "Add an Anthropic API key in Settings first (Settings → AI pre-flight)." } };
+    if (!rel) return { status: 400, body: { error: "Body needs { file }" } };
+    if (MBUSY) return { status: 409, body: { error: "A suggestion is already running" } };
     MBUSY = true;
     try {
       let g;
       try { g = await gather(rel); }
-      catch (e) { return res.status(e.status || (e && e.code === "ENOENT" ? 404 : 422)).json({ error: e.status ? e.message : "Could not read that 3MF: " + e.message }); }
+      catch (e) { return { status: e.status || (e && e.code === "ENOENT" ? 404 : 422), body: { error: e.status ? e.message : "Could not read that 3MF: " + e.message } }; }
       const name = rel.split("/").pop();
       const lines = modelBriefLines(name, g.facts, g.info, g.project, g.plate);
       const pb = modelLoadoutLines(idx);
       const text = lines.concat([""], pb, ["", "Return the JSON object now."]).join("\n");
       const keyText = lines.join("\n") + "\n" + pb.filter(l => !/^  bed now|^TARGET PRINTER/.test(l)).join("\n") + "\n" + c.model + (g.thumb ? "\n" + g.thumb.name : "");
       const ckey = crypto.createHash("sha1").update(keyText).digest("hex");
-      const hit = !b.force && MCACHE.find(r => r.key === ckey);
-      if (hit) return res.json({ ...hit, cached: true, facts: g.facts, thumb: !!g.thumb });
+      const hit = !force && MCACHE.find(r => r.key === ckey);
+      if (hit) return { status: 200, body: { ...hit, cached: true, facts: g.facts, thumb: !!g.thumb } };
       const content = [];
       if (g.thumb) content.push({ type: "image", source: { type: "base64", media_type: g.thumb.media_type, data: g.thumb.data } });
       content.push({ type: "text", text: (g.thumb ? "Above: the plate render saved in the file.\n" : "(The file carries no plate render; go by the numbers.)\n") + text });
@@ -513,7 +513,7 @@ function register(ctx) {
       // stop_reason max_tokens (2026-09-22, the donut keyring).
       const r = await ask(c, content, 8000, MODEL_SYSTEM);
       const sug = parseSuggestion(r.text);
-      if (!sug) return res.status(502).json({ error: "The model did not answer with a settings sheet; try again", raw: r.text.slice(0, 400) });
+      if (!sug) return { status: 502, body: { error: "The model did not answer with a settings sheet; try again", raw: r.text.slice(0, 400) } };
       const p = Number.isInteger(idx) ? (ctx.printers || [])[idx] : null;
       const rec = { key: ckey, at: Date.now(), file: rel, printer: p ? p.name : null, printer_id: p ? idx : null, model: r.model,
                     suggestion: sug, usage: r.usage, cost: estimateCost(c.model, r.usage) };
@@ -521,11 +521,19 @@ function register(ctx) {
       if (MCACHE.length > CACHE_MAX) MCACHE.splice(0, MCACHE.length - CACHE_MAX);
       save();
       ctx.hublog("info", "advisor: settings for " + rel + (p ? " on " + p.name : "") + (rec.cost != null ? " ($" + rec.cost.toFixed(4) + ")" : ""));
-      res.json({ ...rec, cached: false, facts: g.facts, thumb: !!g.thumb });
+      return { status: 200, body: { ...rec, cached: false, facts: g.facts, thumb: !!g.thumb } };
     } catch (e) {
-      res.status(502).json({ error: String((e && e.message) || e) });
+      return { status: 502, body: { error: String((e && e.message) || e) } };
     } finally { MBUSY = false; }
+  }
+  // POST /api/advisor/model { file (rel in the models folder), printer?, force? }
+  ctx.app.post("/api/advisor/model", async (req, res) => {
+    const b = req.body || {};
+    const idx = b.printer == null || b.printer === "" ? null : Number(b.printer);
+    const r = await suggestModel(String(b.file || ""), idx, !!b.force);
+    res.status(r.status).json(r.body);
   });
+  ctx.provide("advisor.suggestModel", suggestModel);
 
   // What would be sent for a 3MF (text half; the image is noted, not dumped).
   ctx.app.get("/api/advisor/model/brief", async (req, res) => {

@@ -58,6 +58,13 @@
       // that only do something at the Hub console itself.
       "@media (pointer: coarse) { .mdl-act, #mdl-sess, #mdl-cfgbtn { display: none !important; } }",
       "@media (pointer: coarse) { .mdl-act2, .mdl-edit, .mdl-more { display: none !important; } }",
+      // v2.42: Open in Orca with the suggested settings - desktop only, like Open in Orca.
+      "@media (pointer: coarse) { .mdl-tunerow { display: none !important; } }",
+      ".mdl-tunerow{display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:10px;}",
+      ".mdl-tunerow .st{margin:0;}",
+      ".mdl-tuned{margin-top:8px; font-size:12.5px; color:var(--ink-dim); line-height:1.5;}",
+      ".mdl-tuned b{color:var(--ink);}",
+      ".mdl-tuned .skip{color:var(--warn,#f5b316);}",
       ".mdl-wrap{display:grid; grid-template-columns: 220px minmax(0,1fr); gap:14px; margin-top:12px;}",
       ".mdl-rail{background:var(--panel); border:1px solid var(--line); border-radius:var(--r-lg,12px); padding:10px; align-self:start; position:sticky; top:12px; max-height:calc(100vh - 40px); overflow:auto;}",
       ".mdl-rail button{display:flex; width:100%; justify-content:space-between; gap:8px; background:transparent; border:none; color:var(--ink-dim); font:inherit; font-size:12.5px; text-align:left; padding:6px 8px; border-radius:var(--r-sm,6px); cursor:pointer;}",
@@ -571,6 +578,11 @@
     if (s.watch && s.watch.length) h += '<ul class="watch">' + s.watch.map(w => "<li>" + esc(w) + "</li>").join("") + "</ul>";
     const f = r.d.facts;
     if (f && f.ok) h += '<div class="facts">measured: ' + f.size_mm.join(" × ") + " mm · " + f.instances + " part" + (f.instances === 1 ? "" : "s") + " · " + f.overhang.steep_pct + "% steep overhang · " + f.overhang.flat_unsupported_pct + "% floating underside · bed contact " + f.overhang.bed_contact_pct_of_footprint + "% of footprint · " + f.solid_g_pla + " g solid" + (f.paint && f.paint.colors ? " · painted " + f.paint.colors + " colors" : "") + (r.d.thumb ? " · plate render sent" : " · no plate render in the file") + "</div>";
+    // v2.42: load these into a scratch copy and open it in Orca. The library
+    // file is never written; the copy is cleaned up after three days.
+    if (s.settings && s.settings.length)
+      h += '<div class="mdl-tunerow"><button class="btn primary" id="mdl-tuneopen" style="font-size:12px; padding:5px 12px" title="Opens a copy of this 3MF in Orca with these settings already set. Your file is not changed; use Save As in Orca to keep the tuned project.">Open in Orca with these settings</button>' +
+        '<span class="st">a copy opens - your file is not changed</span></div><div class="mdl-tuned" id="mdl-tuned"></div>';
     body.innerHTML = h || '<div class="st">No settings came back.</div>';
     const when = new Date(r.d.at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
     foot.innerHTML = esc(r.d.model || "") + (r.d.cost != null ? " · " + money(r.d.cost) : "") + " · " + (r.d.cached ? "from cache, " + when : when) +
@@ -578,10 +590,28 @@
       ' · <a href="/api/advisor/model/brief?file=' + encodeURIComponent(rel) + (pid != null ? "&printer=" + pid : "") + '" target="_blank" rel="noopener" style="color:var(--signal)">what was sent</a>' +
       ' · <span title="Claude reads measured numbers, the plate render and the designer\'s profile; it does not slice the file.">advice, not a guarantee</span>';
   }
+  async function openTuned(btn) {
+    const rel = ADVFILE, pid = pickPrinter();
+    const out = EL.querySelector("#mdl-tuned");
+    btn.disabled = true; const was = btn.textContent; btn.textContent = "Opening…";
+    const r = await jpost("/api/models/open-tuned", { file: rel, type: typeSlug(), printer: pid == null ? "" : pid });
+    btn.disabled = false; btn.textContent = was;
+    if (!out || ADVFILE !== rel) return;
+    if (!r.ok) { out.innerHTML = '<span class="skip">' + esc(r.d.error || "Could not open it") + "</span>"; return; }
+    const d = r.d, ap = d.applied || [], sk = d.skipped || [];
+    let h = "<b>Opened in Orca</b> with " + ap.length + " setting" + (ap.length === 1 ? "" : "s") + " loaded" +
+      (ap.length ? ": " + ap.map(a => esc(a.key) + " " + esc(a.to)).join(", ") : "") + ". They show as changed in Orca's settings, so you can put any of them back.";
+    if (d.converted) h += "<br>It was a project for " + esc(d.converted.from) + ", so the copy was made a U1 project first (like Convert to U1).";
+    if (sk.length) h += '<br><span class="skip">Not applied:</span> ' + sk.map(x => esc(x.key) + (x.value ? " (" + esc(x.value) + ")" : "") + " - " + esc(x.reason)).join("; ") + ".";
+    h += "<br>Slice and save the gcode as usual. To keep the tuned project, use Save As in Orca; otherwise the copy is removed in three days.";
+    out.innerHTML = h;
+    pollSessions(true);
+  }
   function onAdvClick(e) {
     const t = e.target.closest("button, a"); if (!t) return;
     if (t.dataset.close) { const box = EL.querySelector("#mdl-adv"); box.className = "mdl-adv"; box.innerHTML = ""; ADVFILE = null; return; }
     if (t.id === "mdl-advask") { runSuggest(false); return; }
+    if (t.id === "mdl-tuneopen") { openTuned(t); return; }
     if (t.dataset.again) { e.preventDefault(); runSuggest(true); }
   }
 
@@ -659,7 +689,7 @@
     const box = EL.querySelector("#mdl-sess");
     box.innerHTML = SESS.map(s => {
       const f = esc(String(s.file).split("/").pop());
-      if (s.state === "watching") return '<div class="mdl-sess"><span>⏳ <b>' + f + "</b> is open in Orca. Slice it, then save the gcode into the library folder - the Hub is watching for it.</span><span class=\"k\">since " + new Date(s.launchedAt).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }) + '</span><button class="btn ghost" data-dismiss="' + s.id + '" style="font-size:11px; padding:3px 9px; margin-left:auto">Stop watching</button></div>';
+      if (s.state === "watching") return '<div class="mdl-sess"><span>⏳ <b>' + f + "</b> is open in Orca" + (s.tuned ? " (a copy with the suggested settings)" : "") + ". Slice it, then save the gcode into the library folder - the Hub is watching for it.</span><span class=\"k\">since " + new Date(s.launchedAt).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }) + '</span><button class="btn ghost" data-dismiss="' + s.id + '" style="font-size:11px; padding:3px 9px; margin-left:auto">Stop watching</button></div>';
       if (s.state === "done") return '<div class="mdl-sess"><span>✓ Orca saved <b>' + esc(s.newGcode) + "</b>.</span>" +
         '<button class="btn primary" data-select="' + esc(s.newGcode) + '" style="font-size:11.5px; padding:4px 10px">Select in library</button>' +
         (window.HUB_FEATURES && window.HUB_FEATURES.dispatch !== false

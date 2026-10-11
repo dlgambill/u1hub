@@ -4194,7 +4194,7 @@ async function stopHub() {
       // "died" (MISTAKES.md 2026-09-26). So the check is on the source.
       {
         const mjs = fs.readFileSync(path.join(REPO, "modules", "models.js"), "utf8");
-        const openBody = mjs.slice(mjs.indexOf('app.post("/api/models/open"'), mjs.indexOf('app.get("/api/models/sessions"')).replace(/\/\/.*$/gm, "");   // code only; the comment names the old calls
+        const openBody = mjs.slice(mjs.indexOf("async function openSession(") >= 0 ? mjs.indexOf("async function openSession(") : mjs.indexOf('app.post("/api/models/open"'), mjs.indexOf('app.get("/api/models/sessions"')).replace(/\/\/.*$/gm, "");   // code only; the comment names the old calls
         ok(openBody.length > 200 && !/readdirSync|statSync|existsSync\(p\)/.test(openBody) && /fs\.promises\.readdir\(gdir\)/.test(openBody) && /fs\.promises\.stat\(gdir\)/.test(openBody), "the Orca watcher reads the gcode folder asynchronously - one stat of the folder per tick, a listing only when it moved");
       }
       const lf = path.join(hubDir, "models-links.json");
@@ -4413,6 +4413,48 @@ async function stopHub() {
       ok(sug && sug.settings.length === 2 && sug.settings[0].label === "layer_height" && sug.settings[1].from === null && sug.heads[0].head === "T2" && sug.watch.length === 2 && sug.orientation === null, "parseSuggestion: JSON out of a fenced reply, labels defaulting to keys, nulls kept", sug);
       ok(amod.parseSuggestion("I cannot help with that.") === null && amod.parseSuggestion('{"x":1}') === null, "parseSuggestion: no sheet, no result");
       ok(amod.MODEL_SYSTEM.length < 4000 && /ONE JSON object/.test(amod.MODEL_SYSTEM) && /Snapmaker U1/.test(amod.MODEL_SYSTEM), "the suggester's system prompt asks for one JSON object and sets the U1 context");
+      // v2.42: the sheet also carries a machine value per row for Orca.
+      ok(/"set"/.test(amod.MODEL_SYSTEM) && amod.parseSuggestion('{"summary":"s","settings":[{"key":"brim_type","value":"Mouse ears","set":"brim_ears"}]}').settings[0].set === "brim_ears",
+        "the suggester asks for an Orca-ready \"set\" value per setting, and keeps it");
+    }
+
+    console.log("\n== v2.42: Open in Orca with these settings - the guardrail ==");
+    {
+      // An AI answer only ever writes whitelisted keys, with values checked
+      // against what a person would accept on a U1; everything else is
+      // reported as not applied, never guessed or clamped.
+      const T = require(path.join(REPO, "modules", "tuning.js"));
+      const nz = (k, v) => T.normalize(k, v);
+      ok(nz("layer_height", "0.12 mm").value === "0.12" && nz("brim_width", "3mm").value === "3" && nz("nozzle_temperature", "220 °C").value === "220" && nz("sparse_infill_density", "15%").value === "15%",
+        "numbers come out of the units Orca shows (0.12 mm, 3mm, 220 °C, 15%)");
+      ok(nz("support_type", "Tree (auto)").value === "tree(auto)" && nz("brim_type", "Mouse ears").value === "brim_ears" && nz("ironing_type", "none").value === "no ironing" && nz("enable_support", "Enabled").value === "1" && nz("enable_prime_tower", "off").value === "0",
+        "choices and on/off land on Orca's own values (Tree (auto), Mouse ears, none, Enabled, off)");
+      ok(nz("layer_height", "0.5").error && nz("nozzle_temperature", "400").error && nz("wall_loops", "2.5").error && nz("layer_height", "0.12-0.16").error && nz("support_type", "spaghetti").error && nz("sparse_infill_density", "150%").error,
+        "out-of-range, fractional walls, ranges and made-up choices are refused");
+      ok(nz("post_process", "C:\\evil.bat").error && nz("start_gcode", "G28").error && nz("printer_model", "Bambu").error,
+        "keys off the list - a post-processing script, gcode hooks, the printer - can never be written");
+      const base = { printer_model: "Snapmaker U1", layer_height: "0.2", enable_support: "0", nozzle_temperature: ["220", "220", "220", "220"], filament_type: ["PLA", "PLA", "PLA", "PLA"], post_process: [] };
+      let r = T.applyTuning(base, [
+        { key: "layer_height", value: "0.12 mm", set: "0.12" }, { key: "enable_support", value: "On" }, { key: "nozzle_temperature", value: "215 °C" },
+        { key: "post_process", value: "evil.bat" }, { key: "layer_height", value: "0.08" }, { key: "brim_width", value: "lots" }]);
+      ok(r.ps.layer_height === "0.12" && r.ps.enable_support === "1" && r.ps.nozzle_temperature.join() === "215,215,215,215" && JSON.stringify(r.ps.post_process) === "[]",
+        "applied: process values, and a temperature on every slot when they all hold one material; post_process untouched", r.ps);
+      ok(r.skipped.map(x => x.key).join() === "post_process,layer_height,brim_width" && r.applied.length === 3 && base.layer_height === "0.2",
+        "skipped with reasons: a key off the list, the same key twice, a value that is not a number - and the input object is not changed", r.skipped);
+      const d = r.ps.different_settings_to_system;
+      ok(Array.isArray(d) && d.length === 6 && d[0] === "enable_support;layer_height" && d[1] === "nozzle_temperature" && d[4] === "nozzle_temperature" && d[5] === "",
+        "every applied key is marked as changed for Orca: process first, then one entry per filament slot", d);
+      r = T.applyTuning({ ...base, filament_type: ["PLA", "PETG", "PLA", "PLA"] }, [{ key: "nozzle_temperature", value: "230" }, { key: "wall_loops", value: "3" }]);
+      ok(r.ps.nozzle_temperature.join() === "220,220,220,220" && r.ps.wall_loops === "3" && /different materials/.test(r.skipped[0].reason),
+        "PLA + PETG in one project: one suggested temperature is not written to both", r.skipped);
+      const { zipRead, zipEntryContent } = require(path.join(REPO, "modules", "slicing.js"));
+      const u1ps = JSON.stringify({ printer_model: "Snapmaker U1", layer_height: "0.2", filament_type: ["PLA", "PLA"], nozzle_temperature: ["220", "220"] });
+      const zin = buildZip(files.map(x => x.name === "Metadata/project_settings.config" ? { name: x.name, data: Buffer.from(u1ps) } : x));
+      const t = T.tuneBuffer(zin, [{ key: "layer_height", value: "0.16 mm" }]);
+      const eIn = zipRead(zin), eOut = zipRead(t.buffer);
+      const same = eIn.filter(x => x.name !== "Metadata/project_settings.config").every(x => { const y = eOut.find(z => z.name === x.name); return y && zipEntryContent(y).equals(zipEntryContent(x)); });
+      ok(same && eOut.length === eIn.length && JSON.parse(zipEntryContent(eOut.find(x => x.name === "Metadata/project_settings.config")).toString()).layer_height === "0.16",
+        "tuneBuffer: only the settings file changes; meshes, paint and renders come through byte for byte");
     }
 
     // The route, against a mock Messages endpoint that understands content blocks.
@@ -4469,6 +4511,44 @@ async function stopHub() {
     ok(JSON.parse(fs.readFileSync(path.join(hubDir, "advisor.json"), "utf8")).models.length >= 2, "suggestions persist in advisor.json beside the gcode reviews");
     r = await jget("/api/advisor");
     ok(r.body.suggestions >= 2 && r.body.spent_usd >= 0.02, "GET /api/advisor counts suggestions in the spend", r.body);
+    // v2.42: Open in Orca with these settings. Orca is node here (the same
+    // stand-in the session checks use); the file is a Bambu project, so it
+    // needs the U1 template, and the suggestion comes from the cache.
+    {
+      const callsBefore = calls.length;
+      const absA = path.join(mroot, relA);
+      const before = fs.readFileSync(absA);
+      await jpost("/api/models/settings", { orcaExe: process.execPath, u1Template: path.join(tmp, "no-template-here.3mf") });
+      r = await jpost("/api/models/open-tuned", { file: relA, type: "u1", printer: U1ID });
+      ok(r.status === 409 && /U1 template/.test(r.body.error), "a project for another printer without a U1 template: refused, saying why", r.body);
+      const tplPs = JSON.stringify({ printer_model: "Snapmaker U1", printer_settings_id: "Snapmaker U1 (0.4 nozzle)", print_settings_id: "0.20mm Standard @Snapmaker U1 (0.4 nozzle)",
+        layer_height: "0.2", wall_loops: "2", sparse_infill_density: "15%", enable_support: "0", brim_type: "auto_brim",
+        nozzle_temperature: ["220", "220", "220", "220"], filament_type: ["PLA", "PLA", "PLA", "PLA"], filament_colour: ["#FFFFFF", "#FFFFFF", "#FFFFFF", "#FFFFFF"], filament_settings_id: ["Generic PLA", "Generic PLA", "Generic PLA", "Generic PLA"] });
+      const tplPath = path.join(tmp, "u1tpl-tune.3mf");
+      fs.writeFileSync(tplPath, buildZip([{ name: "3D/3dmodel.model", data: Buffer.from('<?xml version="1.0"?><model><resources/><build/></model>') }, { name: "Metadata/project_settings.config", data: Buffer.from(tplPs) }]));
+      await jpost("/api/models/settings", { u1Template: tplPath });
+      r = await jpost("/api/models/open-tuned", { file: relA, type: "u1", printer: U1ID });
+      ok(r.status === 200 && r.body.session && r.body.session.state === "watching" && r.body.session.file === relA && r.body.session.tuned,
+        "opens: the session belongs to the library file, and says it was a tuned copy", r.body);
+      ok(r.body.cached === true && r.body.cost === 0 && calls.length === callsBefore, "the cached suggestion is reused - no second charge", { cached: r.body.cached, calls: calls.length - callsBefore });
+      ok(fs.readFileSync(absA).equals(before), "the library file is not changed by a single byte");
+      const copy = r.body.copy || "";
+      ok(copy && fs.existsSync(copy) && path.basename(copy) === path.basename(absA) && !path.resolve(copy).startsWith(path.resolve(mroot)),
+        "the copy keeps the file's name (so its gcode still matches) and lives outside the library", copy);
+      if (copy && fs.existsSync(copy)) {
+        const { zipRead, zipEntryContent } = require(path.join(REPO, "modules", "slicing.js"));
+        const ps = JSON.parse(zipEntryContent(zipRead(fs.readFileSync(copy)).find(x => x.name === "Metadata/project_settings.config")).toString());
+        ok(ps.printer_model === "Snapmaker U1" && ps.enable_support === "1" && ps.layer_height === "0.2" && /enable_support/.test((ps.different_settings_to_system || [])[0] || ""),
+          "the copy is a U1 project with the suggested supports on, marked as changed for Orca", { printer: ps.printer_model, support: ps.enable_support, diff: ps.different_settings_to_system });
+        ok(r.body.converted && /Bambu Lab A1/.test(r.body.converted.from) && r.body.applied.some(a => a.key === "enable_support" && a.to === "1"),
+          "…and the reply says it was converted from the Bambu project and lists what was applied", { converted: r.body.converted, applied: r.body.applied });
+      }
+      const mjs2 = fs.readFileSync(path.join(REPO, "modules", "models.js"), "utf8");
+      const tunedRoute = mjs2.slice(mjs2.indexOf('app.post("/api/models/open-tuned"'), mjs2.indexOf('app.get("/api/models/sessions"')).replace(/\/\/.*$/gm, "");
+      ok(tunedRoute.length > 500 && !/Sync\(/.test(tunedRoute.replace(/existsSync\(c\.orcaExe\)/g, "")), "the tuned-open route does no synchronous file IO (the library is a share)");
+      await jpost("/api/models/settings", { orcaExe: path.join(tmp, "no-such-orca.exe"), u1Template: "", clear: true });
+      await jpost("/api/models/settings", { folder: mroot });
+    }
     // The failure the first live call hit (2026-09-22): the model spent the
     // whole budget thinking and answered with no text. That is an error with
     // the reason in it, not an empty sheet.
@@ -4496,6 +4576,8 @@ async function stopHub() {
     const mui = fs.readFileSync(path.join(REPO, "public", "modules", "models-ui.js"), "utf8");
     ok(/data-suggest=/.test(mui) && /id="mdl-adv"/.test(mui) && /\/api\/advisor\/model/.test(mui), "the Models card has a ✦ Settings button and the panel that calls the suggester");
     ok(/HUB_FEATURES\.advisor === false \? ""/.test(mui), "…which is left off when the advisor module is off");
+    ok(/id="mdl-tuneopen"/.test(mui) && /\/api\/models\/open-tuned/.test(mui) && /pointer: coarse\) \{ \.mdl-tunerow/.test(mui) && /your file is not changed/.test(mui),
+      "the settings panel has Open in Orca with these settings - desktop only, and it says the file is not changed");
     const appSrc = fs.readFileSync(path.join(REPO, "public", "app.js"), "utf8");
     ok(/Object\.defineProperties\(window,\s*\{\s*SELECTED: \{ get/.test(appSrc) && /FLEET: \{ get/.test(appSrc) && /MAPSEL: \{ get/.test(appSrc),
       "app.js exposes SELECTED, MAP, FLEET and MAPSEL on window (a top-level let is not a window property; the 2.25 job-card button read undefined and did nothing)");
