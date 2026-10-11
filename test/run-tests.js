@@ -4788,6 +4788,59 @@ async function stopHub() {
     ok(favOk, "the Hub has an SVG favicon with a 32px fallback, linked from the page");
   }
 
+  console.log("\n== v2.42: Print on best printer ==");
+  {
+    // Forum request 2026-10-11: pick a model, press print, the Hub chooses an
+    // idle printer that already has the right filaments. The choice is a pure
+    // function in app.js, evaluated here on its own with the color helpers it
+    // uses (the same span the job card runs).
+    const src = fs.readFileSync(path.join(REPO, "public", "app.js"), "utf8");
+    const a = src.indexOf("const MATCH_THRESHOLD"), b = src.indexOf("function fmtDur(");
+    let P = null;
+    try { P = new Function(src.slice(a, b) + "; return { pickBestPrinter };")(); } catch (e) { P = null; }
+    ok(!!(P && P.pickBestPrinter), "pickBestPrinter() is defined beside the color matcher");
+    if (P) {
+      const H = (hex, mat) => ({ loaded: true, hex, material: mat || "PLA" });
+      const E = { loaded: false };
+      const need = [{ i: 0, hex: "#FF0000", type: "PLA" }, { i: 1, hex: "#FFFFFF", type: "PLA" }];
+      const pr = (id, o) => Object.assign({ id, name: "U" + (id + 1), online: true, state: "standby", heads: [E, E, E, E] }, o);
+      const fleet = [
+        pr(0, { state: "printing", heads: [H("#FF0000"), H("#FFFFFF"), E, E] }),         // right colors, busy
+        pr(1, { maintenance: { note: "nozzle" }, heads: [H("#FF0000"), H("#FFFFFF"), E, E] }), // right colors, out of service
+        pr(2, { online: false, heads: [H("#FF0000"), H("#FFFFFF"), E, E] }),             // right colors, offline
+        pr(3, { heads: [H("#FF0000"), H("#FFFFFF", "PETG"), E, E] }),                   // white is the wrong material
+        pr(4, { heads: [H("#EE1111"), H("#F4F4F4"), H("#000000"), E] }),                // close shades - qualifies
+        pr(5, { heads: [E, H("#FFFFFF"), H("#FF0000"), E] }),                            // exact - qualifies, closer
+      ];
+      let r = P.pickBestPrinter(need, fleet);
+      ok(r.printer === 5 && r.map[0] === 2 && r.map[1] === 1,
+        "picks the idle, in-service printer with every color loaded, closest match first, and maps each color to its head", r);
+      r = P.pickBestPrinter(need, fleet.slice(0, 5));
+      ok(r.printer === 4, "a close shade of the right color still qualifies when nothing is exact", r);
+      r = P.pickBestPrinter(need, fleet.slice(0, 4));
+      ok(r.printer === null && /U4/.test(r.reason) && /#FFFFFF PLA/.test(r.reason),
+        "busy, out-of-service, offline and wrong-material printers are never picked - and the reason names the closest one and what it lacks", r);
+      r = P.pickBestPrinter(need, [pr(0, { state: "printing" })]);
+      ok(r.printer === null && /idle/.test(r.reason), "no idle printer at all says so instead of guessing", r);
+      const tie = [pr(6, { heads: [H("#FF0000"), H("#FFFFFF"), E, E] }), pr(7, { heads: [H("#FF0000"), H("#FFFFFF"), E, E] })];
+      r = P.pickBestPrinter(need, tie);
+      ok(r.printer === 6, "an exact tie goes to the printer listed first", r);
+      r = P.pickBestPrinter(need, [pr(8, { caps: { multiColor: false, heads: 1 }, heads: [] })]);
+      ok(r.printer === null, "a printer without the color API is never auto-picked for a colored file", r);
+    }
+    // The flow around it: announce first with a Cancel, re-pick on fresh fleet
+    // data at send time, and send the verified head map - not whatever the
+    // card's swatches happen to show.
+    const idx2 = fs.readFileSync(path.join(REPO, "public", "index.html"), "utf8");
+    ok(/id="autopick"/.test(idx2) && /id="autopickst"/.test(idx2), "the job card has the Print on best printer button and its status line");
+    const flowAt = src.indexOf("function autoPickStart(");
+    const flow = flowAt >= 0 ? src.slice(flowAt, flowAt + 2500) : "";
+    ok(/autopickx/.test(flow) && /left=5/.test(flow) && /await loadFleet\(\)/.test(flow)
+       && /pickBestPrinter\(neededColors\(\), autoPickFleet\(\)\)[\s\S]*pickBestPrinter\(neededColors\(\), autoPickFleet\(\)\)/.test(flow)
+       && /pushTo\(again\.printer, true, false, again\.map\)/.test(flow),
+      "it announces the printer with a 5-second Cancel, re-checks on fresh fleet data, then sends the verified map");
+  }
+
   // ---- KLIPPER: each printer's own UI, proxied through the Hub (v2.21) ----
   // The owner: "if I'm outside of the network I can't access the printers Klipper
   // pages." The tunnel publishes ONE origin — the Hub — so nine LAN hosts were

@@ -144,6 +144,7 @@ async function init(){
   $("platemodal").addEventListener("click", e=>{ if(e.target===$("platemodal")) closePlate(); });
   $("qhead").addEventListener("click", ()=>{ QOPEN=!QOPEN; renderQueue(); });
   $("qadd").addEventListener("click", ()=>{ if(SELECTED) addQueue(SELECTED); });
+$("autopick").addEventListener("click", ()=>autoPickStart());
   // v2.11: modules can claim the selected file (Dispatch does). Drag-and-drop
   // never fires on touch, so this button is the phone/tablet path — and core
   // stays ignorant of what the module actually does with it.
@@ -853,6 +854,46 @@ function defaultMapping(need, heads){
     if(twin) map[n.i]=map[twin.i];
   });
   return map;
+}
+
+// v2.42 "Print on best printer" (forum request, 2026-10-11: a farm owner wants
+// to pick a model, press print, and have the Hub choose an idle printer that
+// already has the right filaments loaded - not queue automation, just the
+// printer choice on a manual print).
+//
+// Pure: takes the needed colors and the printers on screen, returns the pick.
+// A printer qualifies only if it is online, idle (not printing, paused or in
+// error), not out of service, has the color API, and the same greedy mapping
+// its card would pre-fill puts EVERY needed color on a head that is close in
+// color (under MATCH_THRESHOLD) and not a different material. Among those the
+// closest total color wins; a tie goes to the printer listed first. When none
+// qualifies the reason says what is missing, so nothing is ever sent on a
+// guess.
+function pickBestPrinter(need, fleet){
+  const idle=(fleet||[]).filter(p=>p && p.online && !p.maintenance &&
+    !["printing","paused","error"].includes(p.state) && (!p.caps || p.caps.multiColor!==false));
+  if(!need || !need.length) return { printer:null, reason:"This file has no colors to match." };
+  if(!idle.length) return { printer:null, reason:"No printer is idle and in service right now." };
+  let best=null;
+  const shortBy=[];                       // per idle printer: the colors it can't cover
+  idle.forEach((p,order)=>{
+    const heads=p.heads||[];
+    const map=defaultMapping(need, heads);
+    let total=0; const miss=[];
+    need.forEach(n=>{
+      const hi=map[n.i], h=hi!=null?heads[hi]:null;
+      const d=(h && h.loaded && n.hex && h.hex) ? colorDist(n.hex,h.hex) : 1e9;
+      if(d>=MATCH_THRESHOLD || matMismatch(n.type, h && h.material)) miss.push(n);
+      else total+=d;
+    });
+    if(!miss.length){ if(!best || total<best.total) best={ printer:p.id, name:p.name, map, total, order }; }
+    else shortBy.push({ p, miss });
+  });
+  if(best) return { printer:best.printer, name:best.name, map:best.map, total:best.total };
+  shortBy.sort((a,b)=>a.miss.length-b.miss.length);
+  const c=shortBy[0];
+  const what=c.miss.map(n=>(n.hex||"a color")+(n.type?" "+normMat(n.type):"")).join(", ");
+  return { printer:null, reason:"No idle printer has every color loaded. Closest is "+c.p.name+", missing "+what+"." };
 }
 
 // "14h26m" / "9m" — compact remaining-time formatting for the fleet cards.
@@ -2117,10 +2158,11 @@ function renderFleet(){
 }
 
 let PUSHES=0;
-async function pushTo(printer, start, force){
+async function pushTo(printer, start, force, mapOverride){
   if(!SELECTED){ return; }
   const map={};
-  document.querySelectorAll('.cmaprow[data-card="'+printer+'"] .cmsw.sel').forEach(sw=>{ map[sw.dataset.pi]=parseInt(sw.dataset.hi,10); });
+  if(mapOverride) Object.entries(mapOverride).forEach(([k,v])=>{ map[k]=v; });
+  else document.querySelectorAll('.cmaprow[data-card="'+printer+'"] .cmsw.sel').forEach(sw=>{ map[sw.dataset.pi]=parseInt(sw.dataset.hi,10); });
   const mapped=Object.keys(map).length;
   const st=$("pst-"+printer);
   if(st){ st.className="pstatus work"; st.innerHTML=pushBar(0,"Starting upload…"); }
@@ -2132,7 +2174,7 @@ async function pushTo(printer, start, force){
     // printer's detected capabilities and wants a human decision.
     if(r.status===409 && d.classWarning){
       if(st){ st.className="pstatus"; st.textContent=""; }
-      if(confirm(d.error)) return await pushTo(printer, start, true);
+      if(confirm(d.error)) return await pushTo(printer, start, true, mapOverride);
       return;
     }
     if(!r.ok||d.error||!d.jobId) throw new Error(d.error||("HTTP "+r.status));
@@ -2802,4 +2844,50 @@ async function saveConfig(){
     $("setupmsg").textContent="";
     loadFiles(); loadFleet();
   }catch(e){ s.className="pstatus err"; s.textContent=e.message; }
+}
+
+
+// ---- v2.42: Print on best printer ------------------------------------------
+// Announce, then send: the choice shows with a 5-second Cancel before anything
+// is uploaded, because a wrong guess costs a plate. The pick is re-run on fresh
+// fleet data at send time, so a printer that started something else in those
+// seconds is never used.
+let AUTOPICK=null;   // { timer, file }
+function autoPickSay(cls, html){ const st=$("autopickst"); if(st){ st.className="pstatus "+cls; st.innerHTML=html; } }
+function autoPickCancel(msg){
+  if(AUTOPICK){ clearInterval(AUTOPICK.timer); AUTOPICK=null; }
+  autoPickSay("", msg||"");
+}
+function autoPickFleet(){ return (FLEET||[]).filter(p=>(p.ptype||"u1")===activeType().slug); }
+function autoPickStart(){
+  if(!SELECTED) return;
+  if(AUTOPICK){ autoPickCancel("Cancelled - nothing was sent."); return; }
+  const pick=pickBestPrinter(neededColors(), autoPickFleet());
+  if(!pick.printer && pick.printer!==0){ autoPickSay("err", esc(pick.reason)); return; }
+  const file=SELECTED;
+  // Counted against the clock, not by ticks: on a busy page (live fleet
+  // renders) a 1 s interval can fire every 2 s, and "5s" must mean 5 s.
+  const deadline=Date.now()+5000;
+  let left=5;
+  const show=()=>autoPickSay("work", "Sending to <b>"+esc(pick.name)+"</b> in "+left+"s, every color already loaded. "+
+    '<button class="btn ghost" id="autopickx" style="font-size:12px;padding:3px 10px">Cancel</button>');
+  show();
+  const wireX=()=>{ const x=$("autopickx"); if(x) x.onclick=()=>autoPickCancel("Cancelled - nothing was sent."); };
+  wireX();
+  AUTOPICK={ file, timer:setInterval(async ()=>{
+    if(SELECTED!==file){ autoPickCancel("Cancelled - a different file was selected."); return; }
+    const now=Math.ceil((deadline-Date.now())/1000);
+    if(now>0){ if(now!==left){ left=now; show(); wireX(); } return; }
+    clearInterval(AUTOPICK.timer); AUTOPICK=null;
+    autoPickSay("work", "Checking "+esc(pick.name)+" is still free…");
+    try{ await loadFleet(); }catch(e){}
+    const again=pickBestPrinter(neededColors(), autoPickFleet());
+    if(again.printer!==pick.printer){
+      autoPickSay("err", esc(pick.name)+" is no longer a match"+(again.printer!=null?" - press again to send to "+esc(again.name):" - "+esc(again.reason))+". Nothing was sent.");
+      return;
+    }
+    Object.entries(again.map).forEach(([pi,hi])=>{ MAPSEL[again.printer+":"+pi]=String(hi); });
+    autoPickSay("ok", "Sent to <b>"+esc(again.name)+"</b> - progress is on its card.");
+    pushTo(again.printer, true, false, again.map);
+  }, 250) };
 }
