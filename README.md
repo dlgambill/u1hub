@@ -38,6 +38,14 @@ printer, with thumbnails. A file that only lives on one printer (sliced
 straight to it) can be copied into the Hub library with one tap, so you can
 queue it, plan it, or send it to any other machine.
 
+**Let the Hub pick the printer.** Select a file and press Print on best
+printer. The Hub looks at every idle printer and picks one that already has
+every color the file needs loaded, close in shade and the right material.
+It tells you which one and gives you five seconds to cancel before it sends.
+If nothing fits, it says which printer came closest and what it's missing,
+and when that's only a color or two you can send it there anyway - it shows
+you which loaded roll would stand in for each missing color first.
+
 **Know whether it is worth printing.** Under every file you select, one line
 says what its filament costs, the least it has to sell for (per piece when the
 file name carries the plate count, like `Penguin x20.gcode` - see
@@ -105,6 +113,10 @@ from the actual meshes (size, how much of the surface overhangs, undersides
 that float, how much touches the bed, painted faces, volume), the designer's
 own project settings, and what is loaded in your printer. It maps the
 project's colors to your loaded heads when it can, and lists what to watch.
+Under the table, Open in Orca with these settings opens a copy of the file in
+Orca with those suggestions already filled in, marked as changes so you can
+put any of them back. Your own file is never touched; keep the tuned project
+with Save As in Orca, or let the copy clean itself up after three days.
 
 ![Settings for a 3MF: what to set in Orca, what the file had, and why](docs/models-settings.png)
 
