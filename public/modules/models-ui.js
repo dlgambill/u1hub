@@ -554,8 +554,18 @@
       '<button class="x" data-close="1" title="Close">×</button></div>' +
       '<div class="st" id="mdl-advst"></div><div id="mdl-advbody"></div><div class="foot" id="mdl-advfoot"></div>';
     box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    SHOWNKEY = null;
+    // Switching printers after an answer leaves the table describing the old
+    // one; say so instead of quietly loading it for the new one.
+    const psel = box.querySelector("#mdl-advprinter");
+    if (psel) psel.addEventListener("change", () => {
+      const out = box.querySelector("#mdl-tuned");
+      if (SHOWNKEY && out) out.innerHTML = '<span class="skip">These suggestions are for ' + esc(SHOWNFOR) + ". Press Ask to get them for the printer you picked; Open in Orca loads the ones shown.</span>";
+    });
     runSuggest(false);
   }
+  // v2.41: the answer on screen - Open in Orca loads exactly this one.
+  let SHOWNKEY = null, SHOWNFOR = "";
   async function runSuggest(force) {
     const box = EL.querySelector("#mdl-adv"), st = box.querySelector("#mdl-advst"), body = box.querySelector("#mdl-advbody"), foot = box.querySelector("#mdl-advfoot");
     if (!st) return;
@@ -568,6 +578,7 @@
     if (!r.ok) { st.className = "st err"; st.textContent = r.d.error || "The suggestion failed."; return; }
     st.textContent = "";
     const s = r.d.suggestion || {};
+    SHOWNKEY = r.d.key || null; SHOWNFOR = r.d.printer || "any U1";
     let h = s.summary ? '<div class="sum">' + esc(s.summary) + "</div>" : "";
     if (s.settings && s.settings.length) {
       h += '<table><thead><tr><th>Setting</th><th>Use</th><th>File had</th><th>Why</th></tr></thead><tbody>' +
@@ -594,7 +605,7 @@
     const rel = ADVFILE, pid = pickPrinter();
     const out = EL.querySelector("#mdl-tuned");
     btn.disabled = true; const was = btn.textContent; btn.textContent = "Opening…";
-    const r = await jpost("/api/models/open-tuned", { file: rel, type: typeSlug(), printer: pid == null ? "" : pid });
+    const r = await jpost("/api/models/open-tuned", { file: rel, type: typeSlug(), printer: pid == null ? "" : pid, key: SHOWNKEY || "" });
     btn.disabled = false; btn.textContent = was;
     if (!out || ADVFILE !== rel) return;
     if (!r.ok) { out.innerHTML = '<span class="skip">' + esc(r.d.error || "Could not open it") + "</span>"; return; }

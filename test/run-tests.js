@@ -3783,6 +3783,11 @@ async function stopHub() {
       const info = mmod.infoFromEntries(zipRead(fs.readFileSync(path.join(mroot, "Cinderwing3D/Baby Dragon/Baby_Dragon_Color.3mf"))));
       ok(info.colors.length === 16 && info.colors_used.length === 2 && info.colors_used[0] === "#F7D2EE" && info.colors_used[1] === "#000000", "info: a full 16-slot palette falls back to the two extruders the objects use", info);
       const info2 = mmod.infoFromEntries(zipRead(fs.readFileSync(path.join(mroot, "3D Tinys Prints/Baby Sheep/Tinys_Sheep_Colored.3mf"))));
+      {
+        // v2.41: Snapmaker Orca saves colors with alpha; Espeon read as colorless.
+        const ia = mmod.infoFromParts(Buffer.from(JSON.stringify({ filament_colour: ["#E2E2E2FF", "#ff0080ff", "#4C7A7F"] })), null);
+        ok(ia.colors.join() === "#E2E2E2,#FF0080,#4C7A7F", "info: colors saved with alpha (#RRGGBBAA) count, as their RGB", ia.colors);
+      }
       ok(info2.colors.length === 3 && info2.colors_used.length === 3, "info: a normal project shows every filament it defines (painted faces use colors the object's extruder never names)", info2.colors_used);
       ok(info.objects.length === 2 && info.objects[0].name === "Dragon" && info.printer === "Bambu Lab X1 Carbon" && info.plates === 1, "info: objects, printer and plate count come from the project", info);
       ok(mmod.pickThumb(zipRead(fs.readFileSync(path.join(mroot, "Cinderwing3D/Baby Dragon/Baby_Dragon_Color.3mf")))).name === "Metadata/plate_1_small.png", "thumb: the small plate render is preferred");
@@ -4447,6 +4452,14 @@ async function stopHub() {
       r = T.applyTuning({ ...base, filament_type: ["PLA", "PETG", "PLA", "PLA"] }, [{ key: "nozzle_temperature", value: "230" }, { key: "wall_loops", value: "3" }]);
       ok(r.ps.nozzle_temperature.join() === "220,220,220,220" && r.ps.wall_loops === "3" && /different materials/.test(r.skipped[0].reason),
         "PLA + PETG in one project: one suggested temperature is not written to both", r.skipped);
+      // v2.41 field case: Espeon is a painted U1 project with 24 filaments
+      // whose temperature lists are 4 long. Lists keep their own length, and
+      // the "changed" list gets one entry per filament with the printer last.
+      const p24 = { printer_model: "Snapmaker U1", filament_type: Array(24).fill("PLA"), filament_settings_id: Array(24).fill("Generic PLA"), nozzle_temperature: ["220", "220", "220", "220"] };
+      r = T.applyTuning(p24, [{ key: "nozzle_temperature", value: "205 °C" }, { key: "enable_prime_tower", value: "0" }]);
+      const d24 = r.ps.different_settings_to_system;
+      ok(r.ps.nozzle_temperature.length === 4 && r.ps.nozzle_temperature.every(v => v === "205") && d24.length === 26 && d24[0] === "enable_prime_tower" && d24[1] === "nozzle_temperature" && d24[24] === "nozzle_temperature" && d24[25] === "",
+        "24 filaments: the temperature list keeps its 4 entries, and the changed-list has 24 filament entries with the printer's last", { len: r.ps.nozzle_temperature.length, diffLen: d24.length });
       const { zipRead, zipEntryContent } = require(path.join(REPO, "modules", "slicing.js"));
       const u1ps = JSON.stringify({ printer_model: "Snapmaker U1", layer_height: "0.2", filament_type: ["PLA", "PLA"], nozzle_temperature: ["220", "220"] });
       const zin = buildZip(files.map(x => x.name === "Metadata/project_settings.config" ? { name: x.name, data: Buffer.from(u1ps) } : x));
@@ -4531,6 +4544,14 @@ async function stopHub() {
       ok(r.status === 200 && r.body.session && r.body.session.state === "watching" && r.body.session.file === relA && r.body.session.tuned,
         "opens: the session belongs to the library file, and says it was a tuned copy", r.body);
       ok(r.body.cached === true && r.body.cost === 0 && calls.length === callsBefore, "the cached suggestion is reused - no second charge", { cached: r.body.cached, calls: calls.length - callsBefore });
+      // v2.41 field case: the printer list was switched after the answer came
+      // back; the button must load the answer on screen, not ask again.
+      const shown = (await jpost("/api/advisor/model", { file: relA, printer: U1ID })).body.key;
+      const rk = await jpost("/api/models/open-tuned", { file: relA, type: "u1", printer: "", key: shown });
+      ok(rk.status === 200 && calls.length === callsBefore && rk.body.applied.some(a => a.key === "enable_support"),
+        "with the key of the answer on screen, that answer is loaded - even with another printer picked, and nothing new is asked", { status: rk.status, calls: calls.length - callsBefore });
+      const rn = await jpost("/api/models/open-tuned", { file: relA, type: "u1", printer: U1ID, key: "nope" });
+      ok(rn.status === 409 && /press Ask/.test(rn.body.error), "a key that is not saved is refused, not quietly replaced by a new answer", rn.body);
       ok(fs.readFileSync(absA).equals(before), "the library file is not changed by a single byte");
       const copy = r.body.copy || "";
       ok(copy && fs.existsSync(copy) && path.basename(copy) === path.basename(absA) && !path.resolve(copy).startsWith(path.resolve(mroot)),
@@ -4578,6 +4599,7 @@ async function stopHub() {
     ok(/HUB_FEATURES\.advisor === false \? ""/.test(mui), "…which is left off when the advisor module is off");
     ok(/id="mdl-tuneopen"/.test(mui) && /\/api\/models\/open-tuned/.test(mui) && /pointer: coarse\) \{ \.mdl-tunerow/.test(mui) && /your file is not changed/.test(mui),
       "the settings panel has Open in Orca with these settings - desktop only, and it says the file is not changed");
+    ok(/key: SHOWNKEY/.test(mui) && /These suggestions are for/.test(mui), "…it sends the key of the answer on screen, and says so when the printer list no longer matches it");
     const appSrc = fs.readFileSync(path.join(REPO, "public", "app.js"), "utf8");
     ok(/Object\.defineProperties\(window,\s*\{\s*SELECTED: \{ get/.test(appSrc) && /FLEET: \{ get/.test(appSrc) && /MAPSEL: \{ get/.test(appSrc),
       "app.js exposes SELECTED, MAP, FLEET and MAPSEL on window (a top-level let is not a window property; the 2.25 job-card button read undefined and did nothing)");

@@ -129,8 +129,15 @@ function applyTuning(ps, settings) {
   const applied = [], skipped = [];
   const types = asArr(out.filament_type).map(t => String(t || "").trim().toUpperCase()).filter(Boolean);
   const oneMaterial = types.length > 0 && types.every(t => t === types[0]);
-  const diff = asArr(out.different_settings_to_system);
-  while (diff.length < SLOTS + 2) diff.push("");
+  // How many filaments the project defines: Orca's own count is the length
+  // of filament_settings_id; painted U1 projects carry far more than four
+  // (Espeon: 24). different_settings_to_system is [process, one per
+  // filament, printer], so its length follows that count - a fixed 4-slot
+  // list would file the printer's entry under filament 5.
+  const nFil = Math.max(asArr(out.filament_settings_id).length, types.length, 1);
+  let diff = asArr(out.different_settings_to_system);
+  if (!diff.length) diff = Array(nFil + 2).fill("");
+  const filIdx = []; for (let i = 1; i < diff.length - 1; i++) filIdx.push(i);
   const addDiff = (i, k) => { const set = new Set(String(diff[i] || "").split(";").filter(Boolean)); set.add(k); diff[i] = [...set].sort().join(";"); };
   const seen = new Set();
   for (const row of Array.isArray(settings) ? settings : []) {
@@ -146,10 +153,12 @@ function applyTuning(ps, settings) {
     if (rule.filament) {
       if (!oneMaterial) { skipped.push({ key, value: shown, reason: "the slots hold different materials; set it per filament in Orca" }); continue; }
       const cur = asArr(out[key]);
-      const slots = Math.max(cur.length, types.length, 1);
+      // Same length the project already has: Orca reads these per filament,
+      // and a list longer than its siblings is not something it writes itself.
+      const slots = cur.length || nFil;
       const before = cur.length ? cur.join(";") : null;
       out[key] = Array(slots).fill(n.value);
-      for (let i = 0; i < Math.min(slots, SLOTS); i++) addDiff(1 + i, key);
+      filIdx.forEach(i => addDiff(i, key));
       applied.push({ key, from: before, to: n.value });
     } else {
       const before = out[key] == null ? null : String(out[key]);

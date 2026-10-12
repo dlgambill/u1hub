@@ -218,7 +218,11 @@ function infoFromParts(ps, ms) {
     try {
       const j = JSON.parse(ps.toString("utf8"));
       const cols = Array.isArray(j.filament_colour) ? j.filament_colour : (typeof j.filament_colour === "string" ? j.filament_colour.split(";") : []);
-      out.colors = cols.map(c => String(c || "").trim().toUpperCase()).filter(c => /^#[0-9A-F]{6}$/.test(c));
+      // v2.41: Snapmaker Orca saves colors with alpha ("#E2E2E2FF"). Those
+      // were dropped, so a 24-color painted U1 project read as having no
+      // colors at all - the card showed none and the settings suggester was
+      // told nothing about them and called Espeon "single-color" (2026-10-12).
+      out.colors = cols.map(c => String(c || "").trim().toUpperCase()).map(c => /^#[0-9A-F]{8}$/.test(c) ? c.slice(0, 7) : c).filter(c => /^#[0-9A-F]{6}$/.test(c));
       out.printer = j.printer_model || j.printer_settings_id || null;
       out.layer_height = j.layer_height != null ? String(j.layer_height) : null;
     } catch {}
@@ -1176,7 +1180,19 @@ function register(ctx) {
     const suggest = ctx.use("advisor.suggestModel");
     if (!suggest) return res.status(503).json({ error: "AI pre-flight is turned off - turn it on in Settings to get suggested settings" });
     const idx = b.printer == null || b.printer === "" ? null : Number(b.printer);
-    const sr = await suggest(rel, Number.isInteger(idx) ? idx : null, false);
+    // v2.41 (field, 2026-10-12): load EXACTLY the suggestion on screen. The
+    // panel's printer list had been switched from U3 to U7 after the answer
+    // came back, so the button asked again for U7, got a different answer,
+    // and loaded settings the owner never saw. The page now sends the key of
+    // the answer it is showing; only without one (an older page) is the
+    // suggester asked.
+    let sr;
+    if (b.key) {
+      const byKey = ctx.use("advisor.suggestionByKey");
+      const rec = byKey ? byKey(String(b.key)) : null;
+      if (!rec || rec.file !== rel) return res.status(409).json({ error: "That suggestion is no longer saved - press Ask, then open it again." });
+      sr = { status: 200, body: { ...rec, cached: true } };
+    } else sr = await suggest(rel, Number.isInteger(idx) ? idx : null, false);
     if (sr.status !== 200) return res.status(sr.status).json(sr.body);
     const settings = ((sr.body && sr.body.suggestion) || {}).settings || [];
     let src;

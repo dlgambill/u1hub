@@ -534,6 +534,7 @@ function register(ctx) {
     res.status(r.status).json(r.body);
   });
   ctx.provide("advisor.suggestModel", suggestModel);
+  ctx.provide("advisor.suggestionByKey", key => MCACHE.find(r => r.key === key) || null);
 
   // What would be sent for a 3MF (text half; the image is noted, not dumped).
   ctx.app.get("/api/advisor/model/brief", async (req, res) => {
