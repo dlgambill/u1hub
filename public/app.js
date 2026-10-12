@@ -919,14 +919,29 @@ function pickBestPrinter(need, fleet){
       else total+=d;
     });
     if(!miss.length){ if(!best || total<best.total) best={ printer:p.id, name:p.name, map, total, order }; }
-    else shortBy.push({ p, miss });
+    else shortBy.push({ p, miss, map, total });
   });
   if(best) return { printer:best.printer, name:best.name, map:best.map, total:best.total };
-  shortBy.sort((a,b)=>a.miss.length-b.miss.length);
+  // Fewest missing colors first, then the closest of what does match.
+  shortBy.sort((a,b)=>a.miss.length-b.miss.length || a.total-b.total);
   const c=shortBy[0];
   const what=c.miss.map(n=>(n.hex||"a color")+(n.type?" "+normMat(n.type):"")).join(", ");
-  return { printer:null, reason:"No idle printer has every color loaded. Closest is "+c.p.name+", missing "+what+"." };
+  // v2.41 "Send anyway" (owner, 2026-10-12): the owner's eye beats a fixed
+  // threshold - light blue standing in for cyan is a call he can make. The
+  // closest printer is offered when it misses at most SEND_ANYWAY_MAX colors
+  // and every color still has a head to go to; what each stand-in is, and
+  // any material mismatch, is spelled out before anything is sent.
+  const heads=c.p.heads||[];
+  const subs=c.miss.map(n=>{
+    const hi=c.map[n.i], h=hi!=null?heads[hi]:null;
+    return { i:n.i, hex:n.hex||"", type:normMat(n.type), head:hi!=null?hi:null, headHex:h&&h.hex||"", headMat:normMat(h&&h.material),
+             matWarn:matWarnText(n.type, h&&h.material) };
+  });
+  const sendable=c.miss.length<=SEND_ANYWAY_MAX && subs.every(x=>x.head!=null);
+  return { printer:null, reason:"No idle printer has every color loaded. Closest is "+c.p.name+", missing "+what+".",
+           closest:{ printer:c.p.id, name:c.p.name, map:c.map, subs, sendable } };
 }
+const SEND_ANYWAY_MAX = 2;
 
 // "14h26m" / "9m" — compact remaining-time formatting for the fleet cards.
 function fmtDur(sec){
@@ -2895,13 +2910,32 @@ function autoPickStart(){
   if(!SELECTED) return;
   if(AUTOPICK){ autoPickCancel("Cancelled - nothing was sent."); return; }
   const pick=pickBestPrinter(neededColors(), autoPickFleet());
-  if(!pick.printer && pick.printer!==0){ autoPickSay("err", esc(pick.reason)); return; }
+  if(pick.printer==null){ autoPickRefused(pick); return; }
+  autoPickCountdown(pick, false);
+}
+// The refusal, and - when the closest printer only misses a color or two -
+// a "Send to U4 anyway" that says what each stand-in head holds.
+function autoPickRefused(pick){
+  const c=pick.closest;
+  if(!c || !c.sendable){ autoPickSay("err", esc(pick.reason)); return; }
+  const subs=c.subs.map(x=>'<span style="white-space:nowrap"><i style="display:inline-block;width:10px;height:10px;border-radius:2px;vertical-align:-1px;background:'+esc(x.hex)+'"></i> '+esc(x.hex)+
+    " → T"+(x.head+1)+' <i style="display:inline-block;width:10px;height:10px;border-radius:2px;vertical-align:-1px;background:'+esc(x.headHex)+'"></i> '+esc(x.headHex)+
+    (x.matWarn?' <b style="color:var(--bad)">('+esc(x.matWarn)+")</b>":"")+"</span>").join(", ");
+  autoPickSay("err", esc(pick.reason)+"<br>On "+esc(c.name)+" that would print "+subs+". "+
+    '<button class="btn ghost" id="autopickforce" style="font-size:12px;padding:3px 10px">Send to '+esc(c.name)+" anyway</button>");
+  const b=$("autopickforce");
+  if(b) b.onclick=()=>autoPickCountdown({ printer:c.printer, name:c.name, map:c.map, note:subs }, true);
+}
+// Announce, count down against the clock, re-check on fresh fleet data, send.
+// anyway=true: the printer was chosen by the owner, so the re-check asks only
+// that it is still idle and still loaded the same way (its mapping unchanged).
+function autoPickCountdown(pick, anyway){
   const file=SELECTED;
   // Counted against the clock, not by ticks: on a busy page (live fleet
   // renders) a 1 s interval can fire every 2 s, and "5s" must mean 5 s.
   const deadline=Date.now()+5000;
   let left=5;
-  const show=()=>autoPickSay("work", "Sending to <b>"+esc(pick.name)+"</b> in "+left+"s, every color already loaded. "+
+  const show=()=>autoPickSay("work", "Sending to <b>"+esc(pick.name)+"</b> in "+left+"s"+(anyway?", printing "+pick.note+". ":", every color already loaded. ")+
     '<button class="btn ghost" id="autopickx" style="font-size:12px;padding:3px 10px">Cancel</button>');
   show();
   const wireX=()=>{ const x=$("autopickx"); if(x) x.onclick=()=>autoPickCancel("Cancelled - nothing was sent."); };
@@ -2913,13 +2947,24 @@ function autoPickStart(){
     clearInterval(AUTOPICK.timer); AUTOPICK=null;
     autoPickSay("work", "Checking "+esc(pick.name)+" is still free…");
     try{ await loadFleet(); }catch(e){}
-    const again=pickBestPrinter(neededColors(), autoPickFleet());
-    if(again.printer!==pick.printer){
-      autoPickSay("err", esc(pick.name)+" is no longer a match"+(again.printer!=null?" - press again to send to "+esc(again.name):" - "+esc(again.reason))+". Nothing was sent.");
-      return;
+    let target=null;
+    if(anyway){
+      const fresh=autoPickFleet().find(p=>p.id===pick.printer);
+      const idle=fresh && fresh.online && !fresh.maintenance && !["printing","paused","error"].includes(fresh.state);
+      const map=idle ? defaultMapping(neededColors(), fresh.heads||[]) : null;
+      if(!idle) { autoPickSay("err", esc(pick.name)+" is no longer idle. Nothing was sent."); return; }
+      if(JSON.stringify(map)!==JSON.stringify(pick.map)){ autoPickSay("err", esc(pick.name)+"'s rolls changed while counting down - press Print on best printer again to see the new match. Nothing was sent."); return; }
+      target={ printer:pick.printer, name:pick.name, map };
+    } else {
+      const again=pickBestPrinter(neededColors(), autoPickFleet());
+      if(again.printer!==pick.printer){
+        autoPickSay("err", esc(pick.name)+" is no longer a match"+(again.printer!=null?" - press again to send to "+esc(again.name):" - "+esc(again.reason))+". Nothing was sent.");
+        return;
+      }
+      target=again;
     }
-    Object.entries(again.map).forEach(([pi,hi])=>{ MAPSEL[again.printer+":"+pi]=String(hi); });
-    autoPickSay("ok", "Sent to <b>"+esc(again.name)+"</b> - progress is on its card.");
-    pushTo(again.printer, true, false, again.map);
+    Object.entries(target.map).forEach(([pi,hi])=>{ MAPSEL[target.printer+":"+pi]=String(hi); });
+    autoPickSay("ok", "Sent to <b>"+esc(target.name)+"</b> - progress is on its card.");
+    pushTo(target.printer, true, false, target.map);
   }, 250) };
 }

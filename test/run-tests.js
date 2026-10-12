@@ -4929,6 +4929,20 @@ async function stopHub() {
       ok(r.printer === null && /#8080FF/.test(r.reason) && !/#FF0000/.test(r.reason), "a refusal names only the color that is really missing, never a loaded red", r);
       r = P.pickBestPrinter([espion[0], espion[2], espion[3]], [pr(9, { name: "U6", heads: [H("#E72F1D"), H("#FFA500"), H("#000000"), H("#FFFFFF")] })]);
       ok(r.printer === 9 && r.map[3] === 0, "…and without the purple, that printer is picked with red on its red head", r);
+      // v2.41 Send anyway (owner, 2026-10-12): the closest printer is offered
+      // when it misses a color or two and every color still has a head.
+      const sally = [{ i: 0, hex: "#FF0000", type: "PLA" }, { i: 1, hex: "#00FFFF", type: "PLA" }, { i: 2, hex: "#FFFF00", type: "PLA" }, { i: 3, hex: "#000000", type: "PLA" }];
+      const u4 = pr(3, { name: "U4", heads: [H("#000000"), H("#FFFF00"), H("#8BD5EE"), H("#E72F1D")] });
+      r = P.pickBestPrinter(sally, [u4]);
+      ok(r.printer === null && r.closest && r.closest.sendable === true && r.closest.printer === 3 && r.closest.map[1] === 2
+         && r.closest.subs.length === 1 && r.closest.subs[0].hex === "#00FFFF" && r.closest.subs[0].head === 2 && r.closest.subs[0].headHex === "#8BD5EE",
+        "one color short: the closest printer is offered, saying the light blue in T3 would stand in for cyan", r.closest);
+      r = P.pickBestPrinter([{ i: 0, hex: "#FF0000", type: "PETG" }], [pr(3, { name: "U4", heads: [H("#E72F1D", "PLA"), E, E, E] })]);
+      ok(r.closest && r.closest.sendable && /needs PETG/.test(r.closest.subs[0].matWarn), "a material stand-in is offered too, with the mismatch spelled out", r.closest);
+      r = P.pickBestPrinter([{ i: 0, hex: "#FF0000" }, { i: 1, hex: "#00FF00" }, { i: 2, hex: "#0000FF" }], [pr(3, { name: "U4", heads: [H("#888888"), H("#777777"), H("#666666"), E] })]);
+      ok(r.closest && r.closest.sendable === false, "three colors short: no Send anyway - that is a different print", r.closest);
+      r = P.pickBestPrinter([{ i: 0, hex: "#FF0000" }, { i: 1, hex: "#00FFFF" }], [pr(3, { name: "U4", heads: [H("#FF0000"), E, E, E] })]);
+      ok(r.closest && r.closest.sendable === false, "a color with no head left to go to: no Send anyway", r.closest);
       r = P.pickBestPrinter(need, [pr(8, { caps: { multiColor: false, heads: 1 }, heads: [] })]);
       ok(r.printer === null, "a printer without the color API is never auto-picked for a colored file", r);
     }
@@ -4938,11 +4952,14 @@ async function stopHub() {
     const idx2 = fs.readFileSync(path.join(REPO, "public", "index.html"), "utf8");
     ok(/id="autopick"/.test(idx2) && /id="autopickst"/.test(idx2), "the job card has the Print on best printer button and its status line");
     const flowAt = src.indexOf("function autoPickStart(");
-    const flow = flowAt >= 0 ? src.slice(flowAt, flowAt + 2500) : "";
+    const flowEnd = src.indexOf("function autoPickCountdown(");
+    const flow = flowAt >= 0 && flowEnd > flowAt ? src.slice(flowAt, flowEnd + 3500) : "";
     ok(/autopickx/.test(flow) && /left=5/.test(flow) && /await loadFleet\(\)/.test(flow)
        && /pickBestPrinter\(neededColors\(\), autoPickFleet\(\)\)[\s\S]*pickBestPrinter\(neededColors\(\), autoPickFleet\(\)\)/.test(flow)
-       && /pushTo\(again\.printer, true, false, again\.map\)/.test(flow),
+       && /pushTo\(target\.printer, true, false, target\.map\)/.test(flow),
       "it announces the printer with a 5-second Cancel, re-checks on fresh fleet data, then sends the verified map");
+    ok(/id="autopickforce"/.test(flow) && /c\.sendable/.test(flow) && /JSON\.stringify\(map\)!==JSON\.stringify\(pick\.map\)/.test(flow) && /no longer idle/.test(flow),
+      "Send anyway: only offered when the closest printer qualifies for it, and at send time it must still be idle and loaded the same way");
   }
 
   // ---- KLIPPER: each printer's own UI, proxied through the Hub (v2.21) ----
