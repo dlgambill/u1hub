@@ -4859,6 +4859,21 @@ async function stopHub() {
         ok(mp[0] === 0 && mp[1] === 0, "MAPMAT: same color and same material still share one head", mp);
         ok(M.matWarnText("PETG", "PLA") === "needs PETG - this head has PLA" && M.matWarnText("PLA", "pla") === "" && M.matWarnText("", "PLA") === "",
           "MAPMAT: the mismatch warning text, and no warning when it matches or is unknown");
+        // v2.41 field case (2026-10-12): Espion needs white, light purple,
+        // black, red; U6 holds red, orange, black, white. First-come mapping
+        // let light purple (no close roll anywhere) take the red head, sent
+        // red to orange, and Print on best printer said red was missing.
+        mp = M.defaultMapping([{ i: 0, hex: "#FFFFFF", type: "PLA" }, { i: 1, hex: "#8080FF", type: "PLA" }, { i: 2, hex: "#000000", type: "PLA" }, { i: 3, hex: "#FF0000", type: "PLA" }],
+          [H("#E72F1D", "PLA"), H("#FFA500", "PLA"), H("#000000", "PLA"), H("#FFFFFF", "PLA")]);
+        ok(mp[0] === 3 && mp[2] === 2 && mp[3] === 0 && mp[1] === 1, "MAPOPT: the loaded red goes to the red part; the color nothing matches gets what is left", mp);
+        mp = M.defaultMapping([{ i: 0, hex: "#FF8800", type: "PLA" }, { i: 1, hex: "#FF0000", type: "PLA" }], [H("#FF0000", "PLA"), H("#FFAA00", "PLA")]);
+        ok(mp[0] === 1 && mp[1] === 0, "MAPOPT: two close colors each get their own nearest roll, whatever order the file lists them in", mp);
+        const many = Array.from({ length: 8 }, (_, i) => ({ i, hex: "#" + (i * 30).toString(16).padStart(2, "0") + "4080", type: "PLA" }));
+        const t0 = Date.now(); for (let k = 0; k < 50; k++) M.defaultMapping(many, [H("#102030", "PLA"), H("#405060", "PLA"), H("#708090", "PLA"), H("#A0B0C0", "PLA")]);
+        ok(Date.now() - t0 < 400, "MAPOPT: eight colors on four heads stays fast enough to run on every fleet render (50 runs)", Date.now() - t0);
+        const big = Array.from({ length: 12 }, (_, i) => ({ i, hex: "#FF0000", type: "PLA" }));
+        mp = M.defaultMapping(big, [H("#FF0000", "PLA")]);
+        ok(Object.keys(mp).length === 12 && Object.values(mp).every(v => v === 0), "MAPOPT: a palette past the exact-search limit still maps (one-at-a-time, twins share the head)", mp);
       }
       ok(/data-need="\$\{esc\(n\.type/.test(appSrc) && /class="cmwarn"/.test(appSrc) && /matWarnText\(row\.dataset\.need, sw\.dataset\.mat\)/.test(appSrc),
         "MAPMAT: the mapping row warns on a material mismatch and updates when another head is tapped");
@@ -4907,6 +4922,13 @@ async function stopHub() {
       const tie = [pr(6, { heads: [H("#FF0000"), H("#FFFFFF"), E, E] }), pr(7, { heads: [H("#FF0000"), H("#FFFFFF"), E, E] })];
       r = P.pickBestPrinter(need, tie);
       ok(r.printer === 6, "an exact tie goes to the printer listed first", r);
+      // v2.41 field case: the red is loaded but a color nothing matches used
+      // to take its head; the refusal must name only what is really missing.
+      const espion = [{ i: 0, hex: "#FFFFFF", type: "PLA" }, { i: 1, hex: "#8080FF", type: "PLA" }, { i: 2, hex: "#000000", type: "PLA" }, { i: 3, hex: "#FF0000", type: "PLA" }];
+      r = P.pickBestPrinter(espion, [pr(9, { name: "U6", heads: [H("#E72F1D"), H("#FFA500"), H("#000000"), H("#FFFFFF")] })]);
+      ok(r.printer === null && /#8080FF/.test(r.reason) && !/#FF0000/.test(r.reason), "a refusal names only the color that is really missing, never a loaded red", r);
+      r = P.pickBestPrinter([espion[0], espion[2], espion[3]], [pr(9, { name: "U6", heads: [H("#E72F1D"), H("#FFA500"), H("#000000"), H("#FFFFFF")] })]);
+      ok(r.printer === 9 && r.map[3] === 0, "…and without the purple, that printer is picked with red on its red head", r);
       r = P.pickBestPrinter(need, [pr(8, { caps: { multiColor: false, heads: 1 }, heads: [] })]);
       ok(r.printer === null, "a printer without the color API is never auto-picked for a colored file", r);
     }

@@ -834,18 +834,50 @@ function normMat(x){ return String(x==null?"":x).trim().toUpperCase(); }
 function matMismatch(needType, headMat){ const a=normMat(needType), b=normMat(headMat); return !!(a && b && a!==b); }
 function matWarnText(needType, headMat){ return matMismatch(needType, headMat) ? `needs ${normMat(needType)} - this head has ${normMat(headMat)}` : ""; }
 const MAT_PENALTY = 1e6;     // bigger than any color distance, so material always wins
+// v2.41: the BEST assignment, not first-come. Field case (2026-10-12, Print
+// on best printer): a file needing white, light purple, black and red, on a
+// printer with red, orange, black and white loaded. Taking the colors in the
+// file's order, light purple came before red, found the red roll "nearest"
+// of what was left, and took it - so red landed on orange and the printer
+// was turned down for "missing red" while red sat loaded in T1. Now every
+// way of placing the colors on the heads is weighed and the one with the
+// smallest total difference wins (material mismatch still costs more than
+// any color difference, and leaving a color unplaced costs more than either,
+// so as many colors as possible get a head, as before). Four heads make this
+// a few hundred cases; past MAP_EXACT_MAX colors it falls back to the old
+// one-at-a-time pass so a 16-color palette can't stall a fleet render.
+const MAP_UNPLACED = 1e7, MAP_EXACT_MAX = 8;
+function mapCost(n, h){
+  if(!h || !h.loaded || !n.hex || !h.hex) return Infinity;   // a side with no color is never auto-picked, as before
+  return colorDist(n.hex,h.hex) + (matMismatch(n.type, h.material)?MAT_PENALTY:0);
+}
 function defaultMapping(need, heads){
-  const taken=new Set(), map={};
+  const map={};
   const normh=x=>String(x==null?"":x).trim().replace(/^#/,"").slice(0,6).toUpperCase();
-  need.forEach(n=>{
-    let bestD=1e9, bestIdx=-1;     // a side with no color is never auto-picked, as before
-    heads.forEach((h,hi)=>{
-      if(!h||!h.loaded||taken.has(hi)) return;
-      const d=((n.hex&&h.hex)?colorDist(n.hex,h.hex):1e9) + (matMismatch(n.type, h.material)?MAT_PENALTY:0);
-      if(d<bestD){ bestD=d; bestIdx=hi; }
+  if(need.length<=MAP_EXACT_MAX){
+    const cost=need.map(n=>heads.map(h=>mapCost(n,h)));
+    let best=Infinity, bestPick=null;
+    const pick=new Array(need.length).fill(-1), used=new Set();
+    const go=(k, total)=>{
+      if(total>=best) return;                       // cannot beat what we have
+      if(k===need.length){ best=total; bestPick=pick.slice(); return; }
+      for(let hi=0; hi<heads.length; hi++){
+        const c=cost[k][hi];
+        if(c===Infinity || used.has(hi)) continue;
+        used.add(hi); pick[k]=hi; go(k+1, total+c); used.delete(hi); pick[k]=-1;
+      }
+      go(k+1, total+MAP_UNPLACED);                  // or leave this color without a head
+    };
+    go(0, 0);
+    if(bestPick) need.forEach((n,k)=>{ if(bestPick[k]>=0) map[n.i]=bestPick[k]; });
+  } else {
+    const taken=new Set();
+    need.forEach(n=>{
+      let bestD=Infinity, bestIdx=-1;
+      heads.forEach((h,hi)=>{ if(taken.has(hi)) return; const d=mapCost(n,h); if(d<bestD){ bestD=d; bestIdx=hi; } });
+      if(bestIdx>=0){ map[n.i]=bestIdx; taken.add(bestIdx); }
     });
-    if(bestIdx>=0){ map[n.i]=bestIdx; taken.add(bestIdx); }
-  });
+  }
   need.forEach(n=>{
     if(map[n.i]!=null || !n.hex) return;
     // Two tools can share one head only if they are the same roll: same color
@@ -863,7 +895,7 @@ function defaultMapping(need, heads){
 //
 // Pure: takes the needed colors and the printers on screen, returns the pick.
 // A printer qualifies only if it is online, idle (not printing, paused or in
-// error), not out of service, has the color API, and the same greedy mapping
+// error), not out of service, has the color API, and the same mapping
 // its card would pre-fill puts EVERY needed color on a head that is close in
 // color (under MATCH_THRESHOLD) and not a different material. Among those the
 // closest total color wins; a tie goes to the printer listed first. When none
