@@ -5192,6 +5192,31 @@ async function stopHub() {
     ok(hits("*(x20)*").length === 0 && hits("*a+b*").length === 0 && hits("*x20.*").length === 2, "regex metacharacters in a glob are literal, not a crash", hits("*x20.*"));
   }
 
+  console.log("\n== UI: back to top (2026-10-14) ==");
+  {
+    // The owner asked for a way back to the top of long Hub pages. It must
+    // reach EVERY view (rule 9), so it lives outside the view containers and
+    // is asserted on the page as served, not only on disk.
+    const page = await (await fetch(HUB + "/")).text();
+    const btnAt = page.indexOf('id="totop"');
+    ok(btnAt > -1 && /<button class="totop" id="totop" type="button" aria-label="Back to top"/.test(page),
+      "the served page carries a real, labeled Back to top button");
+    ok(btnAt > page.indexOf("</main>") && btnAt > page.indexOf('id="dashview"'),
+      "…outside every view, so Dash, Match, Spools, Settings and module tabs all get it", { btnAt, main: page.indexOf("</main>") });
+    const js = (page.slice(btnAt).match(/<script>\s*\(function\(\)\{[\s\S]*?<\/script>/) || [""])[0];
+    ok(/window\.scrollY > Math\.max\(600, window\.innerHeight\)/.test(js) && /classList\.toggle\("show", on\)/.test(js),
+      "…shown only once the page is more than a screen down");
+    ok(/window\.scrollTo\(\{top:0, behavior: still \? "auto" : "smooth"\}\)/.test(js) && /prefers-reduced-motion: reduce/.test(js),
+      "…scrolls the window to the top, without the smooth glide when reduced motion is asked for");
+    const gold = fs.readFileSync(path.join(REPO, "public", "gold.css"), "utf8");
+    const rule = (gold.match(/\.totop\{[^}]*\}/) || [""])[0];
+    ok(/position:fixed/.test(rule) && /safe-area-inset-bottom/.test(rule) && /border:1px solid var\(--field\)/.test(rule)
+       && /visibility:hidden/.test(rule) && /width:44px; height:44px/.test(rule),
+      "…fixed in the corner clear of the phone's home bar, a 44px target, bordered like every control, out of the tab order while hidden", rule);
+    ok(/\.totop\.show\{[^}]*visibility:visible/.test(gold) && /\.totop:focus-visible\{/.test(gold),
+      "…visible when shown, with the same focus ring as every other control");
+  }
+
   await stopHub();
   await mockU1.close(); await mockSv.close();
   fs.rmSync(tmp, { recursive: true, force: true });

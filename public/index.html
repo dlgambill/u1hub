@@ -761,6 +761,35 @@
   </div>
 </div>
 
+<!-- Back to top (owner request, 2026-10-14). Outside every view, so the Dash,
+     Match, Spools, Settings and every module tab get it with no per-view code.
+     The window is the page's scroller on desktop and phone alike (the desktop
+     file list scrolls inside .side, which this does not touch). Shown only
+     once the page is more than a screen down; gold.css owns the look. -->
+<button class="totop" id="totop" type="button" aria-label="Back to top" title="Back to top"><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false"><path d="M6 15l6-6 6 6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+<script>
+(function(){
+  var b = document.getElementById("totop"); if(!b) return;
+  var shown = false, queued = false;
+  function update(){
+    queued = false;
+    var on = window.scrollY > Math.max(600, window.innerHeight);
+    if(on !== shown){ shown = on; b.classList.toggle("show", on); }
+  }
+  function queue(){ if(!queued){ queued = true; requestAnimationFrame(update); } }
+  window.addEventListener("scroll", queue, {passive:true});
+  window.addEventListener("resize", queue, {passive:true});
+  b.addEventListener("click", function(e){
+    var still = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    window.scrollTo({top:0, behavior: still ? "auto" : "smooth"});
+    // From the keyboard (detail 0), land focus on the open view tab so Tab
+    // carries on from the top of the page instead of from a hidden button.
+    if(e.detail === 0){ var t = document.querySelector(".vtab.on"); if(t) t.focus({preventScroll:true}); }
+  });
+  update();
+})();
+</script>
+
 <script>const VERSION = "2.41.0";</script>
 <script src="app.js"></script>
 <!-- @client-modules -->

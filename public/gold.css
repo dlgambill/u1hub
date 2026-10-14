@@ -430,3 +430,36 @@ body{font-size:14px;}
      marks and clash mark, the printer-name arrow, the Models rail count.
    Re-run the audit after changing any color in this file or index.html.
    ========================================================================== */
+
+/* ============================================================================
+   Back to top (owner request, 2026-10-14) - same rules as every layer above.
+   Design read: a quiet control that floats over a long page of cards, so it
+   wears the card language, not a bright chip: --panel-2 ground, --field
+   border (3:1, the v2.41 control rule), --r-md corners, --elev-2 so it lifts
+   off whatever card it sits over, ink chevron that takes the accent on hover
+   like every other control here. 44px square = the touch floor. z-index 45
+   sits over the sticky phone topbar (40) and under every modal and Dispatch
+   sheet (50/60/70). Hidden with visibility, not display, so it leaves the tab
+   order while hidden and can still fade; the visibility flip waits for the
+   fade on the way out and is immediate on the way in.
+   ========================================================================== */
+.totop{
+  position:fixed; z-index:45;
+  right:max(16px, env(safe-area-inset-right));
+  bottom:calc(16px + env(safe-area-inset-bottom));
+  width:44px; height:44px; padding:0;
+  display:flex; align-items:center; justify-content:center;
+  background:var(--panel-2); color:var(--ink);
+  border:1px solid var(--field); border-radius:var(--r-md);
+  box-shadow:var(--elev-2); cursor:pointer;
+  opacity:0; visibility:hidden; transform:translateY(8px);
+  transition:opacity var(--dur) var(--ease), transform var(--dur) var(--ease),
+    color var(--dur) var(--ease), border-color var(--dur) var(--ease),
+    visibility 0s var(--ease) var(--dur);
+}
+.totop.show{opacity:1; visibility:visible; transform:none; transition-delay:0s;}
+.totop:hover{color:var(--signal); border-color:var(--signal);}
+.totop:active{transform:translateY(1px);}
+.totop:focus-visible{outline:2px solid color-mix(in srgb, var(--signal) 65%, transparent); outline-offset:2px;}
+@media (min-width:881px){ .totop{right:28px; bottom:28px;} }
+@media print{ .totop{display:none;} }
