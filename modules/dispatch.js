@@ -241,10 +241,12 @@ function register(ctx) {
   // set U1HUB_UNLOAD_PAUSED=0) only once the clog question is answered. The
   // harness sets it to 0 to keep the decision logic covered.
   const UNLOAD_PAUSED = process.env.U1HUB_UNLOAD_PAUSED !== "0";
-  let D = { jobs: [], bundles: [], maintenance: {}, frozen: null, settings: JSON.parse(JSON.stringify(DEFAULT_SETTINGS)) };
+  let D = { jobs: [], bundles: [], maintenance: {}, frozen: null, pins: {}, settings: JSON.parse(JSON.stringify(DEFAULT_SETTINGS)) };
   try {
     const raw = JSON.parse(fs.readFileSync(FILE, "utf8"));
     D.jobs = Array.isArray(raw.jobs) ? raw.jobs : [];
+    // 2.42 (H4): the user's "this job goes on that printer" survives a restart.
+    D.pins = (raw.pins && typeof raw.pins === "object" && !Array.isArray(raw.pins)) ? raw.pins : {};
     D.bundles = Array.isArray(raw.bundles) ? raw.bundles : [];
     D.frozen = (raw.frozen && Array.isArray(raw.frozen.slots)) ? raw.frozen : null;
     D.maintenance = (raw.maintenance && typeof raw.maintenance === "object" && !Array.isArray(raw.maintenance))
@@ -311,6 +313,7 @@ function register(ctx) {
   // is worse, and certain.
   let SAVE_FALLBACK = false;                     // latched, so we warn once
   function save() {
+    D.pins = Object.fromEntries(PINS);            // H4: hand-set pins are state, written with everything else
     const data = JSON.stringify(D, null, 2);
     const tmp = FILE + ".tmp";
     if (!SAVE_FALLBACK) {
@@ -348,6 +351,10 @@ function register(ctx) {
   //               STICKY_TOLERANCE_MIN earlier. Estimate jitter can't reshuffle
   //               the plan; freed capacity - worth hours, not minutes - can.
   const PINS = new Map();                        // job.id -> printer index (the user's choice)
+  // 2.42 (H4): PINS is persisted as D.pins (see save()). Reload it, keeping
+  // only pins for jobs that still exist and a sane printer index.
+  for (const [id, idx] of Object.entries(D.pins || {}))
+    if (Number.isInteger(idx) && idx >= 0 && D.jobs.some(j => j.id === id)) PINS.set(id, idx);
   const PLACEMENT = new Map();                   // job.id + "#" + copy -> printer index
   const forget = jobId => {                      // drop every trace of one job's placement
     PINS.delete(jobId);
@@ -1312,7 +1319,15 @@ function register(ctx) {
     if (b.priority !== undefined) j.priority = clampPrio(b.priority);   // v2.22: 1-5
     if (b.needs_finish !== undefined) j.needs_finish = !!b.needs_finish;
     if (b.state === "paused" || b.state === "queued") { if (j.state !== "printing") j.state = b.state; }
-    save(); res.json({ ok: true, job: j });
+    // H4: lowering the quantity to what is already printed leaves nothing to
+    // do. Finish the job (same exit as a last copy) unless a copy is still on
+    // a bed - then the completion watcher finishes it when that copy ends.
+    let finished = false;
+    if (b.qty !== undefined && j.remaining <= 0 && j.state !== "printing" && j.printing_on == null) {
+      finish(j, "quantity lowered to the copies already printed");
+      finished = true;
+    }
+    save(); res.json({ ok: true, job: j, finished });
   });
   app.post("/api/dispatch/jobs/remove", (req, res) => {
     forget((req.body || {}).id);
@@ -1469,12 +1484,14 @@ function register(ctx) {
     if (!j) return res.status(404).json({ error: "Unknown job" });
     // "auto" is a request for a fresh decision, so drop the soft placement too
     // — otherwise the copy sits where the last plan put it.
-    if (b.printer === null || b.printer === "auto") { forget(j.id); return res.json({ ok: true, pinned: null }); }
+    // H4: a pin is state the user set by hand - saved the moment it changes.
+    if (b.printer === null || b.printer === "auto") { forget(j.id); save(); return res.json({ ok: true, pinned: null }); }
     const idx = parseInt(b.printer, 10);
     const fleetSize = (ctx.printers || []).length;
     if (!Number.isInteger(idx) || idx < 0 || (fleetSize && idx >= fleetSize))
       return res.status(400).json({ error: "No such printer" });
     PINS.set(j.id, idx);
+    save();
     res.json({ ok: true, pinned: idx });
   });
   // "The farm is already busy - claim what's running." Probes every printer and

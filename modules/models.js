@@ -43,6 +43,12 @@ const MAX_DEPTH = 4;
 const MAX_FILES = 60000;
 const PAGE_DEFAULT = 60;
 const SKIP_DIR = /^[._]|^(node_modules|manifests|tool|_consumed|_stage|_reports)$/i;
+// 2.42 (H1): the U1 templates live at the top of the models folder and other
+// tools read them. Server-side deny list: the walk never lists them (no card,
+// no Delete button) and rename/delete refuse them by name, whatever a page
+// sends. Matched on the file name, in any folder, any case.
+const PROTECTED = /^(u1_template.*|filament_types)\.3mf$/i;
+const PROTECTED_MSG = "this is a U1 template file (u1_template*.3mf / filament_types.3mf) - the Hub never renames, moves or deletes it";
 const THUMB_MAX = 400;             // disk cache entries kept (LRU by touch)
 
 // ---- zip by ranges (v2.27.1) ------------------------------------------------
@@ -682,6 +688,7 @@ function register(ctx) {
           continue;
         }
         if (!/\.3mf$/i.test(it.name)) continue;
+        if (PROTECTED.test(it.name)) continue;          // H1: never a card
         let st = null;
         try { st = await fs.promises.stat(path.join(dir, it.name)); } catch { continue; }
         const r = rel + it.name;
@@ -845,12 +852,14 @@ function register(ctx) {
     const rel = String((req.body || {}).file || "");
     const from = safePath(rel);
     if (!from) return res.status(404).json({ error: "not in the models folder" });
+    if (PROTECTED.test(path.basename(from))) return res.status(409).json({ error: PROTECTED_MSG });
     const id = identity(rel, ATTRS[rel]);
     if (!id.designer || !id.title) return res.status(400).json({ error: "Set the " + (!id.designer ? "designer" : "name") + " first (Attributes), then rename" });
     const newRel = conventionRel(id.designer, id.title, id.group);
     if (newRel === rel) return res.json({ ok: true, rel, unchanged: true });
     const to = safePath(newRel);
     if (!to) return res.status(400).json({ error: "that designer or name cannot be a folder name" });
+    if (PROTECTED.test(path.basename(to))) return res.status(409).json({ error: PROTECTED_MSG });
     try { await fs.promises.access(from); } catch { return res.status(404).json({ error: "file not found: " + rel }); }
     // Never rename over something: the share refuses silently, and a second
     // copy with the same name is a real possibility in a downloaded library.
@@ -886,6 +895,10 @@ function register(ctx) {
     const rel = String((req.body || {}).file || "");
     const p = safePath(rel);
     if (!p) return res.status(404).json({ error: "not in the models folder" });
+    if (PROTECTED.test(path.basename(p))) {
+      hublog("warn", "models: refused to delete " + rel + " - U1 template file");
+      return res.status(409).json({ error: PROTECTED_MSG });
+    }
     try { await fs.promises.unlink(p); }
     catch (e) { return res.status(e.code === "ENOENT" ? 404 : 500).json({ error: e.code === "ENOENT" ? "file not found: " + rel : "could not delete: " + e.message }); }
     if (ATTRS[rel]) { delete ATTRS[rel]; saveAttrs(); }

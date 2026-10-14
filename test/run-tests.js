@@ -172,6 +172,11 @@ async function stopHub() {
   // Run the harness with it un-paused so the decision logic stays covered;
   // the PAUSE block below starts a Hub without this and checks the pause.
   process.env.U1HUB_UNLOAD_PAUSED = "0";
+  // 2.42 (H3): bounded printer calls. Production waits 30 s for an upload
+  // that has stopped moving and 10 s for a printer command; the harness uses
+  // short limits so the stall checks take seconds.
+  process.env.U1HUB_UPLOAD_IDLE_MS = "1500";
+  process.env.U1HUB_PRINTER_TIMEOUT_MS = "3000";
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "u1hub-test-"));
   const hubDir = path.join(tmp, "app");
   stageHub(hubDir);
@@ -5215,6 +5220,111 @@ async function stopHub() {
       "…fixed in the corner clear of the phone's home bar, a 44px target, bordered like every control, out of the tab order while hidden", rule);
     ok(/\.totop\.show\{[^}]*visibility:visible/.test(gold) && /\.totop:focus-visible\{/.test(gold),
       "…visible when shown, with the same focus ring as every other control");
+  }
+
+  console.log("\n== SPRINT 1: protected templates, bounded pushes, Dispatch state (2.42.0) ==");
+  {
+    // H1. The U1 templates sit at the top of the real models folder. The
+    // Models tab must never list them (no card, no Delete button) and the
+    // routes must refuse them even when asked directly - a server-side deny
+    // list, never a hidden button. Attributes are set first so the rename
+    // route cannot hide behind "set the designer first".
+    const mroot = path.join(tmp, "models");
+    const TPLS = ["u1_template.3mf", "u1_template_supports.3mf", "filament_types.3mf", "Designer X/Thing/U1_Template.3mf"];
+    for (const rel of TPLS) {
+      const p = path.join(mroot, ...rel.split("/"));
+      fs.mkdirSync(path.dirname(p), { recursive: true });
+      fs.writeFileSync(p, buildZip([{ name: "3D/3dmodel.model", data: Buffer.from("<template " + rel + "/>") }]));
+    }
+    const bytesOf = rel => fs.readFileSync(path.join(mroot, ...rel.split("/")));
+    const before = Object.fromEntries(TPLS.map(rel => [rel, bytesOf(rel)]));
+    let r = await jpost("/api/models/settings", { folder: mroot });
+    await jget("/api/models?refresh=1");
+    for (let i = 0; i < 30; i++) { r = await jget("/api/models?limit=200"); if (!r.body.refreshing && r.body.total_all) break; await sleep(150); }
+    const listed = (r.body.items || []).map(it => it.rel);
+    ok(r.body.total_all > 0 && !listed.some(rel => /(^|\/)(u1_template[^/]*|filament_types)\.3mf$/i.test(rel)),
+      "H1: the walk never lists u1_template*.3mf or filament_types.3mf, at the top or in a designer folder", listed);
+    for (const rel of TPLS) {
+      await jpost("/api/models/attrs", { file: rel, designer: "Harness", name: "Template Bait" });
+      r = await jpost("/api/models/rename", { file: rel });
+      ok(r.status === 409 && /U1 template/.test(r.body && r.body.error), "H1: rename of " + rel + " is refused with 409", r);
+      r = await jpost("/api/models/delete", { file: rel });
+      ok(r.status === 409 && /U1 template/.test(r.body && r.body.error), "H1: delete of " + rel + " is refused with 409", r);
+      ok(fs.existsSync(path.join(mroot, ...rel.split("/"))) && Buffer.compare(bytesOf(rel), before[rel]) === 0,
+        "H1: …and " + rel + " is still there, byte for byte");
+      await jpost("/api/models/attrs", { file: rel, designer: "", name: "" });
+    }
+    ok(!fs.existsSync(path.join(mroot, "Harness", "Template Bait")), "H1: nothing was moved into the convention folder");
+
+    // H3. A printer that stops reading mid-upload must not hold the push
+    // forever. The harness runs with a 1.5 s idle limit (production: 30 s).
+    const UID = (((await jget("/api/fleet")).body || []).find(p => String(p.url || "").endsWith(":" + portU1)) || {}).id;
+    const stallName = "stall-test.gcode";
+    fs.writeFileSync(path.join(gcodeDir, stallName), Buffer.concat([Buffer.from(GCODE_SINGLE + "\n"), Buffer.alloc(48 * 1024 * 1024, "G1 X1\n")]));
+    mockU1.state.stallUpload = true;
+    let t0 = Date.now();
+    r = await jpost("/api/print", { file: stallName, printer: UID, type: "u1" });
+    ok(r.status === 200 && r.body.jobId, "H3: a push to a printer that will stall starts like any other", r.body);
+    let job = null;
+    for (let i = 0; i < 80 && !(job && job.done); i++) { await sleep(250); job = (await jget("/api/print-status?job=" + r.body.jobId)).body; }
+    ok(job && job.done && /stalled/i.test(job.error || ""), "H3: the stalled upload FAILS (no bytes accepted for the idle limit)", job);
+    ok(Date.now() - t0 < 15000, "H3: …within seconds of the stall, not never", Date.now() - t0);
+    r = await jpost("/api/files/rename", { name: stallName, newName: "stall-test-renamed.gcode", type: "u1" });
+    ok(r.status === 200, "H3: …and the file is released - rename works again once the push has failed", r.body);
+    mockU1.state.stallUpload = false;
+    mockU1.state.releaseHeld && mockU1.state.releaseHeld();
+    try { fs.unlinkSync(path.join(gcodeDir, "stall-test-renamed.gcode")); } catch {}
+    try { fs.unlinkSync(path.join(gcodeDir, stallName)); } catch {}
+    // Every other printer call in the print pipeline carries a timeout too.
+    mockU1.state.stallScripts = true;
+    t0 = Date.now();
+    // The harness's own call is bounded too, so a Hub WITHOUT the fix fails
+    // this check instead of hanging the run.
+    r = await fetch(HUB + "/api/printctl", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ printer: UID, action: "pause" }), signal: AbortSignal.timeout(12000) })
+      .then(async x => ({ status: x.status, body: await x.json().catch(() => null) }), e => ({ status: 0, body: { error: "harness gave up: " + e.message } }));
+    ok(r.status === 502 && /timed out/i.test(r.body && r.body.error), "H3: a printer that never answers a command gives a 502 'timed out', not a hung request", r.body);
+    ok(Date.now() - t0 < 10000, "H3: …within the harness limit (production: 10 s)", Date.now() - t0);
+    mockU1.state.stallScripts = false;
+    mockU1.state.releaseHeld && mockU1.state.releaseHeld();
+    {
+      const src = fs.readFileSync(path.join(REPO, "core", "print.js"), "utf8").split(/\r?\n/).map(l => l.replace(/^\s*\/\/.*$/, "")).join("\n");
+      const bare = src.replace(/function fetchWithTimeout[\s\S]*?\n\}\n/, "").match(/(^|[^\w.])fetch\(/g) || [];
+      ok(/function fetchWithTimeout\(/.test(src) && bare.length === 0, "H3: core/print.js has no bare fetch() left - every printer call goes through fetchWithTimeout", bare.length);
+      ok(/req\.setTimeout\(/.test(src), "H3: the upload request has a socket timeout as well as the idle watchdog");
+    }
+
+    // H4. A pin the user set by hand survives a restart, and lowering a
+    // job's quantity to what is already done finishes it instead of leaving a
+    // row with nothing to print.
+    r = await jpost("/api/dispatch/jobs", { again: true, file: "multi.gcode", type: "u1", qty: 3 });
+    const JID = r.body && r.body.job && r.body.job.id;
+    ok(!!JID, "H4: a 3-copy job is created", r.body);
+    r = await jpost("/api/dispatch/jobs/assign", { id: JID, printer: 0 });
+    ok(r.status === 200 && r.body.pinned === 0, "H4: the job is pinned to printer 0", r.body);
+    let dj = JSON.parse(fs.readFileSync(path.join(hubDir, "dispatch.json"), "utf8"));
+    ok(dj.pins && dj.pins[JID] === 0, "H4: the pin is written to dispatch.json the moment it is set", dj.pins);
+    await stopHub();
+    dj = JSON.parse(fs.readFileSync(path.join(hubDir, "dispatch.json"), "utf8"));
+    const jj = dj.jobs.find(j => j.id === JID); jj.remaining = 1;      // two of three copies already printed
+    fs.writeFileSync(path.join(hubDir, "dispatch.json"), JSON.stringify(dj, null, 2));
+    await startHub(hubDir);
+    r = await jget("/api/dispatch/plan");
+    const pinnedSlot = (r.body.slots || []).find(s => s.job_id === JID && !s.unplannable);
+    ok(pinnedSlot && pinnedSlot.printer === 0 && pinnedSlot.pinned === true, "H4: after a restart the plan still honors the pin", pinnedSlot);
+    r = await jpost("/api/dispatch/jobs/update", { id: JID, qty: 2 });
+    ok(r.status === 200, "H4: lowering the quantity to the copies already done is accepted", r.body);
+    r = await jget("/api/dispatch");
+    ok(!(r.body.jobs || []).some(j => j.id === JID), "H4: …and the job finishes and leaves the queue instead of sitting at 0 remaining", (r.body.jobs || []).find(j => j.id === JID));
+    dj = JSON.parse(fs.readFileSync(path.join(hubDir, "dispatch.json"), "utf8"));
+    ok(!(dj.pins && JID in dj.pins), "H4: …and its pin goes with it", dj.pins);
+    r = await jpost("/api/dispatch/jobs", { again: true, file: "multi.gcode", type: "u1", qty: 1 });
+    const J2 = r.body.job.id;
+    await jpost("/api/dispatch/jobs/assign", { id: J2, printer: 0 });
+    await jpost("/api/dispatch/jobs/assign", { id: J2, printer: "auto" });
+    dj = JSON.parse(fs.readFileSync(path.join(hubDir, "dispatch.json"), "utf8"));
+    ok(!(dj.pins && J2 in dj.pins), "H4: setting a job back to auto removes the pin from dispatch.json too", dj.pins);
+    await jpost("/api/dispatch/jobs/remove", { id: J2 });
   }
 
   await stopHub();

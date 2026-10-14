@@ -31,8 +31,13 @@ function createMock(profile) {
     history: [],                   // v2.33: Moonraker job history, newest first:
                                    // { filename, status, start_time, print_duration }
     camGrabs: 0,                   // v2.35: monitor.jpg fetches seen (issue #4: one per grab, not per viewer)
-    camDelayMs: 600                // how long the "camera" takes to answer
+    camDelayMs: 600,               // how long the "camera" takes to answer
+    stallUpload: false,            // 2.42 (H3): accept an upload, then stop reading it and never answer
+    stallScripts: false,           // 2.42 (H3): accept a gcode script and never answer
+    held: []                       // requests parked by the two knobs above
   };
+  // Let go of every parked request (the harness calls this after a stall test).
+  state.releaseHeld = () => { for (const r of state.held.splice(0)) { try { r.socket && r.socket.destroy(); } catch {} } };
 
   const objectsList = profile === "u1"
     ? ["print_stats", "display_status", "virtual_sdcard", "heater_bed", "exclude_object", "print_task_config", "extruder", "extruder1", "extruder2", "extruder3"]
@@ -90,6 +95,12 @@ function createMock(profile) {
       return res.end(body);
     }
 
+    if (u.pathname === "/server/files/upload" && req.method === "POST" && state.stallUpload) {
+      req.pause(); state.held.push(req); return;     // a printer that stops reading
+    }
+    if (u.pathname === "/printer/gcode/script" && req.method === "POST" && state.stallScripts) {
+      state.held.push(req); return;                  // a printer that never answers
+    }
     if (u.pathname === "/server/files/upload" && req.method === "POST") {
       let bytes = 0;
       let head = Buffer.alloc(0);

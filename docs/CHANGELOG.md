@@ -77,6 +77,20 @@ printers, and nothing leaves your network unless you turn remote access on.
 
 ---
 
+### 2.42.0 - safety fixes
+
+- **The U1 templates are off limits.** The Models tab never lists `u1_template*.3mf`
+  or `filament_types.3mf`, in any folder, and its Rename and Delete refuse them on
+  the server with a 409, whatever the page sends.
+- **A printer that stops answering can't hold a file hostage.** A push fails when the
+  printer takes no data for 30 seconds (or goes quiet for 60), the job reports
+  "upload stalled", and the file can be renamed or deleted again. Pause, resume,
+  cancel, skip-object, the plate map and the start commands all give up after
+  10 seconds with "timed out" instead of hanging.
+- **Dispatch keeps what you set by hand.** Moving a job to a printer is saved to
+  `dispatch.json` at once and survives a restart. Lowering a job's count to the
+  copies already printed finishes it instead of leaving a row with nothing to print.
+
 ### 2.40.1 - a tidier Logbook
 
 The Logbook's entries and schedule came out as tall cards that were mostly

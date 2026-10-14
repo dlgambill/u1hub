@@ -25,10 +25,45 @@ function rewriteColors(text, colorMap) {
 }
 
 
+// 2.42 (H3): every call to a printer is bounded. A printer that stops
+// answering used to hold a push (and the file - activePushOf refuses rename
+// and delete while a push is open) forever. Limits are env-tunable so the
+// harness can prove them in seconds.
+const PRINTER_TIMEOUT_MS = Math.max(500, Number(process.env.U1HUB_PRINTER_TIMEOUT_MS) || 10000);
+const UPLOAD_IDLE_MS = Math.max(500, Number(process.env.U1HUB_UPLOAD_IDLE_MS) || 30000);
+const UPLOAD_SOCKET_MS = Math.max(UPLOAD_IDLE_MS, 60000);
+
+// fetch() with a deadline. A timeout rejects with "timed out after N s" so
+// the routes' existing catch blocks report it as a plain sentence.
+async function fetchWithTimeout(url, opts, ms) {
+  const limit = ms || PRINTER_TIMEOUT_MS;
+  try {
+    return await fetch(url, { ...(opts || {}), signal: AbortSignal.timeout(limit) });
+  } catch (e) {
+    if (e && (e.name === "TimeoutError" || e.name === "AbortError"))
+      throw new Error("timed out after " + Math.round(limit / 1000) + " s - the printer did not answer");
+    throw e;
+  }
+}
+
 // Stream a file to the printer as multipart/form-data, reporting bytes sent so
 // the UI can show a real upload progress bar. Resolves on the printer's 2xx.
+// H3: fails (and so releases the file) when the printer stops taking bytes
+// for UPLOAD_IDLE_MS while the body is still going out, or when the socket
+// goes quiet for UPLOAD_SOCKET_MS at any point (including waiting for the
+// printer's answer after the last byte).
 function uploadWithProgress(base, fp, name, job) {
   return new Promise((resolve, reject) => {
+    let settled = false, watchdog = null, fileStream = null;
+    const done = (fn, v) => {
+      if (settled) return;
+      settled = true;
+      clearInterval(watchdog);
+      if (fileStream) fileStream.destroy();       // let go of the file handle
+      fn(v);
+    };
+    resolve = (r => v => done(r, v))(resolve);
+    reject = (r => e => done(r, e))(reject);
     const boundary = "----u1hub" + Math.random().toString(16).slice(2);
     const pre = Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${name}"\r\nContent-Type: application/octet-stream\r\n\r\n`);
     const post = Buffer.from(`\r\n--${boundary}--\r\n`);
@@ -44,13 +79,24 @@ function uploadWithProgress(base, fp, name, job) {
       res.on("end", () => (res.statusCode < 300 ? resolve(b) : reject(new Error("Upload " + res.statusCode + ": " + b.slice(0, 160)))));
     });
     req.on("error", reject);
+    // Socket idle limit: nothing in or out for UPLOAD_SOCKET_MS ends it.
+    req.setTimeout(UPLOAD_SOCKET_MS, () => req.destroy(new Error("upload stalled - the printer stopped answering for " + Math.round(UPLOAD_SOCKET_MS / 1000) + " s")));
     req.write(pre); job.sent += pre.length;
-    const fileStream = fs.createReadStream(fp);
+    fileStream = fs.createReadStream(fp);
     const counter = new Transform({ transform(chunk, _e, cb) { job.sent += chunk.length; cb(null, chunk); } });
     fileStream.on("error", reject);
     counter.on("error", reject);
+    // Progress watchdog: while the body is still going out, no new bytes
+    // accepted for UPLOAD_IDLE_MS means the printer has stopped reading.
+    let bodyDone = false, lastSent = job.sent, lastMove = Date.now();
+    watchdog = setInterval(() => {
+      if (bodyDone) return;
+      if (job.sent !== lastSent) { lastSent = job.sent; lastMove = Date.now(); return; }
+      if (Date.now() - lastMove >= UPLOAD_IDLE_MS)
+        req.destroy(new Error("upload stalled - the printer took no data for " + Math.round(UPLOAD_IDLE_MS / 1000) + " s"));
+    }, Math.min(1000, Math.max(100, Math.floor(UPLOAD_IDLE_MS / 5))));
     counter.on("data", chunk => { if (!req.write(chunk)) { counter.pause(); req.once("drain", () => counter.resume()); } });
-    counter.on("end", () => { req.write(post); job.sent += post.length; req.end(); });
+    counter.on("end", () => { bodyDone = true; req.write(post); job.sent += post.length; req.end(); });
     fileStream.pipe(counter);
   });
 }
@@ -194,7 +240,7 @@ app.post("/api/print", async (req, res) => {
   const base = String(p.url).replace(/\/+$/, "");
   const name = path.basename(fp);
   const gcode = async script => {
-    const r = await fetch(base + "/printer/gcode/script?script=" + encodeURIComponent(script), { method: "POST" });
+    const r = await fetchWithTimeout(base + "/printer/gcode/script?script=" + encodeURIComponent(script), { method: "POST" });
     if (!r.ok) throw new Error("gcode (" + r.status + "): " + (await r.text()).slice(0, 200));
   };
 
@@ -277,7 +323,7 @@ app.post("/api/printctl", async (req, res) => {
   if (!cmd) return res.status(400).json({ error: "Bad action" });
   const base = String(p.url).replace(/\/+$/, "");
   try {
-    const r = await fetch(base + "/printer/gcode/script?script=" + encodeURIComponent(cmd), { method: "POST" });
+    const r = await fetchWithTimeout(base + "/printer/gcode/script?script=" + encodeURIComponent(cmd), { method: "POST" });
     if (!r.ok) return res.status(502).json({ error: "Moonraker " + r.status + ": " + (await r.text()).slice(0, 160) });
     res.json({ ok: true, action });
   } catch (e) {
@@ -292,7 +338,7 @@ app.get("/api/plate", async (req, res) => {
   if (!p) return res.status(400).json({ error: "Unknown printer" });
   const base = String(p.url).replace(/\/+$/, "");
   try {
-    const r = await fetch(base + "/printer/objects/query?exclude_object", { method: "GET" });
+    const r = await fetchWithTimeout(base + "/printer/objects/query?exclude_object", { method: "GET" });
     if (!r.ok) return res.status(502).json({ error: "Moonraker " + r.status });
     const eo = (((await r.json()).result || {}).status || {}).exclude_object || {};
     res.json({
@@ -313,7 +359,7 @@ app.post("/api/exclude", async (req, res) => {
   if (!name || /["\r\n]/.test(name)) return res.status(400).json({ error: "Bad object name" });
   const base = String(p.url).replace(/\/+$/, "");
   try {
-    const r = await fetch(base + "/printer/gcode/script?script=" + encodeURIComponent(`EXCLUDE_OBJECT NAME=${name}`), { method: "POST" });
+    const r = await fetchWithTimeout(base + "/printer/gcode/script?script=" + encodeURIComponent(`EXCLUDE_OBJECT NAME=${name}`), { method: "POST" });
     if (!r.ok) return res.status(502).json({ error: "Moonraker " + r.status + ": " + (await r.text()).slice(0, 160) });
     res.json({ ok: true, excluded: name });
   } catch (e) {
@@ -321,5 +367,5 @@ app.post("/api/exclude", async (req, res) => {
   }
 });
 
-Object.assign(hub, { JOBS, newJobId });
+Object.assign(hub, { JOBS, newJobId, fetchWithTimeout });
 };
