@@ -111,6 +111,10 @@ printers, and nothing leaves your network unless you turn remote access on.
   identity header is accepted only from a trusted proxy (this machine by default, or the
   addresses in `trusted_proxies` in auth.json). The 3MF Explorer's print-request token is
   checked in constant time.
+- **The Orca strip on the Models tab clears itself.** An "Orca saved ... gcode" line goes
+  away as soon as that gcode is in Dispatch, whether you pressed Send to Dispatch on the
+  line or queued the file some other way. Lines for the same gcode saved more than once
+  all clear together.
 
 ### 2.42.0 - safety fixes
 

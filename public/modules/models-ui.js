@@ -726,6 +726,8 @@
       t.disabled = true;
       const r = await jpost("/api/models/sessions/send", { id: Number(t.dataset.sendsess) });
       if (!r.ok) { t.disabled = false; alert(r.d.error || "Dispatch refused it"); return; }
+      // 2.43.0: the session leaves the strip once its gcode is in Dispatch.
+      t.textContent = r.d.existing ? "Already in Dispatch" : "Queued in Dispatch";
       pollSessions(true);
     }
   }

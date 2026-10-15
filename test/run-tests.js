@@ -4198,6 +4198,26 @@ async function stopHub() {
       let sess = null;
       for (let i = 0; i < 50; i++) { await sleep(200); const q = await jget("/api/models/sessions"); sess = (q.body.sessions || []).find(x => x.id === r.body.session.id); if (sess && sess.state === "done") break; }
       ok(sess && sess.state === "done" && sess.newGcode === "Harness Link Probe.gcode", "…and sees the new gcode land", sess);
+      // 2.43.0 (Danny, 2026-10-15): a finished Orca session leaves the strip
+      // once its gcode is in Dispatch - sent from the strip, or queued any
+      // other way. Shown failing on 2.42.0 first.
+      {
+        const listed = async id => ((await jget("/api/models/sessions")).body.sessions || []).some(x => x.id === id);
+        let s2 = await jpost("/api/models/sessions/send", { id: sess.id });
+        ok(s2.status === 200 && s2.body.job_id, "strip: Send to Dispatch queues the job", s2.body);
+        ok(!(await listed(sess.id)), "strip: …and the finished session leaves the strip");
+        if (s2.body.job_id) await jpost("/api/dispatch/jobs/remove", { id: s2.body.job_id });
+        r = await jpost("/api/models/open", { file: "3D Tinys Prints/Baby Sheep/Tinys_Sheep_Colored.3mf", type: "u1" });
+        const probe2 = path.join(gcodeDir, "Harness Strip Probe.gcode");
+        fs.writeFileSync(probe2, GCODE_SINGLE);
+        let sB = null;
+        for (let i = 0; i < 50; i++) { await sleep(200); const q = await jget("/api/models/sessions"); sB = (q.body.sessions || []).find(x => x.id === r.body.session.id); if (sB && sB.state === "done") break; }
+        ok(sB && sB.state === "done" && await listed(sB.id), "strip: (fixture) a second finished session is on the strip", sB);
+        const qj = await jpost("/api/dispatch/jobs", { again: true, file: "Harness Strip Probe.gcode", type: "u1", qty: 1 });
+        ok(!(await listed(sB.id)), "strip: a session whose gcode was queued in Dispatch some other way leaves the strip too");
+        if (qj.body && qj.body.job) await jpost("/api/dispatch/jobs/remove", { id: qj.body.job.id });
+        fs.unlinkSync(probe2);
+      }
       // v2.35.1: the watcher must not touch the gcode folder synchronously.
       // The harness's folder is local disk, where a sync sweep is 20 ms and
       // invisible; on the SMB share it was 14 s per 3 s tick and the Hub

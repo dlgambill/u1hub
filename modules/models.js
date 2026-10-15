@@ -1238,8 +1238,19 @@ function register(ctx) {
   app.get("/api/models/sessions", (req, res) => {
     const cutoff = Date.now() - 3600000;
     for (const [id, s] of SESSIONS) if (s.state !== "watching" && (s.doneAt || s.launchedAt) < cutoff) SESSIONS.delete(id);
+    // 2.43.0: a finished session's job is done once its gcode is in Dispatch,
+    // whether it was sent from the strip or queued any other way (the file
+    // list, a second session for the same gcode). Those leave the strip.
+    for (const [id, s] of SESSIONS) if (s.state === "done" && inDispatch(s)) SESSIONS.delete(id);
     res.json({ sessions: [...SESSIONS.values()].sort((a, b) => b.launchedAt - a.launchedAt) });
   });
+  function inDispatch(s) {
+    if (s.queued) return true;
+    const jobsOf = ctx.use("dispatch.jobs");
+    if (!jobsOf || !s.newGcode) return false;
+    const type = String(s.type || "u1");
+    return (jobsOf() || []).some(j => j.state !== "done" && j.file === s.newGcode && String(j.type || "u1") === type);
+  }
   app.post("/api/models/sessions/dismiss", (req, res) => { SESSIONS.delete(Number((req.body || {}).id)); res.json({ ok: true }); });
   // v2.40: "Send to Dispatch" on a finished Orca session, done HERE so it can
   // only ever happen once per session. The button used to post straight to
