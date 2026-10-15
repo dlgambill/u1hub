@@ -73,7 +73,14 @@ of 3MF project files (Designer\Model\file.3mf, the way designers ship them)
 and shows each one with the plate render saved inside it, the colors it was
 painted with, and the objects on the plate. Open in Orca launches it in
 Snapmaker Orca on the Hub computer; when you save the gcode, the Hub notices
-and offers to select it or send it to Dispatch. The shelf can be tidied from
+and offers to select it or send it to Dispatch, and that line goes away once
+the file is in Dispatch. The shelf opens newest first, so what you just saved
+is at the top, and each card carries a thin strip of the model's own colors.
+The designer list shows your twelve biggest designers plus a search box for
+the rest, and if a folder name is wrong or two folders are really the same
+designer, the Designer names box under ⚙ Folder fixes the name without moving
+a file. The filter, designer and sort you pick stay in the address bar, so a
+refresh or a shared link opens the same shelf. The shelf can be tidied from
 the shelf, too: Rename files a model as `Designer\Name\Designer - Name.3mf`
 (it shows you where first), Attributes fixes a designer or name the folders
 got wrong and offers the same move, and Delete removes a file for good after
@@ -131,6 +138,16 @@ print finishes: keep them all loaded, unload only the ones the next job on
 that printer doesn't use, or unload every roll the print used. As of 2.40.2
 it is switched off and every roll stays loaded, while we check whether
 unloading after every print is behind some nozzle clogs.
+
+The plan gets better the more you print. Every finished copy records how long
+it really took, so a file you have run before is planned at its own real time
+instead of the slicer's guess, and you can type a time on a job yourself. Tap
+any block on the timeline and "Why here" tells you why it landed on that
+printer and what the next best choices would have cost. The timeline redraws
+itself as printers finish, a copy that finishes while the Hub is restarting
+still counts, and a cancelled or failed print frees its printer right away
+and keeps that copy on the list with a note on the job. You can reorder your
+printers in Settings without anything moving to the wrong machine.
 
 ![Dispatch: the week's prints laid out across the fleet](docs/dispatch.png)
 
@@ -199,9 +216,12 @@ exactly as they do when you visit the printer on its own.
 **Use it from your phone.** The whole thing is built for a phone screen. Add
 it to your home screen and it behaves like an app. Every label, button and
 field is checked for contrast, so it stays readable on a dim shop screen or a
-phone in daylight, whatever accent color your printer types use. (The Models tab and its
-Open in Orca button are desktop only, because they open a program on the Hub
-computer.)
+phone in daylight, whatever accent color your printer types use. The Models tab works on a
+phone too: two columns of cards, the file library tucked behind a Library
+button, Convert to U1 right on the card, and the rest (Suggest settings, Link
+gcode, Attributes, Rename, Delete) behind the ⋯ menu. Only Open in Orca needs the Hub computer itself, because it
+opens a program there. A tab you are not looking at stops checking for
+updates, so a phone in your pocket is not using data on the Hub's behalf.
 
 <img src="docs/remote-phone.png" width="300" alt="The dashboard on a phone">
 
@@ -314,7 +334,11 @@ Two switches in the Hub, no router changes:
    and gives you an HTTPS address that works from anywhere.
 
 Everything the Hub itself shows works remotely this way: the fleet, sending
-prints, cameras, spools, and scheduling. The printers' own Klipper pages are
+prints, cameras, spools, and scheduling. If the tunnel drops, the Hub starts
+it again on its own, and the tunnel program it downloads is one pinned,
+checked version rather than whatever is newest. While the tunnel is on, the
+password stays on. If your sign-in expires after 30 days, the page takes you
+to the sign-in screen and back to where you were. The printers' own Klipper pages are
 best used on your own network; opening them from outside can depend on your
 network setup.
 
