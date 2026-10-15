@@ -498,6 +498,19 @@ function register(ctx) {
   // v2.30: attributes a person typed (designer, name), keyed by rel, kept
   // beside the index. They ride over the folder-derived values on every
   // list, and Rename uses them to build the file's proper place.
+  // H22 (2.44): designer names come from the top folder verbatim, so the facet
+  // showed "220°c", "a.m", "3D Girl" and "(no folder)" as designers. An alias
+  // map (folder name -> display name, edited from the Folder panel) merges
+  // and renames them without touching a file on disk, and folder names that
+  // cannot be a designer (no letters, one or two characters, a temperature)
+  // fall into "(unsorted)".
+  const ALIAS_FILE = path.join(ctx.baseDir, "models-aliases.json");
+  let ALIASES = {};
+  try { ALIASES = JSON.parse(fs.readFileSync(ALIAS_FILE, "utf8")).aliases || {}; } catch {}
+  const saveAliases = () => { try { fs.writeFileSync(ALIAS_FILE, JSON.stringify({ aliases: ALIASES }, null, 2)); } catch {} };
+  const UNSORTED = "(unsorted)";
+  const junkCreator = n => { const t = String(n || "").trim(); return !t || !/[a-z]/i.test(t) || t.replace(/[^a-z0-9]/gi, "").length <= 2 || /^\d+\s*°?\s*[cf]$/i.test(t); };
+  const aliasOf = n => { const k = String(n || ""); if (Object.prototype.hasOwnProperty.call(ALIASES, k) && ALIASES[k]) return ALIASES[k]; if (/^\(no folder\)$/.test(k)) return k; return junkCreator(k) ? UNSORTED : k; };
   const ATTRS_FILE = path.join(ctx.baseDir, "models-attrs.json");
   let ATTRS = {};
   try { ATTRS = JSON.parse(fs.readFileSync(ATTRS_FILE, "utf8")).attrs || {}; } catch {}
@@ -663,7 +676,7 @@ function register(ctx) {
     const sp = split(it.rel);                      // v2.36: live split (format folders), not the one saved with the index
     const id = identity(it.rel, a);
     const target = id.designer && id.title ? conventionRel(id.designer, id.title, id.group) : null;
-    return { ...it, ...sp, creator: a && a.designer ? cleanPart(a.designer) : sp.creator, name: a && a.name ? cleanPart(a.name) : sp.name,
+    return { ...it, ...sp, creator: a && a.designer ? cleanPart(a.designer) : aliasOf(sp.creator), folder_creator: sp.creator, name: a && a.name ? cleanPart(a.name) : sp.name,
              attrs: a ? { designer: a.designer || "", name: a.name || "" } : null, target, conventional: !!target && target === it.rel,
              requested: REQUESTS[it.rel] || null };   // v2.40: print requests from 3MF Explorer
   }
@@ -673,13 +686,19 @@ function register(ctx) {
     return [...cmap.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => a.name.localeCompare(b.name));
   }
 
+  // H22 (2.44): how far a walk has got, for the tab's progress line. A first
+  // scan of 4,000 files on a share used to show "rescanning…" with nothing
+  // moving, which reads as hung.
+  let WALK_PROGRESS = { walked: 0, dirs: 0, since: 0 };
   async function walk() {
     const c = conf();
     const items = [];
     let truncated = false;
+    WALK_PROGRESS = { walked: 0, dirs: 0, since: Date.now() };
     async function rec(dir, rel, depth) {
       let ents;
       try { ents = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { return; }
+      WALK_PROGRESS.dirs++;
       for (const it of ents) {
         if (items.length >= MAX_FILES) { truncated = true; return; }
         if (it.isDirectory()) {
@@ -693,6 +712,7 @@ function register(ctx) {
         try { st = await fs.promises.stat(path.join(dir, it.name)); } catch { continue; }
         const r = rel + it.name;
         items.push({ rel: r, ...split(r), size: st.size, mtime: st.mtimeMs });
+        WALK_PROGRESS.walked = items.length;
       }
     }
     let dirMtime = 0;
@@ -814,6 +834,8 @@ function register(ctx) {
     res.json({
       folder: ix.folder, missing: !!ix.missing, unreachable: ix.unreachable || null, scanning: !!ix.scanning, error: LAST_ERR,
       indexed_at: ix.at, refreshing: !!WALKING, truncated: !!ix.truncated,
+      scan_progress: WALKING ? { walked: WALK_PROGRESS.walked, dirs: WALK_PROGRESS.dirs, since: WALK_PROGRESS.since, last_total: ix.items.length } : undefined,
+      aliases: ALIASES,   // H22: folder name -> display name
       total_all: all.length, total: list.length, offset, limit,
       sort, seed, printed,
       requested_total: all.filter(it => it.requested).length + offReqs.length,   // v2.40 (+ requests off the shelf)
@@ -822,6 +844,22 @@ function register(ctx) {
       orcaExe: c.orcaExe, orca_found: fs.existsSync(c.orcaExe),
       u1_template: (await u1Template()).path, u1_template_set: c.u1Template
     });
+  });
+
+  // H22 (2.44): the designer alias map. POST { aliases: { "folder": "Display" } }
+  // replaces the whole map (blank value = drop that alias).
+  app.get("/api/models/aliases", (req, res) => res.json({ aliases: ALIASES, unsorted: UNSORTED }));
+  app.post("/api/models/aliases", (req, res) => {
+    const b = (req.body || {}).aliases;
+    if (!b || typeof b !== "object" || Array.isArray(b)) return res.status(400).json({ error: "Body needs { aliases: { folder: display } }" });
+    const next = {};
+    for (const [k, v] of Object.entries(b)) {
+      const from = String(k).trim().slice(0, 120), to = String(v == null ? "" : v).trim().slice(0, 120);
+      if (from && to) next[from] = to;
+    }
+    ALIASES = next; saveAliases();
+    hublog("info", "models: designer aliases saved (" + Object.keys(ALIASES).length + ")");
+    res.json({ ok: true, aliases: ALIASES });
   });
 
   // ---- v2.30: attributes, rename to the convention, delete ---------------------
@@ -1045,22 +1083,43 @@ function register(ctx) {
   }
 
   const INFO = new Map();
-  app.get("/api/models/info", async (req, res) => {
-    const p = safePath(req.query.file);
-    if (!p) return res.status(404).json({ error: "not in the models folder" });
-    let st; try { st = await fs.promises.stat(p); } catch { return res.status(404).json({ error: "file not found" }); }
+  // One file's project info (colors, objects, printer), cached by path+mtime.
+  // Throws { status, error } the routes turn into HTTP.
+  async function infoFor(rel) {
+    const p = safePath(rel);
+    if (!p) throw { status: 404, error: "not in the models folder" };
+    let st; try { st = await fs.promises.stat(p); } catch { throw { status: 404, error: "file not found" }; }
     const key = p + ":" + st.mtimeMs;
-    if (INFO.has(key)) return res.json(INFO.get(key));
+    if (INFO.has(key)) return INFO.get(key);
     try {
       const parts = await withZip(p, async z => {
         const ps = z.entries.find(e => e.name === "Metadata/project_settings.config");
         const ms = z.entries.find(e => e.name === "Metadata/model_settings.config");
         return [ps ? await z.content(ps) : null, ms ? await z.content(ms) : null];
       });
-      const info = { file: req.query.file, size: st.size, mtime: st.mtimeMs, ...infoFromParts(parts[0], parts[1]) };
+      const info = { file: rel, size: st.size, mtime: st.mtimeMs, ...infoFromParts(parts[0], parts[1]) };
       INFO.set(key, info); if (INFO.size > 500) INFO.delete(INFO.keys().next().value);
-      res.json(info);
-    } catch (e) { res.status(422).json({ error: "could not read the 3MF: " + e.message }); }
+      return info;
+    } catch (e) { throw { status: 422, error: "could not read the 3MF: " + e.message }; }
+  }
+  app.get("/api/models/info", async (req, res) => {
+    try { res.json(await infoFor(req.query.file)); }
+    catch (e) { res.status(e.status || 500).json({ error: e.error || String(e && e.message || e) }); }
+  });
+  // H22 (2.44): the cards that just scrolled into view ask in one request
+  // instead of one each (60 per page over the tunnel). files = rel,rel,...
+  // (URL-encoded, up to 60); six are read at a time.
+  app.get("/api/models/info-batch", async (req, res) => {
+    const files = String(req.query.files || "").split(",").map(x => decodeURIComponent(x)).filter(Boolean).slice(0, 60);
+    const out = {};
+    let i = 0;
+    await Promise.all(Array.from({ length: Math.min(6, files.length) }, async () => {
+      while (i < files.length) {
+        const rel = files[i++];
+        try { out[rel] = await infoFor(rel); } catch (e) { out[rel] = { error: e.error || "unreadable" }; }
+      }
+    }));
+    res.json({ items: out });
   });
 
   // Open in Orca on the Hub computer, then watch the gcode folder for what

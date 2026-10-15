@@ -3846,8 +3846,10 @@ async function stopHub() {
     // Feature flag off removes the surface, same contract as every module.
     ok(/\/modules\/models-ui\.js/.test(await (await fetch(HUB + "/")).text()), "models client script injected when on");
     const mui = fs.readFileSync(path.join(REPO, "public", "modules", "models-ui.js"), "utf8");
-    ok(/@media \(max-width: 899px\) \{ \.vtab\[data-view=\\"models\\"\] \{ display: none !important/.test(mui), "the Models tab hides itself below 900px (the two-column layout needs the room)");
-    ok(/@media \(pointer: coarse\) \{ \.mdl-act, #mdl-sess, #mdl-cfgbtn \{ display: none !important/.test(mui), "…and on touch the Orca actions and the folder settings go, leaving a read-only library (v2.27)");
+    // 2.44 (H21) reversed v2.27: the tab stays on every width and touch is
+    // not read-only; only what launches a program on the Hub computer hides.
+    ok(!/max-width: 899px\) \{ \.vtab\[data-view=\\"models\\"\] \{ display: none/.test(mui), "the Models tab shows on every width (2.44; it used to hide below 900px)");
+    ok(/@media \(pointer: coarse\) \{ \.mdl-act \.mdl-open, #mdl-sess \{ display: none !important/.test(mui), "…and on touch only Open in Orca and the session strip go (2.44); the library is not read-only");
     ok(/HubModules\.register\("models"/.test(mui), "…and registers as a tab through HubModules");
     // v2.27.1: a blank folder in a Save keeps the setting (the form once
     // showed blanks while loading, and a Save then wiped the folder).
@@ -3901,7 +3903,7 @@ async function stopHub() {
       const mui2 = fs.readFileSync(path.join(REPO, "public", "modules", "models-ui.js"), "utf8");
       ok(/data-rename=/.test(mui2) && /data-attrs=/.test(mui2) && /data-del=/.test(mui2) && /\/api\/models\/rename/.test(mui2) && /\/api\/models\/delete/.test(mui2) && /\/api\/models\/attrs/.test(mui2), "the card has Rename, Attributes and Delete wired to the routes");
       ok(!/\bconfirm\(/.test(mui2) && !/\balert\(/.test(mui2.replace(/alert\(r\.d\.error/g, "")), "…confirms inline on the card, no browser dialogs for the destructive ones");
-      ok(/@media \(pointer: coarse\) \{ \.mdl-act2, \.mdl-edit(, \.mdl-more)? \{ display: none !important/.test(mui2), "…and the second row hides on touch like the first");
+      ok(!/\(pointer: coarse\) \{ \.mdl-act2, \.mdl-edit/.test(mui2) && /\.mdl-card \.mdl-more\{/.test(mui2), "…and the \u22ef row is reachable on touch too (2.44; it hid there before)");
       ok(/models-attrs\.json/.test(fs.readFileSync(path.join(REPO, ".gitignore"), "utf8")), "models-attrs.json is state and gitignored");
     }
     // v2.38: Convert to U1 (issue #5). A MakerWorld file keeps the designer's
@@ -4243,8 +4245,8 @@ async function stopHub() {
       mockU1.state.history = []; mockSv.state.history = [];
 
       const mui3 = fs.readFileSync(path.join(REPO, "public", "modules", "models-ui.js"), "utf8");
-      ok(/id="mdl-sort"/.test(mui3) && ["designer", "name", "newest", "oldest", "printed", "random"].every(k => new RegExp(k + ": \"").test(mui3)) && /u1\.models\.sort/.test(mui3), "the bar has the sort select with all six orders, remembered in this browser");
-      ok(/&seed=/.test(mui3) && /id="mdl-shuffle"/.test(mui3) && />printed \' \+ it\.prints \+ "×<\/span> · "/.test(mui3) && /d\.printed\.printers/.test(mui3), "…random pages with the seed and can be re-dealt; printed shows the count first on the card's line (the line clips at the end) and where it came from in the foot");
+      ok(/id="mdl-sort"/.test(mui3) && ["designer", "name", "newest", "oldest", "printed", "random"].every(k => new RegExp(k + ": \"").test(mui3)) && /u1\.models\.sort/.test(mui3), "the bar has the sort control with all six orders, remembered in this browser");
+      ok(/&seed=/.test(mui3) && /id="mdl-shuffle"/.test(mui3) && /class="mdl-pill"[^>]*>printed ' \+ it\.prints/.test(mui3) && /d\.printed\.printers/.test(mui3), "…random pages with the seed and can be re-dealt; printed is a pill on the thumb (2.44) and where it came from is in the foot");
       ok(/models-links\.json/.test(fs.readFileSync(path.join(REPO, ".gitignore"), "utf8")), "models-links.json is state and gitignored");
     }
     r = await jpost("/api/models/settings", { folder: "", clear: true });
@@ -5638,6 +5640,50 @@ async function stopHub() {
     await jpost("/api/dispatch/maintenance", { printer: 1 - u1, down: false });
     await jpost("/api/dispatch/jobs/remove", { id: J4 });
     try { fs.unlinkSync(estFile); } catch {}
+  }
+
+  console.log("\n== SPRINT 3: H21/H22 Models tab - aliases, unsorted, batched info, phone layout (2.44.0) ==");
+  {
+    const mroot = path.join(tmp, "models");
+    const mk = (rel, files) => { const p = path.join(mroot, ...rel.split("/")); fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, buildZip(files)); };
+    mk("220\u00b0c/tower/Tower.3mf", [{ name: "3D/3dmodel.model", data: Buffer.from("<model/>") }]);
+    mk("a.m/thing/Thing.3mf", [{ name: "3D/3dmodel.model", data: Buffer.from("<model/>") }]);
+    mk("Bambu Lab/cube/Cube.3mf", [{ name: "3D/3dmodel.model", data: Buffer.from("<model/>") }]);
+    await jpost("/api/models/settings", { folder: mroot });
+    await jget("/api/models?refresh=1"); await sleep(800);
+    let r = await jget("/api/models?limit=200");
+    const names = (r.body.creators || []).map(c => c.name);
+    ok(names.includes("(unsorted)") && !names.includes("220\u00b0c") && !names.includes("a.m"),
+      "H22: folder names that cannot be a designer (a temperature, two letters) are grouped as (unsorted)", names);
+    ok(r.body.aliases && typeof r.body.aliases === "object", "H22: the response carries the alias map");
+    r = await jpost("/api/models/aliases", { aliases: { "Bambu Lab": "Bambu", "a.m": "Alex M" } });
+    ok(r.status === 200 && r.body.aliases["Bambu Lab"] === "Bambu", "H22: aliases save", r.body);
+    r = await jget("/api/models?limit=200");
+    const names2 = (r.body.creators || []).map(c => c.name);
+    ok(names2.includes("Bambu") && !names2.includes("Bambu Lab") && names2.includes("Alex M"),
+      "H22: an alias renames the designer in the list, and an aliased junk folder is no longer (unsorted)", names2);
+    r = await jget("/api/models?limit=200&creator=" + encodeURIComponent("Bambu"));
+    ok(r.body.items.length === 1 && r.body.items[0].rel === "Bambu Lab/cube/Cube.3mf", "H22: filtering by the alias finds the folder's files", r.body.items.map(x => x.rel));
+    ok(fs.existsSync(path.join(hubDir, "models-aliases.json")), "H22: aliases live in models-aliases.json beside the other state files");
+    await jpost("/api/models/aliases", { aliases: {} });
+    r = await jget("/api/models/info-batch?files=" + ["Cinderwing3D/Baby Dragon/Baby_Dragon_Color.3mf", "Cinderwing3D/Tiny Horse/Horse_2_Color.3mf", "nope/none.3mf"].map(encodeURIComponent).join(","));
+    ok(r.status === 200 && r.body.items && Array.isArray(r.body.items["Cinderwing3D/Baby Dragon/Baby_Dragon_Color.3mf"].colors) && r.body.items["nope/none.3mf"].error,
+      "H22: /api/models/info-batch answers several files at once and names the ones it cannot read", r.body.items && Object.keys(r.body.items));
+    const ui = fs.readFileSync(path.join(REPO, "public", "modules", "models-ui.js"), "utf8");
+    ok(/let SORT = "newest"/.test(ui), "H21: the shelf opens newest-first");
+    ok(/const TOP_N = 12/.test(ui) && /mdl-railq/.test(ui) && !/d\.creators\.map\(c => \{ const v = c\.name \|\| "__none__"; return '<button class="' \+ \(CREATOR === v \? "on" : ""\)/.test(ui),
+      "H21: the rail shows the top designers plus a typeahead, never every designer as a button");
+    ok(/body\[data-view=\\"models\\"\]:not\(\.mdl-side-open\) \.side \{ display: none !important; \}/.test(ui) && /id="mdl-sidebtn"/.test(ui),
+      "H21: on narrow screens the gcode sidebar folds away behind a Library button");
+    ok(!/\(pointer: coarse\) \{ \.mdl-act2, \.mdl-edit, \.mdl-more \{ display: none/.test(ui) && /\(pointer: coarse\) \{ \.mdl-act \.mdl-open, #mdl-sess \{ display: none/.test(ui),
+      "H21: touch keeps the \u22ef menu and its actions; only Open in Orca and the session strip are console-only");
+    ok(/info-batch\?files=/.test(ui) && /#mdl-err/.test(ui) && /id="mdl-retry"/.test(ui) && /history\.replaceState/.test(ui),
+      "H22: the page batches info requests, shows an error bar with Retry, and keeps its state in the URL hash");
+    ok(/scan_progress/.test(ui) && /mdl-skel/.test(ui), "H22: a scan in progress shows a count and skeleton cards");
+    ok(/--pal/.test(ui) && /mdl-pills/.test(ui) && /mdl-div/.test(ui) && /mdl-seg/.test(ui) && !/\u{1F3B2} Shuffle|\u{1F4CB} Requested|\u27F3 Rescan|\u2699 Folder/u.test(ui),
+      "F13: palette strip, thumb pills, newest dividers, segmented sort; no emoji prefixes in the toolbar");
+    const appSrc = fs.readFileSync(path.join(REPO, "public", "app.js"), "utf8");
+    ok(/raw\.split\("\?"\)\[0\]/.test(appSrc), "H22: a deep link with view state after ? still opens the right view");
   }
 
   // H7 runs auth.js on its own bare Express app (the harness Hub is in open

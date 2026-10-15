@@ -77,6 +77,71 @@ printers, and nothing leaves your network unless you turn remote access on.
 
 ---
 
+### 2.44.0 - the Models tab on a phone, a scheduler that learns, a tunnel that comes back
+
+- **The Models tab works on a phone.** The designer list shows the twelve biggest
+  designers plus a search box over the rest, instead of every designer as a chip above
+  the cards (about 600 on a real library). The shelf opens newest first, so what you just
+  saved from Orca is at the top; a remembered sort still wins. Under 1100px the gcode
+  sidebar folds away behind a **Library** button while Models is showing, so the cards get
+  the width (two columns on a phone). On touch the card's menu stays, with Convert to U1
+  as the primary button, and Suggest settings, Link gcode, Attributes, Rename and Delete
+  behind it; only Open in Orca and the Orca session strip are console-only. Touch is no
+  longer a read-only view.
+- **Cards carry their colors.** A 3px strip along the top of each card is the project's
+  own filament palette; the printed count and the "filed" mark are pills on the picture;
+  Today, This week, This month and Earlier dividers run down the newest view; the sort is
+  a segmented control; loading shows placeholder cards; an empty shelf says why in one
+  line with one button. No new accent color, no emoji prefixes in the toolbar.
+- **Designer names you can fix.** The Folder panel has a Designer names box: `folder name
+  = Display Name`, one per line, to rename or merge designers without touching a file.
+  Folder names that cannot be a designer (a temperature, a number, one or two letters)
+  group as **(unsorted)**.
+- **The Models tab tells you what is going on.** A load that fails shows a bar with Retry
+  and keeps the old grid dimmed instead of saying nothing; a scan in progress shows how
+  many files it has found; the filter, designer, sort and Requested state live in the
+  address bar, so a refresh or a shared link lands on the same shelf; the color chips for
+  the cards on screen come in one request instead of one each.
+- **Dispatch learns how long things take.** Every completed copy records its real run
+  time beside the slicer's estimate (`estimates.json` next to dispatch.json). A file with
+  two or more runs is planned at its own typical time; a file never run here borrows the
+  printer's typical ratio once that printer has three runs; a runtime you type on the job
+  row (click the estimate) wins over both, and clearing it goes back to the file's figure.
+  The block's panel says where the runtime came from.
+- **The plan keeps itself current.** It is recomputed when something changes or the fleet
+  moves, served from memory, and pushed to the page over the existing live stream, so the
+  timeline redraws itself instead of waiting for a tap. "Bed cleared, start next" reads
+  the ready plan instead of replanning under your finger.
+- **A started print is held from the moment you start it.** From the start command until
+  the executor sees the printer printing, that copy is in flight on that printer, so a
+  second "start next" elsewhere cannot be handed the same copy. A start that never shows
+  up as printing within five minutes raises a notice on the job.
+- **Every block says why.** Tap a planned block: "Why here" gives the reason (finishes
+  soonest, fewer spool changes, kept where it was, pinned) and the runners-up with how
+  much later each would finish and how many swaps it would cost.
+- **An expired sign-in sends you to sign in.** After the 30-day cookie runs out, the page
+  goes to the sign-in screen and comes back to where you were, instead of every card
+  reading "Fleet unreachable" until someone reloads.
+- **The tunnel comes back on its own.** When autostart is on and cloudflared exits
+  unexpectedly, the Hub relaunches it with growing waits (5 s, 10 s ... 5 min) and the
+  status says when the next try is. The download is pinned to one cloudflared release
+  instead of whatever is latest, checked against a known sha256 on Windows and Linux
+  (and against its reported version elsewhere), bounded in time and size, and re-checked
+  before every launch so a swapped executable never runs. Fixed: a cloudflared.exe that
+  failed to launch could take the whole Hub down from the Settings tab.
+- **The tunnel and the proxy sign-in modes exclude each other.** Switching the sign-in
+  mode away from password while the tunnel is running is refused with the reason (the
+  tunnel delivers visitors straight to the Hub); the tunnel already refused to start in
+  those modes.
+- **Quieter and lighter.** Nothing polls while the tab is hidden (lists, fleet fallback,
+  camera frames, power, stats); one refresh when you come back. A push blocks only its
+  own printer card from re-rendering, and gives up after 15 missed polls instead of
+  spinning forever. The planner reads the spool shelf once per plan instead of once per
+  copy and lane, and gcode estimates are cached by file version.
+- **"Could not connect" is not "stalled".** A push to a printer that never accepted the
+  connection (unplugged, asleep, wrong address) says so.
+- 3MF Explorer 1.7.0 ships alongside (see its own changelog).
+
 ### 2.43.0 - printer identity and sign-in hardening
 
 - **Copies between printers can't hang either.** Sending a file from one printer to

@@ -141,7 +141,8 @@ init();
 // remembered tab — a link someone followed should beat a remembered default.
 // setView() already falls back to the dashboard for names that don't exist.
 window.addEventListener("load", () => {
-  const h = decodeURIComponent(location.hash.replace(/^#/, "")).toLowerCase();
+  const raw = decodeURIComponent(location.hash.replace(/^#/, ""));
+  const h = raw.split("?")[0].toLowerCase();   // H22 (2.44): a view may carry its own state after "?"
   if (!h) return;
   if (h === "settings") { setView("dash"); $("setup").classList.add("show"); return; }
   setView(h);
