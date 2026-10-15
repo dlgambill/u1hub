@@ -32,7 +32,7 @@ permissions:
 # 2.40 on: each native runner also builds it from this tag of its own repo and
 # attaches it to the same release. Bump when Explorer cuts a new version.
 env:
-  EXPLORER_REF: v1.6.0
+  EXPLORER_REF: v1.6.1
 
 jobs:
   build:
