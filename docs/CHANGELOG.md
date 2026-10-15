@@ -77,6 +77,14 @@ printers, and nothing leaves your network unless you turn remote access on.
 
 ---
 
+### 2.44.1 - the phone tools button, a scan line that moves
+
+Two fixes from the first phone test of 2.44.0.
+
+- On a screen under 880 px wide, Rescan and Folder fold away behind a button, and that button never showed: its base `display:none` rule sat after the media rule that turns it on, and with equal specificity the later rule wins. The base rule now comes first. (Best practice: base styles before media overrides, always.)
+- The "rescanning…" line counted only 3MF files found. On the library share a walk spends its first 15 seconds crossing designer folders that hold no 3MF, so the line sat at "0 files of about 4525 found" and read as hung. It now counts folders walked as well, "rescanning… 726 folders, 0 files of about 4525 so far", so it moves from the first second. (Best practice: progress shows work done, not only results produced.)
+- Three new harness checks cover both; the two source checks fail on 2.44.0.
+
 ### 2.44.0 - the Models tab on a phone, a scheduler that learns, a tunnel that comes back
 
 - **The Models tab works on a phone.** The designer list shows the twelve biggest

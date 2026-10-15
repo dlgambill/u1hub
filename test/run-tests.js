@@ -5686,6 +5686,21 @@ async function stopHub() {
     ok(/raw\.split\("\?"\)\[0\]/.test(appSrc), "H22: a deep link with view state after ? still opens the right view");
   }
 
+  console.log("\n== 2.44.1: the phone tools button shows, the scan line moves (hand test on 2.44.0) ==");
+  {
+    const ui = fs.readFileSync(path.join(REPO, "public", "modules", "models-ui.js"), "utf8");
+    // The base "display:none" has to precede the media rule that turns the button on;
+    // the two share a specificity, so whichever is later wins (2.44.0 had them reversed).
+    const base = ui.indexOf('"#mdl-toolsbtn{display:none;}"'), media = ui.indexOf("#mdl-toolsbtn{display:inline-flex;}");
+    ok(base >= 0 && media >= 0 && base < media, "2.44.1: the collapsed-tools button is hidden by the base rule and shown by the later media rule, in that order", { base, media });
+    ok(/sp\.dirs \|\| 0\) \+ " folder"/.test(ui) && /" so far"/.test(ui), "2.44.1: the rescan line counts folders walked as well as files found, so it moves from the first second");
+    // and the server side still reports dirs for it
+    const mroot = path.join(tmp, "models");
+    await jpost("/api/models/settings", { folder: mroot });
+    const r = await jget("/api/models?refresh=1");
+    ok(!r.body.scan_progress || typeof r.body.scan_progress.dirs === "number", "2.44.1: scan_progress carries a dirs count when a walk is running", r.body.scan_progress);
+  }
+
   // H7 runs auth.js on its own bare Express app (the harness Hub is in open
   // mode); see test/h7-auth-checks.js. Shown failing 5 of 12 on 2.42.0.
   console.log("\n== SPRINT 2: H7 auth - proxy allowlist, per-visitor limiter, credential-bound sessions (2.43.0) ==");

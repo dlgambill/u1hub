@@ -101,8 +101,10 @@
       ".mdl-seg button:last-child{border-right:none;}",
       ".mdl-seg button.on{background:color-mix(in srgb, var(--signal) 18%, transparent); color:var(--ink); font-weight:600;}",
       ".mdl-tools{display:inline-flex; gap:8px; align-items:center;}",
-      "@media (max-width: 880px) { .mdl-tools{display:none;} .mdl-bar.tools .mdl-tools{display:inline-flex; flex-basis:100%;} #mdl-toolsbtn{display:inline-flex;} }",
+      // 2.44.1: the base rule must come BEFORE the media rule - same specificity, so the
+      // later one wins, and with them the other way round the button never showed.
       "#mdl-toolsbtn{display:none;}",
+      "@media (max-width: 880px) { .mdl-tools{display:none;} .mdl-bar.tools .mdl-tools{display:inline-flex; flex-basis:100%;} #mdl-toolsbtn{display:inline-flex;} }",
       ".mdl-sub .prints{color:var(--ink); font-weight:600;}",
       ".mdl-grid{display:grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap:10px;}",
       "@media (max-width: 480px) { .mdl-grid{grid-template-columns: repeat(2, minmax(0,1fr)); gap:8px;} }",
@@ -437,9 +439,13 @@
   }
   function render(prependItems) {
     const d = DATA;
-    const prog = d.refreshing && d.scan_progress ? " \u00b7 rescanning\u2026 " + (d.scan_progress.walked || 0) + " files" + (d.scan_progress.last_total ? " of about " + d.scan_progress.last_total : "") + " found" : (d.refreshing ? " \u00b7 rescanning\u2026" : "");
+    // 2.44.1: a walk of this share spends its first 15 s in folders that hold no
+    // 3MF, so a files-only count sat at 0 and read as hung. Count folders too:
+    // progress shows the work done, not only the result.
+    const sp = d.scan_progress || {};
+    const prog = d.refreshing && d.scan_progress ? " \u00b7 rescanning\u2026 " + (sp.dirs || 0) + " folder" + (sp.dirs === 1 ? "" : "s") + ", " + (sp.walked || 0) + " file" + (sp.walked === 1 ? "" : "s") + (sp.last_total ? " of about " + sp.last_total : "") + " so far" : (d.refreshing ? " \u00b7 rescanning\u2026" : "");
     EL.querySelector("#mdl-count").textContent = d.missing ? "folder not found"
-      : (d.scanning && !d.total_all) ? ("scanning the folder\u2026" + (d.scan_progress ? " " + (d.scan_progress.walked || 0) + " files found" : ""))
+      : (d.scanning && !d.total_all) ? ("scanning the folder\u2026" + (d.scan_progress ? " " + (sp.dirs || 0) + " folders, " + (sp.walked || 0) + " files so far" : ""))
       : (d.total_all + " file" + (d.total_all === 1 ? "" : "s") + prog + (d.unreachable ? " \u00b7 folder not reachable right now, showing the last scan" : ""));
     // v2.40: the count on the toggle is always the TRUE total (from the
     // unfiltered `all` list server-side), so it stays right even while the
