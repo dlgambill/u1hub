@@ -5515,6 +5515,11 @@ async function stopHub() {
     await settle();
   }
 
+  // H7 runs auth.js on its own bare Express app (the harness Hub is in open
+  // mode); see test/h7-auth-checks.js. Shown failing 5 of 12 on 2.42.0.
+  console.log("\n== SPRINT 2: H7 auth - proxy allowlist, per-visitor limiter, credential-bound sessions (2.43.0) ==");
+  await require("./h7-auth-checks")(ok);
+
   await stopHub();
   await mockU1.close(); await mockSv.close();
   fs.rmSync(tmp, { recursive: true, force: true });

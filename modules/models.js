@@ -1290,9 +1290,17 @@ function register(ctx) {
     }
     return null;
   }
+  // H7: compare the shared secret in constant time (crypto.timingSafeEqual on
+  // equal-length digests), and an unset token never matches a missing header.
+  function tokenMatches(tok) {
+    if (!EXPLORER_TOKEN || typeof tok !== "string" || !tok) return false;
+    const a = crypto.createHash("sha256").update(tok).digest();
+    const b = crypto.createHash("sha256").update(String(EXPLORER_TOKEN)).digest();
+    return crypto.timingSafeEqual(a, b);
+  }
   app.post("/api/models/print-request", async (req, res) => {
     const tok = req.headers["x-u1-token"];
-    if (tok !== EXPLORER_TOKEN && !ctx.isAuthed(req)) return res.status(401).json({ error: "bad or missing token" });
+    if (!tokenMatches(tok) && !ctx.isAuthed(req)) return res.status(401).json({ error: "bad or missing token" });
     const b = req.body || {};
     const abs = String(b.path || "").trim();
     if (!abs) return res.status(400).json({ error: "needs { path }" });

@@ -103,6 +103,14 @@ printers, and nothing leaves your network unless you turn remote access on.
   the printer type matches and the path matches the one the job was started or adopted
   with, not just the bare file name. A same-named file in another folder, or on a
   different kind of printer, no longer counts as one of your copies.
+- **Sign-in hardening.** Changing the password (or the sign-in mode) now signs out every
+  older session, so a copied cookie stops working with the password it came from. Because
+  of this, everyone is asked to sign in once after upgrading. Failed-login lockouts now
+  count per visitor through the Cloudflare tunnel instead of for the whole tunnel, so a
+  stranger guessing passwords can no longer lock you out. In forward-auth mode the
+  identity header is accepted only from a trusted proxy (this machine by default, or the
+  addresses in `trusted_proxies` in auth.json). The 3MF Explorer's print-request token is
+  checked in constant time.
 
 ### 2.42.0 - safety fixes
 

@@ -19,15 +19,20 @@
 //                header and are refused. The Hub's own login is bypassed —
 //                the proxy already authenticated the person.
 //
-// auth.json: { mode, salt, hash, secret, header }  (salt/hash only in
-// password mode; secret signs session cookies and is created on first setup).
+// auth.json: { mode, salt, hash, secret, header, trusted_proxies, ver }
+// (salt/hash only in password mode; secret signs session cookies and is
+// created on first setup; trusted_proxies is the forward-mode allowlist,
+// loopback when absent; ver is bumped by every auth settings change).
 // Kept OUT of config.json deliberately — /api/config echoes config to the
 // settings UI and must never carry credentials.
 //
-// Rate limiting: 5 failed logins per IP -> 15 minute lockout, in-memory.
-// NOTE: without Express "trust proxy", req.ip behind a reverse proxy is the
-// proxy's address, so the lockout becomes global rather than per-visitor.
-// Acceptable for a LAN dashboard; forward/proxy modes don't use login at all.
+// Rate limiting: 5 failed logins per visitor -> 15 minute lockout, in-memory.
+// 2.43 (H7): behind cloudflared every request arrives from 127.0.0.1, so the
+// limiter used to be global - five bad guesses from anyone on the internet
+// locked the owner out. It now keys on the visitor address the local proxy
+// reports (cf-connecting-ip, then x-forwarded-for), and believes those headers
+// only when the connection itself comes from a trusted proxy (loopback by
+// default), so a LAN client cannot dodge the limit by inventing one.
 
 "use strict";
 
@@ -70,12 +75,20 @@ module.exports = function mountAuth(app, express, baseDir, assetDir) {
     return h.length === want.length && crypto.timingSafeEqual(h, want);
   }
 
-  // ---- stateless session tokens: "<expiry-ms>.<hmac(secret, expiry)>" ----
+  // ---- stateless session tokens: "<expiry-ms>.<hmac(secret, expiry|credentials)>" ----
+  // 2.43 (H7): the MAC also covers the current credentials (password hash and
+  // the settings version), so changing the password or the auth mode retires
+  // every cookie issued before it. A stolen cookie no longer outlives the
+  // password it was issued under. Tokens from 2.42 and older fail this check
+  // once, on upgrade, and the browser is sent to the login page.
+  function credTag() { return (A.hash || "") + "|" + (A.ver || 0); }
+  function macFor(exp) {
+    return crypto.createHmac("sha256", A.secret).update(String(exp) + "|" + credTag()).digest("hex");
+  }
   function signSession() {
     ensureSecret();
     const exp = Date.now() + SESSION_DAYS * 24 * 3600 * 1000;
-    const mac = crypto.createHmac("sha256", A.secret).update(String(exp)).digest("hex");
-    return exp + "." + mac;
+    return exp + "." + macFor(exp);
   }
   function verifySession(token) {
     if (!token || !A.secret) return false;
@@ -83,7 +96,7 @@ module.exports = function mountAuth(app, express, baseDir, assetDir) {
     if (dot < 1) return false;
     const exp = token.slice(0, dot), mac = token.slice(dot + 1);
     if (!/^\d+$/.test(exp) || Date.now() > +exp) return false;
-    const want = crypto.createHmac("sha256", A.secret).update(exp).digest("hex");
+    const want = macFor(exp);
     const a = Buffer.from(mac), b = Buffer.from(want);
     return a.length === b.length && crypto.timingSafeEqual(a, b);
   }
@@ -102,10 +115,36 @@ module.exports = function mountAuth(app, express, baseDir, assetDir) {
       `${COOKIE}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSec}`);
   }
 
+  // ---- who is really on the other end (H7) ----
+  // The socket address is the only thing the client cannot write. Headers that
+  // name an identity or a visitor address are believed only when that socket
+  // belongs to a proxy the owner trusts: loopback by default (cloudflared and a
+  // local Authelia/Authentik proxy both connect from this machine), or the
+  // addresses listed in auth.json's trusted_proxies.
+  const norm = a => String(a || "").replace(/^::ffff:/, "");
+  function socketAddr(req) { return norm(req.socket && req.socket.remoteAddress); }
+  function fromTrustedProxy(req) {
+    const a = socketAddr(req);
+    const list = Array.isArray(A.trusted_proxies) && A.trusted_proxies.length
+      ? A.trusted_proxies.map(norm) : ["127.0.0.1", "::1"];
+    return list.includes(a);
+  }
+  function clientKey(req) {
+    if (fromTrustedProxy(req)) {
+      const cf = String(req.headers["cf-connecting-ip"] || "").trim();
+      if (cf) return norm(cf);
+      const xff = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+      if (xff) return norm(xff);
+    }
+    return socketAddr(req) || "?";
+  }
+
   function isAuthed(req) {
     if (A.mode === "forward") {
+      // The identity header only counts when the proxy that injects it is the
+      // one talking to us. A direct hit with a hand-written Remote-User is refused.
       const h = String(A.header || "Remote-User").toLowerCase();
-      return !!req.headers[h];
+      return !!req.headers[h] && fromTrustedProxy(req);
     }
     if (A.mode !== "password") return true; // open / proxy
     return verifySession(readCookie(req));
@@ -169,8 +208,13 @@ module.exports = function mountAuth(app, express, baseDir, assetDir) {
         return res.status(400).json({ error: "Password must be at least 4 characters" });
       setPassword(password);
     } else { delete A.salt; delete A.hash; }
-    if (mode === "forward") A.header = String(header || "Remote-User");
+    if (mode === "forward") {
+      A.header = String(header || "Remote-User");
+      const px = (req.body || {}).proxies;
+      if (Array.isArray(px)) A.trusted_proxies = px.map(x => String(x).trim()).filter(Boolean).slice(0, 16);
+    }
     A.mode = mode;
+    A.ver = (A.ver || 0) + 1;      // H7: any auth change retires the old sessions
     ensureSecret();
     save();
     // Setting a password logs you in on the spot.
@@ -180,7 +224,7 @@ module.exports = function mountAuth(app, express, baseDir, assetDir) {
 
   app.post("/api/auth/login", (req, res) => {
     if (A.mode !== "password") return res.status(400).json({ error: "Login is not enabled" });
-    const ip = req.ip || req.socket.remoteAddress || "?";
+    const ip = clientKey(req);       // H7: the visitor, not the tunnel
     if (rateLimited(ip))
       return res.status(429).json({ error: "Too many attempts — locked out for 15 minutes" });
     const { password } = req.body || {};
