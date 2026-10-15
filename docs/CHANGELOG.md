@@ -77,6 +77,14 @@ printers, and nothing leaves your network unless you turn remote access on.
 
 ---
 
+### 2.43.0 - printer identity and sign-in hardening
+
+- **Copies between printers can't hang either.** Sending a file from one printer to
+  another, or copying a printer-only file into the Hub library, now fails with
+  "transfer stalled" when either side stops moving data for 30 seconds (or goes quiet
+  for 60), the same rule a print push follows since 2.42. The file is released at once
+  and a half-copied library file is cleaned up.
+
 ### 2.42.0 - safety fixes
 
 - **The U1 templates are off limits.** The Models tab never lists `u1_template*.3mf`

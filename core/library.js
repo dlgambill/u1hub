@@ -471,35 +471,51 @@ app.post("/api/printer-files/rename", async (req, res) => {
 //     new file must appear at the source's exact byte size.
 //   * Content-Length is promised from the source listing; if the file changes
 //     mid-transfer the stream length won't match and the upload fails loudly.
+// 2.43 (H20): bounded like a print push (H3). No bytes moved for the idle
+// limit while the body is streaming, or a socket on either side silent for
+// UPLOAD_SOCKET_MS, fails the transfer; both sockets are torn down and the
+// job is marked failed, so the JOBS entry stops blocking rename/delete.
 function streamTransfer(srcBase, dstBase, name, size, job) {
   return new Promise((resolve, reject) => {
+    let settled = false, bodyDone = false, up = null, getReq = null, stopWatch = () => {};
+    const settle = (fn, v) => { if (settled) return; settled = true; stopWatch(); fn(v); };
+    const fail = e => {
+      settle(reject, e);
+      try { up && up.destroy(); } catch {}
+      try { getReq && getReq.destroy(); } catch {}
+    };
+    const quiet = who => () => fail(new Error("transfer stalled - " + who + " stopped answering for " + Math.round(hub.UPLOAD_SOCKET_MS / 1000) + " s"));
     const boundary = "----u1hub" + Math.random().toString(16).slice(2);
     const pre = Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${name}"\r\nContent-Type: application/octet-stream\r\n\r\n`);
     const post = Buffer.from(`\r\n--${boundary}--\r\n`);
     job.total = pre.length + size + post.length;
     job.sent = 0;
     const u = new URL(dstBase + "/server/files/upload");
-    const up = http.request({
+    up = http.request({
       protocol: u.protocol, hostname: u.hostname, port: u.port || 80, path: u.pathname, method: "POST",
       headers: { "Content-Type": "multipart/form-data; boundary=" + boundary, "Content-Length": job.total }
     }, res => {
       let b = ""; res.setEncoding("utf8"); res.on("data", d => b += d);
-      res.on("end", () => (res.statusCode < 300 ? resolve(b) : reject(new Error("Upload " + res.statusCode + ": " + b.slice(0, 160)))));
+      res.on("end", () => (res.statusCode < 300 ? settle(resolve, b) : fail(new Error("Upload " + res.statusCode + ": " + b.slice(0, 160)))));
     });
-    up.on("error", reject);
-    http.get(srcBase + "/server/files/gcodes/" + encPath(name), dl => {
+    up.on("error", fail);
+    up.setTimeout(hub.UPLOAD_SOCKET_MS, quiet("the destination printer"));
+    stopWatch = hub.progressWatchdog(job, fail, undefined, () => bodyDone);
+    getReq = http.get(srcBase + "/server/files/gcodes/" + encPath(name), dl => {
       if (dl.statusCode !== 200) {
-        dl.resume(); up.destroy();
-        return reject(new Error("Download from source failed: HTTP " + dl.statusCode));
+        dl.resume();
+        return fail(new Error("Download from source failed: HTTP " + dl.statusCode));
       }
       up.write(pre); job.sent += pre.length;
       dl.on("data", chunk => {
         job.sent += chunk.length;
         if (!up.write(chunk)) { dl.pause(); up.once("drain", () => dl.resume()); }
       });
-      dl.on("end", () => { up.write(post); job.sent += post.length; up.end(); });
-      dl.on("error", reject);
-    }).on("error", reject);
+      dl.on("end", () => { bodyDone = true; up.write(post); job.sent += post.length; up.end(); });
+      dl.on("error", fail);
+    });
+    getReq.on("error", fail);
+    getReq.setTimeout(hub.UPLOAD_SOCKET_MS, quiet("the source printer"));
   });
 }
 
@@ -578,16 +594,28 @@ app.post("/api/printer-files/to-hub", async (req, res) => {
   (async () => {
     try {
       const srcBase = String(src.url).replace(/\/+$/, "");
+      // 2.43 (H20): same bounds as a printer-to-printer transfer. On a stall
+      // the request is torn down and the .u1hub-part handle closed BEFORE the
+      // catch below deletes it (Windows refuses to delete an open file).
       await new Promise((resolve, reject) => {
-        http.get(srcBase + "/server/files/gcodes/" + encPath(name), dl => {
-          if (dl.statusCode !== 200) { dl.resume(); return reject(new Error("Download from " + src.name + " failed: HTTP " + dl.statusCode)); }
-          const out = fs.createWriteStream(part, { flags: "wx" });
-          out.on("error", reject);
+        let settled = false, out = null, stopWatch = () => {};
+        const fail = e => {
+          if (settled) return; settled = true; stopWatch();
+          try { getReq.destroy(); } catch {}
+          if (out && !out.closed) { out.once("close", () => reject(e)); out.destroy(); } else reject(e);
+        };
+        const getReq = http.get(srcBase + "/server/files/gcodes/" + encPath(name), dl => {
+          if (dl.statusCode !== 200) { dl.resume(); return fail(new Error("Download from " + src.name + " failed: HTTP " + dl.statusCode)); }
+          out = fs.createWriteStream(part, { flags: "wx" });
+          out.on("error", fail);
           dl.on("data", c => { job.sent += c.length; });
-          dl.on("error", reject);
-          out.on("finish", resolve);
+          dl.on("error", fail);
+          out.on("finish", () => { if (!settled) { settled = true; stopWatch(); resolve(); } });
           dl.pipe(out);
-        }).on("error", reject);
+        });
+        getReq.on("error", fail);
+        getReq.setTimeout(hub.UPLOAD_SOCKET_MS, () => fail(new Error("transfer stalled - " + src.name + " stopped answering for " + Math.round(hub.UPLOAD_SOCKET_MS / 1000) + " s")));
+        stopWatch = hub.progressWatchdog(job, fail);
       });
       job.phase = "verify";
       const got = (await fs.promises.stat(part)).size;

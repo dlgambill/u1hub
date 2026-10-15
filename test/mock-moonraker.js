@@ -34,6 +34,7 @@ function createMock(profile) {
     camDelayMs: 600,               // how long the "camera" takes to answer
     stallUpload: false,            // 2.42 (H3): accept an upload, then stop reading it and never answer
     stallScripts: false,           // 2.42 (H3): accept a gcode script and never answer
+    stallDownload: false,          // 2.43 (H20): start sending a stored file, then stop mid-body
     held: []                       // requests parked by the two knobs above
   };
   // Let go of every parked request (the harness calls this after a stall test).
@@ -92,6 +93,10 @@ function createMock(profile) {
       if (!f) return send(404, { error: "not found" });
       const body = f.data || Buffer.alloc(f.size || 0, 0x47);
       res.writeHead(200, { "Content-Type": "application/octet-stream", "Content-Length": body.length });
+      if (state.stallDownload) {                 // a printer that goes quiet mid-download
+        res.write(body.subarray(0, Math.min(65536, body.length)));
+        state.held.push(req); return;
+      }
       return res.end(body);
     }
 

@@ -46,6 +46,23 @@ async function fetchWithTimeout(url, opts, ms) {
   }
 }
 
+// 2.43 (H20): the same no-progress rule for every streamed transfer
+// (printer to printer, printer to Hub library). Calls onStall once when
+// job.sent has not moved for `ms` while isDone() is false. Returns a stop
+// function. One helper, used everywhere a stream can stall.
+function progressWatchdog(job, onStall, ms = UPLOAD_IDLE_MS, isDone = () => false) {
+  let last = job.sent, moved = Date.now();
+  const iv = setInterval(() => {
+    if (isDone()) return;
+    if (job.sent !== last) { last = job.sent; moved = Date.now(); return; }
+    if (Date.now() - moved >= ms) {
+      clearInterval(iv);
+      onStall(new Error("transfer stalled - no data moved for " + Math.round(ms / 1000) + " s"));
+    }
+  }, Math.min(1000, Math.max(100, Math.floor(ms / 5))));
+  return () => clearInterval(iv);
+}
+
 // Stream a file to the printer as multipart/form-data, reporting bytes sent so
 // the UI can show a real upload progress bar. Resolves on the printer's 2xx.
 // H3: fails (and so releases the file) when the printer stops taking bytes
@@ -367,5 +384,5 @@ app.post("/api/exclude", async (req, res) => {
   }
 });
 
-Object.assign(hub, { JOBS, newJobId, fetchWithTimeout });
+Object.assign(hub, { JOBS, newJobId, fetchWithTimeout, progressWatchdog, UPLOAD_SOCKET_MS });
 };

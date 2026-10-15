@@ -5327,6 +5327,48 @@ async function stopHub() {
     await jpost("/api/dispatch/jobs/remove", { id: J2 });
   }
 
+  console.log("\n== SPRINT 2: H20 transfer timeouts (2.43.0) ==");
+  {
+    // H20. A printer-to-printer transfer and a copy into the Hub library hold
+    // a JOBS entry (so the file can't be renamed under them). A printer that
+    // goes quiet mid-stream must fail the job within the idle limit, not hold
+    // it until the Hub restarts.
+    const fleetNow = (await jget("/api/fleet")).body || [];
+    const idOf = port => (fleetNow.find(p => String(p.url || "").endsWith(":" + port)) || {}).id;
+    const UID = idOf(portU1), SID = idOf(portSv);
+    const keepU1 = mockU1.state.files.slice(), keepSv = mockSv.state.files.slice();
+    const BIG = 48 * 1024 * 1024;
+    const waitJob = async id => { let j = null; for (let i = 0; i < 60 && !(j && j.done); i++) { await sleep(250); j = (await jget("/api/print-status?job=" + id)).body; } return j; };
+
+    // (a) destination stops reading the upload
+    mockU1.state.files.push({ name: "H20 Transfer.gcode", size: BIG });
+    mockSv.state.stallUpload = true;
+    let t0 = Date.now();
+    let r = await jpost("/api/printer-files/transfer", { from: UID, to: SID, name: "H20 Transfer.gcode" });
+    ok(r.status === 200 && r.body.jobId, "H20: a transfer to a printer that will stall starts", r.body);
+    let job = r.body && r.body.jobId ? await waitJob(r.body.jobId) : null;
+    ok(job && job.done && /stalled/i.test(job.error || ""), "H20: the stalled transfer FAILS with 'stalled'", job);
+    ok(Date.now() - t0 < 15000, "H20: …within seconds, not never", Date.now() - t0);
+    mockSv.state.stallUpload = false; mockSv.state.releaseHeld();
+
+    // (b) source stops sending mid-download into the Hub library
+    mockU1.state.files.push({ name: "H20 ToHub.gcode", size: BIG });
+    mockU1.state.stallDownload = true;
+    t0 = Date.now();
+    r = await jpost("/api/printer-files/to-hub", { from: UID, name: "H20 ToHub.gcode" });
+    ok(r.status === 200 && r.body.jobId, "H20: a copy-to-Hub from a printer that will stall starts", r.body);
+    job = r.body && r.body.jobId ? await waitJob(r.body.jobId) : null;
+    ok(job && job.done && /stalled/i.test(job.error || ""), "H20: the stalled copy-to-Hub FAILS with 'stalled'", job);
+    ok(Date.now() - t0 < 15000, "H20: …within seconds, not never", Date.now() - t0);
+    const libDest = path.join(hubDir, "gcode", "H20 ToHub.gcode");
+    ok(!fs.existsSync(libDest) && !fs.existsSync(libDest + ".u1hub-part"), "H20: …and leaves no file or half-copied .u1hub-part behind");
+    mockU1.state.stallDownload = false; mockU1.state.releaseHeld();
+    mockU1.state.files = keepU1; mockSv.state.files = keepSv;
+    const libSrc = fs.readFileSync(path.join(REPO, "core", "library.js"), "utf8");
+    ok(/progressWatchdog\(/.test(libSrc) && (libSrc.match(/\.setTimeout\(/g) || []).length >= 3,
+      "H20: core/library.js puts a progress watchdog and socket timeouts on every streamed transfer");
+  }
+
   await stopHub();
   await mockU1.close(); await mockSv.close();
   fs.rmSync(tmp, { recursive: true, force: true });
