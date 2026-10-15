@@ -2719,7 +2719,7 @@ async function loadConfigUI(){
     if(Array.isArray(c.types)&&c.types.length) TYPES=c.types;
     renderTypeRows();
     $("setPrinters").innerHTML="";
-    (c.printers||[]).forEach(p=>addPrinterRow(p.name,p.url,p.plug,p.type));
+    (c.printers||[]).forEach(p=>addPrinterRow(p.name,p.url,p.plug,p.type,p.id));
     if(!c.configured){ $("setup").classList.add("show"); $("setupmsg").textContent="welcome — add your printers to begin"; if(!$("setPrinters").children.length) addPrinterRow("",""); }
   }catch(e){}
 }
@@ -2800,12 +2800,13 @@ function refreshPrinterTypeSelects(){
     if(!TYPES.find(t=>t.slug===sel.value)) sel.value="u1";
   });
 }
-function addPrinterRow(name,url,plug,ptype){
+function addPrinterRow(name,url,plug,ptype,pid){
   const t = (plug && plug.type) || "";
   const ip  = esc((plug && plug.ip)  || "");
   const on  = esc((plug && plug.on)  || "");
   const off = esc((plug && plug.off) || "");
   const block=document.createElement("div"); block.className="pblock";
+  if(pid) block.dataset.pid=pid;   // H2: the stable id rides along so a reorder or rename keeps it
   block.innerHTML=
     `<div class="prow">`+
       `<input class="field pname" placeholder="U1" value="${esc(name||"")}">`+
@@ -2845,6 +2846,7 @@ function gatherPrinters(){
   return [...$("setPrinters").querySelectorAll(".pblock")].map(b=>{
     const rec={ name:b.querySelector(".pname").value.trim(), url:b.querySelector(".purl").value.trim(),
                 type:(b.querySelector(".ptype")||{}).value||"u1" };
+    if(b.dataset.pid) rec.id=b.dataset.pid;
     const t=b.querySelector(".plugtype").value;
     if(t==="shelly"){
       const ip=b.querySelector(".plugip").value.trim();

@@ -2,6 +2,7 @@
 // Split out of server.js (v2.23). Loads in the original order through the
 // shared `hub`; see server.js for the sequence. Behavior-preserving move.
 const fs = require("fs");
+const { idForIncoming } = require("./printer-ids");
 
 module.exports = function (hub) {
 const { CONFIG_PATH, MODULE_DEFAULTS, PORT, VERSION, app, loadConfig, printerOrigin, typeBySlug } = hub;
@@ -24,6 +25,7 @@ app.get("/api/version", (req, res) => res.json({ version: VERSION }));
 
 app.post("/api/config", (req, res) => {
   const b = req.body || {};
+  const takenIds = new Set();   // H2: one id per printer, even if a page sends a duplicate
   const next = {
     gcodeFolder: (typeof b.gcodeFolder === "string" && b.gcodeFolder.trim()) ? b.gcodeFolder.trim() : (hub.CFG.gcodeFolder || "./gcode"),
     port: PORT,
@@ -33,6 +35,9 @@ app.post("/api/config", (req, res) => {
           // Instance → type binding. Unknown/missing type falls back to the
           // grandfathered U1 so a stale frontend can't orphan a printer.
           const rec = { name: String(p.name || p.url), url: String(p.url), type: (p.type && typeBySlug(String(p.type))) ? String(p.type) : "u1" };
+          // H2: the id survives reorders and renames; an older page that sends
+          // no id keeps the one already stored for the same address.
+          rec.id = idForIncoming(p, hub.CFG.printers, takenIds); takenIds.add(rec.id);
           // Plug descriptor. The settings form now sends the plug explicitly:
           //  - a valid {type,...} to set it,
           //  - null to clear it,

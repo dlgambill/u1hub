@@ -3,6 +3,7 @@
 // shared `hub`; see server.js for the sequence. Behavior-preserving move.
 const fs = require("fs");
 const path = require("path");
+const { ensurePrinterIds } = require("./printer-ids");
 
 module.exports = function (hub) {
 const { BASE_DIR, CONFIG_PATH, DEFAULT_CFG, IS_PKG, hublog } = hub;
@@ -158,6 +159,9 @@ function loadConfig() {
   for (const p of hub.PRINTERS) {
     if (!p.type || !typeBySlug(p.type)) { p.type = "u1"; migrated = true; }
   }
+  // H2: every printer carries a stable id, so state stored about a machine
+  // (maintenance, pins, a claim) follows the machine and not its list position.
+  if (ensurePrinterIds(hub.PRINTERS)) migrated = true;
   if (migrated) saveConfigFile();
   CAPS.clear();            // printer list may have changed — re-detect capabilities
   if (hub.FARM_READY) hub.farmWsRestart(); // reconnect sockets to the new printer list

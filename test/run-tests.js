@@ -5303,7 +5303,9 @@ async function stopHub() {
     r = await jpost("/api/dispatch/jobs/assign", { id: JID, printer: 0 });
     ok(r.status === 200 && r.body.pinned === 0, "H4: the job is pinned to printer 0", r.body);
     let dj = JSON.parse(fs.readFileSync(path.join(hubDir, "dispatch.json"), "utf8"));
-    ok(dj.pins && dj.pins[JID] === 0, "H4: the pin is written to dispatch.json the moment it is set", dj.pins);
+    // 2.43 (H2): on disk a pin names the printer's stable id, not its position.
+    const pid0 = (JSON.parse(fs.readFileSync(path.join(hubDir, "config.json"), "utf8")).printers[0] || {}).id;
+    ok(dj.pins && pid0 && dj.pins[JID] === pid0, "H4: the pin is written to dispatch.json the moment it is set", dj.pins);
     await stopHub();
     dj = JSON.parse(fs.readFileSync(path.join(hubDir, "dispatch.json"), "utf8"));
     const jj = dj.jobs.find(j => j.id === JID); jj.remaining = 1;      // two of three copies already printed
@@ -5367,6 +5369,150 @@ async function stopHub() {
     const libSrc = fs.readFileSync(path.join(REPO, "core", "library.js"), "utf8");
     ok(/progressWatchdog\(/.test(libSrc) && (libSrc.match(/\.setTimeout\(/g) || []).length >= 3,
       "H20: core/library.js puts a progress watchdog and socket timeouts on every streamed transfer");
+  }
+
+  console.log("\n== SPRINT 2: H2 stable printer ids, S1/S2/S8 completions (2.43.0) ==");
+  {
+    const cfgPath = path.join(hubDir, "config.json");
+    const djPath = path.join(hubDir, "dispatch.json");
+    const readCfg = () => JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+    const readDj = () => JSON.parse(fs.readFileSync(djPath, "utf8"));
+    const jobById = async id => ((await jget("/api/dispatch")).body.jobs || []).find(j => j.id === id);
+    const settle = async () => { await sleep(4500); await jpost("/api/dispatch/tick", {}); };
+    mockU1.state.printState = "standby"; mockU1.state.filename = "";
+    mockSv.state.printState = "standby"; mockSv.state.filename = "";
+    // Start from the two real mocks only (earlier sections add a dead "Ghost").
+    // The SV mock is put back on its own type (an earlier section moved it to
+    // U1), so a same-name file on it really is another type's print (S8).
+    await jpost("/api/types", { label: "SV06 Plus ACE" });          // 409 if it is already there
+    let cfg = readCfg();
+    const two = cfg.printers.filter(p => /:(\d+)$/.test(p.url) && [portU1, portSv].includes(+p.url.split(":").pop()))
+      .map(p => p.url.endsWith(":" + portSv) ? { ...p, type: "sv06-plus-ace" } : p);
+    let r = await jpost("/api/config", { gcodeFolder: cfg.gcodeFolder, printers: two });
+    cfg = readCfg();
+
+    // H2 (a) every printer has a stable, unique id, and the API hands it out
+    const ids = cfg.printers.map(p => p.id);
+    ok(cfg.printers.length === 2 && ids.every(x => typeof x === "string" && x.length >= 6) && new Set(ids).size === 2,
+      "H2: every printer in config.json carries a unique stable id", cfg.printers);
+    r = await jget("/api/config");
+    ok((r.body.printers || []).every((p, i) => p.id === ids[i]), "H2: /api/config hands the ids to the page", r.body.printers);
+    const U1PID = cfg.printers.find(p => p.url.endsWith(":" + portU1)).id;
+    const SVPID = cfg.printers.find(p => p.url.endsWith(":" + portSv)).id;
+    const u1At = () => readCfg().printers.findIndex(p => p.id === U1PID);
+    const svAt = () => readCfg().printers.findIndex(p => p.id === SVPID);
+
+    // H2 (b) maintenance and a pin follow the MACHINE through a reorder
+    await jpost("/api/dispatch/maintenance", { printer: svAt(), down: true, note: "H2 test" });
+    r = await jpost("/api/dispatch/jobs", { again: true, file: "multi.gcode", type: "u1", qty: 1 });
+    const PJ = r.body.job.id;
+    await jpost("/api/dispatch/jobs/assign", { id: PJ, printer: u1At() });
+    let dj = readDj();
+    ok(dj.printer_keys === "id" && dj.maintenance && dj.maintenance[SVPID] && dj.pins && dj.pins[PJ] === U1PID,
+      "H2: dispatch.json stores maintenance and pins by printer id, not position", { keys: dj.printer_keys, m: dj.maintenance, p: dj.pins });
+    const reversed = [...readCfg().printers].reverse();
+    r = await jpost("/api/config", { gcodeFolder: cfg.gcodeFolder, printers: reversed });
+    ok(r.status === 200 && readCfg().printers[0].id === SVPID && readCfg().printers[1].id === U1PID, "H2: Settings reorders the printers and keeps their ids", readCfg().printers);
+    r = await jget("/api/dispatch");
+    ok(r.body.maintenance && r.body.maintenance[String(svAt())] && !r.body.maintenance[String(u1At())],
+      "H2: after the reorder, 'down for maintenance' is still on the SAME machine (now at a new position)", { m: r.body.maintenance, sv: svAt() });
+    r = await jget("/api/dispatch/plan");
+    let ps = (r.body.slots || []).find(s => s.job_id === PJ && !s.unplannable);
+    ok(ps && ps.printer === u1At() && ps.pinned === true, "H2: …and the pin still points at the machine it was set on", ps && { printer: ps.printer, u1: u1At() });
+    const noIds = readCfg().printers.map(({ id, ...rest }) => rest);
+    r = await jpost("/api/config", { gcodeFolder: cfg.gcodeFolder, printers: noIds });
+    ok(readCfg().printers.every((p, i) => p.id === reversed[i].id), "H2: a save from an older page (no ids) keeps each printer's id, matched by address", readCfg().printers);
+
+    // H2 (c) a legacy dispatch.json (positions) migrates once, by position
+    await stopHub();
+    dj = readDj();
+    delete dj.printer_keys; delete dj.pins;
+    dj.maintenance = { [String(svAt())]: { since: 1, note: "legacy" } };
+    const legacyJob = { id: "job_legacy", file: "sv-single.gcode", type: "sv06-plus-ace", qty: 2, remaining: 2, deadline: null, priority: 3,
+      bundle_id: null, needs_finish: false, est_minutes: 30, colors: [], multi: false, state: "printing", created: Date.now(), history: [], printing_on: svAt() };
+    dj.jobs = dj.jobs.filter(j => j.id !== PJ).concat([legacyJob]);
+    fs.writeFileSync(djPath, JSON.stringify(dj, null, 2));
+    mockSv.state.printState = "printing"; mockSv.state.filename = "sv-single.gcode";
+    await startHub(hubDir);
+    await sleep(5200);
+    dj = readDj();
+    ok(dj.printer_keys === "id" && dj.maintenance[SVPID] && (dj.jobs.find(j => j.id === "job_legacy") || {}).printing_on === SVPID,
+      "H2: a legacy dispatch.json is migrated once, position to id, on load", { keys: dj.printer_keys, m: dj.maintenance, on: (dj.jobs.find(j => j.id === "job_legacy") || {}).printing_on });
+    let lj = await jobById("job_legacy");
+    ok(lj && lj.printing_on === svAt() && lj.state === "printing", "H2: …and the API still speaks positions, so the page is unchanged", lj && lj.printing_on);
+    // put the order back for everything after this
+    r = await jpost("/api/config", { gcodeFolder: cfg.gcodeFolder, printers: [...readCfg().printers].reverse() });
+    lj = await jobById("job_legacy");
+    ok(lj && lj.printing_on === svAt() && svAt() === 1, "H2: the in-flight claim follows the machine back to its old position", lj && { on: lj.printing_on, sv: svAt() });
+    await jpost("/api/dispatch/maintenance", { printer: svAt(), down: false });
+
+    // S1: a copy that finishes while the Hub is DOWN counts as done at boot
+    await settle();                                   // the tick has seen SV printing
+    await stopHub();
+    mockSv.state.printState = "complete";
+    await startHub(hubDir);
+    await sleep(5200);
+    await jpost("/api/dispatch/tick", {});
+    lj = await jobById("job_legacy");
+    ok(lj && lj.remaining === 1 && lj.printing_on === null, "S1: a print that completed while the Hub was down is counted (2 -> 1), not requeued as stale", lj && { rem: lj.remaining, on: lj.printing_on, st: lj.state });
+    ok(lj && (lj.history || []).some(h => h.result === "complete"), "S1: …and recorded in the job's history", lj && lj.history);
+    r = await jget("/api/dispatch/plan");
+    ok((r.body.slots || []).filter(s => s.job_id === "job_legacy" && !s.unplannable).length === 1, "S1: …so only ONE copy is planned, not the finished one again", (r.body.slots || []).filter(s => s.job_id === "job_legacy").length);
+    r = await jget("/api/dispatch");
+    ok((r.body.awaiting || []).includes(svAt()), "S1: …and the bed-clear gate is armed for that printer", r.body.awaiting);
+    ok(readDj().last_state && readDj().last_state[SVPID] && Array.isArray(readDj().awaiting), "S1: LAST_STATE and AWAITING are saved in dispatch.json, by printer id", { ls: readDj().last_state, aw: readDj().awaiting });
+    await jpost("/api/dispatch/clear-bed", { printer: svAt() });
+    mockSv.state.printState = "standby"; mockSv.state.filename = "";
+    await settle();
+
+    // S2: a cancelled print releases the claim, keeps the count, says so
+    mockSv.state.printState = "printing"; mockSv.state.filename = "sv-single.gcode";
+    await settle(); await settle();
+    lj = await jobById("job_legacy");
+    ok(lj && lj.printing_on === svAt() && lj.state === "printing", "S2 setup: the job is claimed again", lj && { on: lj.printing_on, st: lj.state });
+    mockSv.state.printState = "cancelled";
+    await settle();
+    lj = await jobById("job_legacy");
+    ok(lj && lj.printing_on === null && lj.state === "queued" && lj.remaining === 1, "S2: a cancelled print releases the printer and keeps the copy to print (remaining unchanged)", lj && { on: lj.printing_on, st: lj.state, rem: lj.remaining });
+    ok(lj && (lj.history || []).slice(-1)[0] && lj.history.slice(-1)[0].result === "cancelled", "S2: …the result is in the job's history", lj && lj.history);
+    ok(lj && /ended without completing|cancel/i.test(lj.attention || ""), "S2: …and the job carries an attention message for its row", lj && lj.attention);
+    r = await jpost("/api/dispatch/jobs/update", { id: "job_legacy", clear_attention: true });
+    lj = await jobById("job_legacy");
+    ok(lj && !lj.attention, "S2: the attention message clears when the user dismisses it", lj && lj.attention);
+    const dui = fs.readFileSync(path.join(REPO, "public", "modules", "dispatch-ui.js"), "utf8");
+    ok(/\.attention/.test(dui) && /clear_attention/.test(dui), "S2: the Dispatch job row shows the attention message and a way to clear it");
+    mockSv.state.printState = "standby"; mockSv.state.filename = "";
+    await settle();
+    await jpost("/api/dispatch/jobs/remove", { id: "job_legacy" });
+
+    // S8: completions match on file AND type, and adoption records the path
+    r = await jpost("/api/dispatch/jobs", { again: true, file: "multi.gcode", type: "u1", qty: 1 });
+    const TJ = r.body.job.id;
+    mockSv.state.printState = "printing"; mockSv.state.filename = "multi.gcode";   // the SV is a different type
+    await settle(); await settle();
+    let tj = await jobById(TJ);
+    ok(tj && tj.printing_on === null, "S8: a print of the same file name on a printer of another TYPE does not claim the job", tj && tj.printing_on);
+    mockSv.state.printState = "complete";
+    await settle();
+    tj = await jobById(TJ);
+    ok(tj && tj.remaining === 1, "S8: …and its completion does not count against the job", tj && tj.remaining);
+    mockSv.state.printState = "standby"; mockSv.state.filename = "";
+    mockU1.state.printState = "printing"; mockU1.state.filename = "multi.gcode";
+    await settle(); await settle();
+    tj = await jobById(TJ);
+    ok(tj && tj.printing_on === u1At() && tj.pushed_as === "multi.gcode", "S8: adopting on the right type records the path the printer reports (pushed_as)", tj && { on: tj.printing_on, as: tj.pushed_as });
+    mockU1.state.printState = "complete"; mockU1.state.filename = "other/multi.gcode";
+    await settle();
+    tj = await jobById(TJ);
+    ok(tj && tj.remaining === 1, "S8: a completion of a DIFFERENT file with the same name (other folder) is not this job's", tj && { rem: tj.remaining, on: tj.printing_on });
+    mockU1.state.filename = "multi.gcode";
+    await settle();
+    mockU1.state.printState = "printing"; await settle();
+    mockU1.state.printState = "complete"; await settle();
+    tj = await jobById(TJ);
+    ok(!tj, "S8: …while its own path completing does finish it", tj);
+    mockU1.state.printState = "standby"; mockU1.state.filename = "";
+    await settle();
   }
 
   await stopHub();

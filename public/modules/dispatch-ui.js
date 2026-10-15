@@ -296,8 +296,14 @@
       const gone = j.file_missing
         ? ` <span class="dsp-jmissing" title="This file is no longer in the Hub library (deleted after the job was queued?). Re-slice it or copy it back from a printer's storage, or remove the job.">file missing</span>`
         : "";
+      // S2: a print that ended without completing (cancelled, error) says so
+      // on its row until someone acknowledges it. The copy is still owed.
+      const attn = j.attention
+        ? ` <span class="dsp-jmissing dsp-jattn" title="${esc(j.attention)}. The copy is still counted as remaining.">${esc(j.attention)}</span>` +
+          ` <button data-dsp-ack="${esc(j.id)}" title="Clear this notice">OK</button>`
+        : "";
       return `<div class="dsp-job dsp-${esc(j.state)}${j.bundle_id ? " dsp-inbundle" : ""}${j.file_missing ? " dsp-filemissing" : ""}">
-        <span class="dsp-jfile">${esc(j.file)}${gone}</span><span>${j.remaining}/${j.qty}</span>
+        <span class="dsp-jfile">${esc(j.file)}${gone}${attn}</span><span>${j.remaining}/${j.qty}</span>
         <span title="deadline">${esc(dl)}</span>
         ${prioSel}
         <span>${j.est_minutes ? fmtMin(j.est_minutes) + "/ea" : "est ?"}</span>
@@ -330,6 +336,9 @@
       await jpost("/api/dispatch/jobs/release", { id: b.dataset.dspRel });
       await jpost("/api/dispatch/adopt", {});      // let it re-match against reality
       load();
+    });
+    box.querySelectorAll("[data-dsp-ack]").forEach(b => b.onclick = async () => {
+      await jpost("/api/dispatch/jobs/update", { id: b.dataset.dspAck, clear_attention: true }); load();
     });
     box.querySelectorAll("[data-dsp-pause]").forEach(b => b.onclick = async () => {
       const j = (STATE.jobs || []).find(x => x.id === b.dataset.dspPause);

@@ -84,6 +84,25 @@ printers, and nothing leaves your network unless you turn remote access on.
   "transfer stalled" when either side stops moving data for 30 seconds (or goes quiet
   for 60), the same rule a print push follows since 2.42. The file is released at once
   and a half-copied library file is cleaned up.
+- **Printers keep their identity when you reorder them.** Each printer now has a
+  permanent id. Dispatch claims, maintenance flags and pins are stored against that id
+  instead of the printer's position in the list, so dragging U3 above U1 in Settings no
+  longer moves U3's maintenance flag onto U1. An existing dispatch.json is converted once
+  on the first start (the log says "migrated dispatch.json from printer positions to
+  printer ids").
+- **A copy that finishes while the Hub is off still counts.** If a print completes while
+  the Hub is stopped or restarting, the next start counts it as done (one fewer remaining,
+  bed-clear gate armed) instead of planning the same copy again. The last state seen on
+  each printer and the bed-clear gates are now saved, so a restart picks up where it left
+  off.
+- **Cancelled and failed prints free the printer.** A print that is cancelled, errors out
+  or drops back to standby releases its printer at once, keeps the copy as still to print,
+  records the result in the job's history and shows a notice on the job row until you
+  press OK.
+- **Completions match the exact file.** A finished print is credited to a job only when
+  the printer type matches and the path matches the one the job was started or adopted
+  with, not just the bare file name. A same-named file in another folder, or on a
+  different kind of printer, no longer counts as one of your copies.
 
 ### 2.42.0 - safety fixes
 
