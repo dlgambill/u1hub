@@ -125,6 +125,8 @@ const MODULE_CTX = Object.freeze({
   version: VERSION,
   detectCaps: (idx) => detectCaps(idx),
   fileInfo: (name, typeSlug) => fileInfoForModules(name, typeSlug),
+  // S4 (2.44): push a named event to every open /api/events stream.
+  sseEmit: (name, obj) => { if (typeof hub.sseEmit === "function") hub.sseEmit(name, obj); },
   // v2.12: slicing writes produced gcode into a type's folder; fileInfo only
   // reads. Live lookup, same reassignment-safety rules as the getters below.
   gcodeFolderFor: (slug) => typeFolder(typeBySlug(String(slug || "u1")) || typeBySlug("u1")),

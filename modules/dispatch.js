@@ -321,6 +321,7 @@ function register(ctx) {
   function save() {
     // H4 + H2: pins, the bed-clear gate and last seen states are state too,
     // written with everything else and keyed by printer id (toDisk).
+    if (typeof markPlanDirty === "function") markPlanDirty();   // S4: every state change replans once
     const data = JSON.stringify(toDisk(), null, 2);
     const tmp = FILE + ".tmp";
     if (!SAVE_FALLBACK) {
@@ -361,6 +362,60 @@ function register(ctx) {
   const PLACEMENT = new Map();                   // job.id + "#" + copy -> printer index
   // Declared here (not with the window math below) because save() reads them
   // and the load-time sweep further down can already save.
+  // S4 (2.44): the plan cache lives up here because save() marks it dirty and
+  // save() runs during load, before the routes below exist.
+  const PLAN_CACHE = { value: null, dirty: true, sig: "", timer: null, running: null };
+  const PLAN_MAX_AGE_MS = 15000;
+
+  // ---- S3 (2.44): learned estimates ---------------------------------------
+  // The slicer's estimate is a guess about an ideal printer. The farm knows
+  // how long each file actually took, on which machine. Every completed copy
+  // records {actual, est, printer_id}; a file with two or more runs is planned
+  // at its own median ratio, a file never seen on this farm borrows the
+  // printer's median ratio (ten runs kept), and a user-typed estimate wins
+  // over both. estimates.json lives beside dispatch.json.
+  const EST_FILE = path.join(ctx.baseDir, "estimates.json");
+  const EST_FILE_RUNS = 5, EST_PRINTER_RUNS = 10;
+  let EST = { files: {}, printers: {} };
+  try { const raw = JSON.parse(fs.readFileSync(EST_FILE, "utf8")); if (raw && typeof raw === "object") EST = { files: raw.files || {}, printers: raw.printers || {} }; } catch {}
+  function saveEst() {
+    try { const tmp = EST_FILE + ".tmp"; fs.writeFileSync(tmp, JSON.stringify(EST, null, 2)); fs.renameSync(tmp, EST_FILE); }
+    catch (e) { ctx.hublog("warn", "dispatch: could not save estimates.json - " + e.message); }
+  }
+  const median = a => { const v = a.filter(Number.isFinite).sort((x, y) => x - y); if (!v.length) return null; const m = v.length >> 1; return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2; };
+  const estKey = job => String(job.type || "u1") + "/" + String(job.file || "");
+  function recordRun(job, i, actualMin) {
+    if (!(actualMin > 0.5)) return;
+    const k = estKey(job);
+    const runs = (EST.files[k] = Array.isArray(EST.files[k]) ? EST.files[k] : []);
+    runs.push({ at: Date.now(), actual: Math.round(actualMin), est: job.est_minutes || null, printer_id: pidAt(i) || null });
+    if (runs.length > EST_FILE_RUNS) runs.splice(0, runs.length - EST_FILE_RUNS);
+    const pid = pidAt(i);
+    if (pid && job.est_minutes > 0 && !job.est_user) {
+      const pr = (EST.printers[pid] = Array.isArray(EST.printers[pid]) ? EST.printers[pid] : []);
+      pr.push(+(actualMin / job.est_minutes).toFixed(3));
+      if (pr.length > EST_PRINTER_RUNS) pr.splice(0, pr.length - EST_PRINTER_RUNS);
+    }
+    saveEst();
+  }
+  // What to plan this job at on lane i: { min, source, runs, slicer }.
+  function learnedFor(job, i) {
+    const slicer = job.est_minutes > 0 ? job.est_minutes : null;
+    if (job.est_user && slicer) return { min: slicer, source: "user", slicer };
+    const runs = EST.files[estKey(job)] || [];
+    const withEst = runs.filter(r => r.est > 0 && r.actual > 0);
+    if (slicer && withEst.length >= 2) {
+      const ratio = median(withEst.map(r => r.actual / r.est));
+      return { min: Math.max(1, Math.round(slicer * ratio)), source: "file", runs: withEst.length, slicer };
+    }
+    if (!slicer && runs.length >= 2) return { min: Math.max(1, Math.round(median(runs.map(r => r.actual)))), source: "file", runs: runs.length, slicer: null };
+    const pid = pidAt(i);
+    const pr = pid ? (EST.printers[pid] || []) : [];
+    if (slicer && pr.length >= 3) return { min: Math.max(1, Math.round(slicer * median(pr))), source: "printer", runs: pr.length, slicer };
+    if (slicer) return { min: slicer, source: "slicer", slicer };
+    return { min: 60, source: "assumed", slicer: null };
+  }
+
   const AWAITING = new Set();                    // printer idx flagged "bed needs clearing"
   const LAST_STATE = new Map();                  // printer idx -> last seen print state
 
@@ -821,6 +876,15 @@ function register(ctx) {
                paused: /pause/.test(st), maint: maintOf(x.i),
                busyUntil: cursor > now ? cursor : null, lastEnd: null, queued: 0 };
     });
+    // S5 (2.44): a printer that was just handed a copy at "Bed cleared ->
+    // start next" is busy from now for that copy's runtime, even though the
+    // executor has not seen it printing yet (upload + the 10 s tick). Without
+    // this the lane looked free for a minute or two and a second clear-bed
+    // could be handed the same copy.
+    for (const l of lanes) {
+      const sj = D.jobs.find(j => j.starting_on && j.printing_on == null && j.starting_on.printer === l.idx && now - (j.starting_on.at || 0) < STARTING_TTL_MS);
+      if (sj && l.cursor <= now) { l.cursor = now + learnedFor(sj, l.idx).min * 60000; l.busyUntil = l.cursor; l.startingFile = sj.file; l.startingJob = sj.id; }
+    }
     // Bundle deadlines tighten members'.
     const bundleDeadline = {};
     for (const b of D.bundles) if (b.deadline) bundleDeadline[b.id] = b.deadline;
@@ -928,9 +992,10 @@ function register(ctx) {
     for (const job of ordered) {
       // A copy a machine is printing RIGHT NOW is already accounted for -
       // subtract it so the planner never schedules work the farm is doing.
-      const inFlight = job.printing_on != null ? 1 : 0;
+      // S5: a copy handed off at clear-bed counts as in flight too.
+      const starting = job.printing_on == null && job.starting_on && (now - (job.starting_on.at || 0) < STARTING_TTL_MS);
+      const inFlight = job.printing_on != null ? 1 : (starting ? 1 : 0);
       const copies = Math.max(0, (job.remaining ?? job.qty ?? 1) - inFlight);
-      const est = job.est_minutes || 60;         // unknown estimate: assume an hour, honestly labeled
       for (let c = 0; c < copies; c++) {
         if (slots.length >= PLAN_SLOT_CAP) break;
         const eligible = usable.filter(l => !job.multi || l.multiColor);
@@ -964,6 +1029,8 @@ function register(ctx) {
           // Flooring at that job's start instead would let the two overlap on
           // different machines, which is exactly the situation being escaped.
           const floor = jobEnds.get(job.after) || 0;
+          const le = learnedFor(job, l.idx);     // S3: this file on this machine
+          const est = le.min;
           const picked = pickStart(nextStart(Math.max(l.cursor, now, floor)), est, strict, CAL(est));
           if (!picked) continue;
           const realStart = picked.start, realEnd = picked.end;
@@ -976,10 +1043,11 @@ function register(ctx) {
           // avoiding when start times are comparable, not when it costs half a
           // day of an idle machine.
           const cost = realEnd + swaps.length * SWAP_COST_MIN * 60000;
-          cands.push({ lane: l, start: realStart, end: realEnd, swaps, cost });
+          cands.push({ lane: l, start: realStart, end: realEnd, swaps, cost, est, le });
         }
         let best = null;
         for (const cand of cands) if (!best || cand.cost < best.cost) best = cand;
+        const cheapest = best;
         // v2.30: the earliest ANY lane could have started this copy, windows
         // and in-flight prints included. Written into the slot so a reader
         // (the harness's "no job waits while another lane is free" check)
@@ -996,6 +1064,16 @@ function register(ctx) {
           if (stay && stay.cost - best.cost <= STICKY_TOLERANCE_MIN * 60000) best = stay;
         }
         if (!best) { slots.push({ job_id: job.id, file: job.file, unplannable: "no attended window found within 14 days" }); continue; }
+        const est = best.est;
+        // S7: WHY this printer, with the runners-up. Everything here was
+        // computed for the choice anyway; the only new thing is keeping it.
+        const whyReason = pinned !== undefined ? "pinned"
+          : (best !== cheapest ? "sticky"
+          : (cands.some(x => x !== best && x.end < best.end) ? "fewer swaps" : "earlier finish"));
+        const alternatives = cands.filter(x => x !== best).sort((a, b) => a.cost - b.cost).slice(0, 3).map(x => ({
+          printer: x.lane.idx, printerName: x.lane.name, est_start: x.start, est_end: x.end, swaps: x.swaps.length,
+          later_min: Math.round((x.cost - best.cost) / 60000)
+        }));
         const dlInfo = deadlineOf(job);
         const dl = dlInfo.at;
         // WHY this copy lands when it lands. Everything between now and its
@@ -1025,7 +1103,12 @@ function register(ctx) {
           printer: best.lane.idx, printerName: best.lane.name,
           est_start: best.start, est_end: best.end, est_minutes: est,
           earliest_any: earliestAny,
-          est_assumed: !job.est_minutes || undefined,
+          est_assumed: best.le.source === "assumed" || undefined,
+          // S3: where the runtime came from - slicer, this file's own runs,
+          // this printer's typical ratio, or the user - and the slicer figure.
+          est_source: best.le.source, est_runs: best.le.runs || undefined, est_slicer: best.le.slicer || undefined,
+          // S7: the decision, with the runners-up
+          why: { reason: whyReason, alternatives },
           swaps: best.swaps, deadline: dl, deadline_source: dlInfo.src || undefined,
           pinned: pinned !== undefined || undefined,
           // Pushed back behind another job, and behind which one — so the
@@ -1083,8 +1166,9 @@ function register(ctx) {
       const held = D.jobs.find(j => j.printing_on === l.idx && j.state === "printing");
       running.push({
         printer: l.idx, printerName: l.name,
-        file: fname || (held && held.file) || null,
-        job_id: held ? held.id : null,
+        file: fname || (held && held.file) || l.startingFile || null,
+        starting: l.startingFile ? true : undefined,   // S5: handed off, not yet seen printing
+        job_id: held ? held.id : (l.startingJob || null),
         tracked: !!held,                 // false = running, but Dispatch doesn't own it
         // v2.36: busyUntil, NOT cursor. Placement advances l.cursor past every
         // job it puts on this lane, so reading it here reported the END OF THE
@@ -1150,9 +1234,14 @@ function register(ctx) {
   // One copy finished on printer i. The bed-clear gate is armed by the caller.
   function completeCopy(job, i, fp, note) {
     job.remaining = Math.max(0, (job.remaining ?? job.qty) - 1);
-    (job.history = job.history || []).push({ printer: i, printer_id: pidAt(i), ended: Date.now(), result: "complete" });
+    // S3: the actual run time, from the moment the print was adopted.
+    const now = Date.now();
+    const actual = job.started > 0 && now > job.started ? (now - job.started) / 60000 : null;
+    (job.history = job.history || []).push({ printer: i, printer_id: pidAt(i), started: job.started || null, ended: now,
+      actual_min: actual != null ? Math.round(actual) : null, est_min: job.est_minutes || null, result: "complete" });
+    if (actual != null) recordRun(job, i, actual);
     job.printing_on = null;
-    delete job.pushed_as;
+    delete job.pushed_as; delete job.started; delete job.starting_on;
     delete job.attention;                        // the next copy completing clears an old warning
     ctx.hublog("info", "dispatch: '" + job.file + "' copy done on " + printerLabel(fp, i) + (note ? " " + note : "") +
       " — " + job.remaining + " remaining; bed-clear gate armed");
@@ -1167,9 +1256,9 @@ function register(ctx) {
   // done (remaining unchanged), and the job says so until the user clears it.
   function endedWithout(job, i, fp, st) {
     const result = /cancel/.test(st) ? "cancelled" : /error/.test(st) ? "error" : "stopped";
-    (job.history = job.history || []).push({ printer: i, printer_id: pidAt(i), ended: Date.now(), result });
+    (job.history = job.history || []).push({ printer: i, printer_id: pidAt(i), started: job.started || null, ended: Date.now(), result });
     job.printing_on = null;
-    delete job.pushed_as;
+    delete job.pushed_as; delete job.started; delete job.starting_on;
     job.attention = "print on " + printerLabel(fp, i) + " ended without completing (" + result + ")";
     ctx.hublog("info", "dispatch: '" + job.file + "' on " + printerLabel(fp, i) + " ended without completing (" +
       result + ") - copy still to print, " + job.remaining + " remaining");
@@ -1228,10 +1317,21 @@ function register(ctx) {
   if (bootSweep.unref) bootSweep.unref();
 
   // ---- executor: completion watcher (never a starter) -----------------------
+  const STARTING_TTL_MS = 5 * 60000;             // S5: a hand-off that never became a print
   async function tick() {
     ensureMapped();
     let fleet; try { fleet = await ctx.fleet(); } catch { return; }
     let dirty = false;
+    // S5: a copy handed to a printer at "Bed cleared -> start next" is in
+    // flight until the executor sees it printing. If it never does, say so.
+    for (const j of D.jobs) {
+      if (!j.starting_on) continue;
+      if (j.printing_on != null) { delete j.starting_on; dirty = true; continue; }
+      if (Date.now() - (j.starting_on.at || 0) > STARTING_TTL_MS) {
+        j.attention = "start on " + printerLabel((fleet || [])[j.starting_on.printer], j.starting_on.printer) + " did not begin within 5 min - check the printer";
+        delete j.starting_on; dirty = true;
+      }
+    }
     for (let i = 0; i < (fleet || []).length; i++) {
       const fp = fleet[i]; if (!fp) continue;
       // A printer that did not answer has no state. Keeping the last real one
@@ -1288,12 +1388,20 @@ function register(ctx) {
           // that has the filament loaded. Pinning made the job's REMAINING
           // copies immovable too.
           job.state = "printing"; job.printing_on = i; job.pushed_as = reportedPath(fp); dirty = true;
+          // S3: run time is measured from here. A print adopted mid-run (Hub
+          // started late) would be measured short, so only stamp it when the
+          // transition was seen or the hand-off (S5) said it was starting.
+          if (!adopting || (job.starting_on && job.starting_on.printer === i)) job.started = Date.now(); else delete job.started;
+          delete job.starting_on;                  // S5: the hand-off landed
           if (adopting) ctx.hublog("info", "dispatch: adopted in-progress '" + job.file +
             "' on " + printerLabel(fp, i) + " (it was already running)");
         }
       }
     }
     if (dirty) save();
+    // S4: progress and ETAs moved even when no job record did.
+    PLAN_CACHE.dirty = true;
+    await refreshPlan().catch(() => {});
   }
   // The executor must not die on a bad tick, but "must not die" is not "must
   // not tell anyone": this empty catch is what hid the save failure above for a
@@ -1524,6 +1632,13 @@ function register(ctx) {
     if (b.priority !== undefined) j.priority = clampPrio(b.priority);   // v2.22: 1-5
     if (b.needs_finish !== undefined) j.needs_finish = !!b.needs_finish;
     if (b.clear_attention) delete j.attention;                           // S2: the user saw it
+    // S3: a typed runtime wins over the slicer and the learned figures; null
+    // goes back to the file's own estimate.
+    if (b.est_minutes !== undefined) {
+      const m = parseInt(b.est_minutes, 10);
+      if (Number.isFinite(m) && m > 0) { j.est_minutes = Math.min(100000, m); j.est_user = true; }
+      else { delete j.est_user; const info = ctx.fileInfo(j.file, j.type); j.est_minutes = (info && info.estMinutes) || null; }
+    }
     if (b.state === "paused" || b.state === "queued") { if (j.state !== "printing") j.state = b.state; }
     // H4: lowering the quantity to what is already printed leaves nothing to
     // do. Finish the job (same exit as a last copy) unless a copy is still on
@@ -1753,8 +1868,56 @@ function register(ctx) {
     if (adopted.length) save();
     res.json({ ok: true, adopted, already, unmatched, released });
   });
+  // ---- S4 (2.44): compute on change, serve from cache, push to subscribers --
+  // plan() used to run from scratch on every /api/dispatch/plan, clear-bed,
+  // push-back and maintenance toggle, and the timeline only moved when the
+  // page asked. Now: any state change (every save()) and every executor tick
+  // mark the plan dirty; a debounced refresh recomputes it once, keeps it
+  // here with generated_at, and pushes it as a "dispatch" SSE event when the
+  // placed picture changed (times compared to the minute, so a ticking clock
+  // does not spam the stream). GET serves the cache unless ?fresh=1.
+  function planSig(p) {
+    const m = ms => ms ? Math.round(ms / 60000) : ms;
+    return JSON.stringify({
+      s: (p.slots || []).map(x => [x.job_id, x.copy, x.printer, m(x.est_start), m(x.est_end), x.unplannable || 0, x.misses_deadline ? 1 : 0, x.pinned ? 1 : 0]),
+      r: (p.running || []).map(x => [x.printer, x.file, m(x.est_end), x.starting ? 1 : 0]),
+      p: (p.printers || []).map(x => [x.idx, x.busy ? 1 : 0, x.maintenance ? 1 : 0]),
+      l: p.locked ? 1 : 0
+    });
+  }
+  // The fleet changes without any dispatch.json write (a print ends, a
+  // printer goes idle); a plan built against an older snapshot is stale too.
+  const fleetSig = f => { try { return JSON.stringify((f || []).map(x => x ? [x.online === false ? 0 : 1, String(x.status || x.state || ""), String(x.filename || x.file || ""), Math.round((x.etaSec || 0) / 60), x.maintenance ? 1 : 0] : null)); } catch { return ""; } };
+  async function refreshPlan() {
+    if (PLAN_CACHE.running) return PLAN_CACHE.running;
+    PLAN_CACHE.running = (async () => {
+      try {
+        let f = null; try { f = await ctx.fleet(); } catch {}
+        const p = await plan();
+        PLAN_CACHE.value = p; PLAN_CACHE.dirty = false; PLAN_CACHE.fsig = fleetSig(f);
+        const sig = planSig(p);
+        if (sig !== PLAN_CACHE.sig) {
+          PLAN_CACHE.sig = sig;
+          if (typeof ctx.sseEmit === "function") ctx.sseEmit("dispatch", { plan: p });
+        }
+        return p;
+      } finally { PLAN_CACHE.running = null; }
+    })();
+    return PLAN_CACHE.running;
+  }
+  function markPlanDirty() {
+    PLAN_CACHE.dirty = true;
+    if (PLAN_CACHE.timer) return;
+    PLAN_CACHE.timer = setTimeout(() => { PLAN_CACHE.timer = null; refreshPlan().catch(() => {}); }, 300);
+    if (PLAN_CACHE.timer.unref) PLAN_CACHE.timer.unref();
+  }
+  async function cachedPlan(fresh) {
+    let stale = !PLAN_CACHE.value || PLAN_CACHE.dirty || (Date.now() - (PLAN_CACHE.value.generated_at || 0) > PLAN_MAX_AGE_MS);
+    if (!stale && !fresh) { let f = null; try { f = await ctx.fleet(); } catch {} if (fleetSig(f) !== PLAN_CACHE.fsig) stale = true; }
+    return (fresh || stale) ? refreshPlan() : PLAN_CACHE.value;
+  }
   app.get("/api/dispatch/plan", async (req, res) => {
-    try { res.json(await plan()); }
+    try { res.json(await cachedPlan(String(req.query.fresh || "") === "1")); }
     catch (e) { res.status(500).json({ error: "Plan failed: " + e.message }); }
   });
   // v2.22: FREEZE / UNFREEZE the board. Locked means the times you
@@ -1794,7 +1957,7 @@ function register(ctx) {
     if (!Number.isInteger(idx)) return res.status(400).json({ error: "Body needs { printer }" });
     if (AWAITING.delete(idx)) save();               // S1: the gate is persisted
     try {
-      const p = await plan();
+      const p = await cachedPlan(false);          // S4: at most a tick old; no replanning under a tap
       const next = (p.slots || []).find(s => s.printer === idx && !s.unplannable) || null;
       // v2.23.2: say up front when the planned file is no longer in the Hub
       // library. The owner pressed "next", confirmed the filament dialog, landed on
@@ -1858,6 +2021,22 @@ function register(ctx) {
     return { unload, mode, next: { file: next.file, colors: [...nextColors].map(h => "#" + h) } };
   }
   ctx.provide("dispatch.unloadPlan", unloadPlan);
+  // S5 (2.44): /api/print tells Dispatch the moment it issues the start
+  // command. From here until the executor sees the printer printing (upload
+  // finished, next 10 s tick) the copy is in flight on this printer, so a
+  // second "Bed cleared -> start next" elsewhere cannot be handed the same
+  // copy. Recorded at the start command, not at the clear-bed tap: a dialog
+  // the user backs out of never marks anything.
+  function printStarted(idx, file, typeSlug) {
+    ensureMapped();
+    const job = D.jobs.find(j => j.printing_on == null && (j.state === "queued" || j.state === "scheduled") &&
+      j.file === path.basename(String(file || "")) && String(j.type || "u1") === String(typeSlug || "u1"));
+    if (!job) return null;
+    job.starting_on = { printer: idx, at: Date.now() };
+    save();
+    return job.id;
+  }
+  ctx.provide("dispatch.printStarted", printStarted);
 
   ctx.provide("dispatch.jobs", () => { ensureMapped(); return D.jobs; });
   // v2.40: see createJob() above - the print-request pipeline (models.js)

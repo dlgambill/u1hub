@@ -306,7 +306,7 @@
         <span class="dsp-jfile">${esc(j.file)}${gone}${attn}</span><span>${j.remaining}/${j.qty}</span>
         <span title="deadline">${esc(dl)}</span>
         ${prioSel}
-        <span>${j.est_minutes ? fmtMin(j.est_minutes) + "/ea" : "est ?"}</span>
+        <span class="dsp-jest" data-dsp-est="${esc(j.id)}" title="${j.est_user ? "your runtime - click to change or clear" : j.est_minutes ? "the slicer's estimate - click to type your own" : "no estimate in the file - click to type one"}">${j.est_minutes ? fmtMin(j.est_minutes) + "/ea" + (j.est_user ? " \u270e" : "") : "est ? \u270e"}</span>
         <span class="dsp-swatches">${(j.colors || []).map(c => `<i style="background:#${esc(String(c).replace(/^#/, ""))}"></i>`).join("")}</span>
         <span class="dsp-jstate">${esc(st)}</span>
         <button data-dsp-pause="${esc(j.id)}">${j.state === "paused" ? "Resume" : "Pause"}</button>
@@ -336,6 +336,23 @@
       await jpost("/api/dispatch/jobs/release", { id: b.dataset.dspRel });
       await jpost("/api/dispatch/adopt", {});      // let it re-match against reality
       load();
+    });
+    // S3 (2.44): type a runtime for a job the file could not estimate (or
+    // override the slicer's). Inline, no browser dialog; Enter saves, Escape
+    // cancels, an empty field goes back to the file's own figure.
+    box.querySelectorAll("[data-dsp-est]").forEach(sp => sp.onclick = () => {
+      if (sp.querySelector("input")) return;
+      const id = sp.dataset.dspEst;
+      const j = (STATE.jobs || []).find(x => x.id === id) || {};
+      sp.innerHTML = `<input type="number" min="1" max="100000" step="1" value="${j.est_user && j.est_minutes ? j.est_minutes : ""}" placeholder="min" style="width:5.5em" title="minutes per copy; empty = the file's own estimate"> <button data-est-save="${esc(id)}">Save</button>`;
+      const inp = sp.querySelector("input"); inp.focus();
+      const done = async save => {
+        if (save) { const v = inp.value.trim(); await jpost("/api/dispatch/jobs/update", { id, est_minutes: v === "" ? null : +v }); }
+        load();
+      };
+      sp.querySelector("[data-est-save]").onclick = e => { e.stopPropagation(); done(true); };
+      inp.onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); done(true); } if (e.key === "Escape") done(false); };
+      inp.onclick = e => e.stopPropagation();
     });
     box.querySelectorAll("[data-dsp-ack]").forEach(b => b.onclick = async () => {
       await jpost("/api/dispatch/jobs/update", { id: b.dataset.dspAck, clear_attention: true }); load();
@@ -611,7 +628,7 @@
     if (!r) return;
     const rows = [
       ["Printer", r.printerName],
-      ["State", r.paused ? "⏸ paused — still holding the bed and its filament" : "▶ printing"],
+      ["State", r.starting ? "\u23f3 starting \u2014 sent to the printer, not yet reported as printing" : r.paused ? "⏸ paused — still holding the bed and its filament" : "▶ printing"],
       ["File", r.file || "the printer didn't name a file"],
       ["Ends", r.eta_unknown ? "unknown — this lane is planned pessimistically (+8 h)" : fmtT(r.est_end)],
       ["Started", "not reported — the Hub is told what remains, not when it began"],
@@ -643,7 +660,14 @@
       ["Copy", s.copy + " of " + s.of],
       ["Start", fmtT(s.est_start)],
       ["Finish", fmtT(s.est_end) + (s.est_assumed ? "  (no estimate in file \u2014 1 h assumed)" : "")],
-      ["Runtime", fmtMin(s.est_minutes)],
+      ["Runtime", fmtMin(s.est_minutes) + (
+        s.est_source === "file" ? "  (this file usually takes this long here, from " + (s.est_runs || 0) + " run" + (s.est_runs === 1 ? "" : "s") + (s.est_slicer ? "; the slicer said " + fmtMin(s.est_slicer) : "") + ")"
+        : s.est_source === "printer" ? "  (slicer " + fmtMin(s.est_slicer || s.est_minutes) + ", corrected by how this printer usually runs)"
+        : s.est_source === "user" ? "  (your figure)"
+        : "")],
+      // S7 (2.44): why this printer, and what the runners-up would have cost.
+      s.why ? ["Why here", ({ "earlier finish": "finishes soonest", "fewer swaps": "fewer spool changes for a similar finish", "sticky": "kept where the last plan had it (moving would not gain much)", "pinned": "you pinned it here" })[s.why.reason] || s.why.reason +
+        (s.why.alternatives && s.why.alternatives.length ? ". Next best: " + s.why.alternatives.map(a => a.printerName + " " + (a.later_min > 0 ? "+" + fmtMin(a.later_min) : "same time") + (a.swaps ? " (" + a.swaps + " swap" + (a.swaps === 1 ? "" : "s") + ")" : "")).join(", ") : ". No other printer could take it.")] : null,
       ["Deadline", dl + (s.misses_deadline ? "   \u26a0 MISSES IT" : "")],
       s.idle_after_min ? ["Then idle", fmtMin(s.idle_after_min) + " waiting for a bed clear"] : null,
       s.contention ? ["\u26a0 Spool clash", s.contention.color + " is also needed by " + s.contention.file +
@@ -1454,6 +1478,14 @@
     load();
   }
 
+  // S4 (2.44): the server pushes the plan whenever it changes; the timeline
+  // redraws itself instead of waiting for a tap or a tab switch.
+  function onEvent(name, data) {
+    if (name !== "dispatch" || !data || !data.plan) return;
+    PLAN = data.plan;
+    if (EL && EL.style.display !== "none" && STATE) { renderReport(); renderChanges(); renderPlan(); }
+  }
+
   function onFleet() {
     if (EL && EL.style.display !== "none" && STATE) jget("/api/dispatch").then(d => {
       if (d.body) { const was = JSON.stringify(STATE.awaiting), now2 = JSON.stringify(d.body.awaiting);
@@ -1472,7 +1504,7 @@
   }
 
   window.HubModules.register("dispatch", {
-    tab: "Dispatch", mount, onShow, onFleet,
+    tab: "Dispatch", mount, onShow, onFleet, onEvent,
     fileAction, fileLabel: "\u{1F4CB} Send to Dispatch"
   });
 })();

@@ -434,5 +434,14 @@ setInterval(() => { farmMarkDirty(); }, 5000);
 
 setInterval(() => { for (const c of SSE_CLIENTS) { try { c.write(": hb\n\n"); } catch {} } }, 20000);
 
-Object.assign(hub, { decodeHeads, farmWsRestart, fileMeta, fleetSnapshot });
+// S4 (2.44): named events on the same stream, for modules (the Dispatch plan
+// today). The unnamed message stays the fleet snapshot, so old clients and
+// the fallback poll are untouched.
+function sseEmit(name, obj) {
+  if (!SSE_CLIENTS.size) return;
+  let s; try { s = "event: " + String(name).replace(/[^a-z0-9_-]/gi, "") + "\ndata: " + JSON.stringify(obj) + "\n\n"; } catch { return; }
+  for (const c of SSE_CLIENTS) { try { c.write(s); } catch {} }
+}
+
+Object.assign(hub, { decodeHeads, farmWsRestart, fileMeta, fleetSnapshot, sseEmit });
 };

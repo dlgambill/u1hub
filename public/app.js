@@ -808,6 +808,7 @@ window.addEventListener("pointercancel",endInteract,{capture:true,passive:true})
 function startEvents(){
   if(!window.EventSource) return;
   try{ ES=new EventSource("/api/events"); }catch{ return; }
+  ES.addEventListener("dispatch", e=>{ let d; try{ d=JSON.parse(e.data); }catch{ return; } HubModules.event("dispatch", d); });
   ES.onmessage=e=>{
     ES_OK=true;
     let d; try{ d=JSON.parse(e.data); }catch{ return; }
@@ -1316,6 +1317,11 @@ window.HubModules = {
   fleetTick(fleet){
     for (const def of Object.values(this._mods))
       if (def.onFleet) { try { def.onFleet(fleet); } catch(e){} }
+  },
+  // S4 (2.44): named server events (the Dispatch plan today) reach the module that wants them.
+  event(name, data){
+    for (const def of Object.values(this._mods))
+      if (def.onEvent) { try { def.onEvent(name, data); } catch(e){} }
   },
   // A module may claim the currently-selected file ("Send to X"). First one
   // wins; core shows the button only when something offers it.

@@ -101,7 +101,8 @@ function uploadWithProgress(base, fp, name, job) {
     // address, asleep). The hand test on 2.42.0 reported the second as the
     // first, which sends someone looking at the wrong thing.
     let connected = false;
-    req.on("socket", sock => sock.on("connect", () => { connected = true; }));
+    req.on("socket", sock => { if (sock.connecting === false) connected = true; else sock.once("connect", () => { connected = true; }); });
+    req.on("response", () => { connected = true; });
     req.on("error", e => {
       if (!connected && e && /stalled/.test(e.message))
         return reject(new Error("could not connect to " + u.hostname + " - the printer did not accept the connection (unplugged, asleep, or a wrong address?)"));
@@ -326,7 +327,11 @@ app.post("/api/print", async (req, res) => {
         job.unload = unload;
         await gcode(lines.join("\n"));
       }
-      if (start) { job.phase = "starting"; await gcode(`SDCARD_PRINT_FILE FILENAME="${name}"`); dequeueFile(name, t.slug); }
+      if (start) {
+        job.phase = "starting"; await gcode(`SDCARD_PRINT_FILE FILENAME="${name}"`); dequeueFile(name, t.slug);
+        // S5 (2.44): Dispatch holds this copy in flight until it sees it printing.
+        try { const started = hub.CAPS_PROVIDED && hub.CAPS_PROVIDED.get("dispatch.printStarted"); if (started) started(Number(printer), name, t.slug); } catch {}
+      }
       job.result = { printer: p.name, started: !!start, mapped: tools.length };
       job.phase = "done"; job.done = true;
     } catch (e) {

@@ -5535,6 +5535,111 @@ async function stopHub() {
     await settle();
   }
 
+  console.log("\n== SPRINT 3: S3 learned estimates, S4 cached plan + SSE, S5 hand-off, S7 why-here (2.44.0) ==");
+  {
+    const jobById = async id => ((await jget("/api/dispatch")).body.jobs || []).find(j => j.id === id);
+    const settle = async () => { await sleep(4500); await jpost("/api/dispatch/tick", {}); };
+    const u1At = () => { const f = JSON.parse(fs.readFileSync(path.join(hubDir, "config.json"), "utf8")).printers; return f.findIndex(p => p.url.endsWith(":" + portU1)); };
+    mockU1.state.printState = "standby"; mockU1.state.filename = "";
+    mockSv.state.printState = "standby"; mockSv.state.filename = "";
+    await settle();
+    for (const j of ((await jget("/api/dispatch")).body.jobs || [])) await jpost("/api/dispatch/jobs/remove", { id: j.id });
+
+    // ---- S4: the plan is served from a cache and pushed over SSE ----
+    let r = await jpost("/api/dispatch/jobs", { again: true, file: "multi.gcode", type: "u1", qty: 2 });
+    const J4 = r.body.job.id;
+    await sleep(600);
+    let p1 = (await jget("/api/dispatch/plan")).body, p2 = (await jget("/api/dispatch/plan")).body;
+    ok(p1.generated_at && p1.generated_at === p2.generated_at, "S4: two plan reads inside a tick serve the same cached plan", [p1.generated_at, p2.generated_at]);
+    const p3 = (await jget("/api/dispatch/plan?fresh=1")).body;
+    ok(p3.generated_at > p1.generated_at, "S4: ?fresh=1 recomputes", [p1.generated_at, p3.generated_at]);
+    await jpost("/api/dispatch/jobs/update", { id: J4, priority: 5 });
+    await sleep(700);
+    const p4 = (await jget("/api/dispatch/plan")).body;
+    ok(p4.generated_at > p3.generated_at, "S4: a state change replans within the debounce, without being asked", [p3.generated_at, p4.generated_at]);
+    {
+      // the "dispatch" SSE event: open the stream, change state, expect a named event
+      const got = await new Promise(async resolve => {
+        const ctrl = new AbortController(); let buf = "";
+        const t = setTimeout(() => { ctrl.abort(); resolve(null); }, 6000);
+        try {
+          const res = await fetch(HUB + "/api/events", { signal: ctrl.signal });
+          const reader = res.body.getReader(); const dec = new TextDecoder();
+          setTimeout(() => jpost("/api/dispatch/jobs", { again: true, file: "single.gcode", type: "u1", qty: 1 }), 300);   // a new slot changes the picture
+          for (;;) {
+            const { value, done } = await reader.read(); if (done) break;
+            buf += dec.decode(value, { stream: true });
+            const m = buf.match(/event: dispatch\ndata: (\{[\s\S]*?\})\n\n/);
+            if (m) { clearTimeout(t); ctrl.abort(); try { resolve(JSON.parse(m[1])); } catch { resolve({ raw: m[1].slice(0, 80) }); } return; }
+          }
+        } catch {}
+        clearTimeout(t); resolve(null);
+      });
+      ok(got && got.plan && Array.isArray(got.plan.slots), "S4: a dispatch state change pushes a 'dispatch' event with the plan over /api/events", got && Object.keys(got));
+      for (const j of ((await jget("/api/dispatch")).body.jobs || [])) if (j.file === "single.gcode") await jpost("/api/dispatch/jobs/remove", { id: j.id });
+      await sleep(500);
+    }
+    const dispSrc = fs.readFileSync(path.join(REPO, "modules", "dispatch.js"), "utf8");
+    ok(/const p = await cachedPlan\(false\);/.test(dispSrc), "S4: clear-bed reads the cached plan instead of replanning under the tap");
+
+    // ---- S7: why here ----
+    const s7 = (p4.slots || []).find(x => x.job_id === J4 && !x.unplannable);
+    ok(s7 && s7.why && typeof s7.why.reason === "string" && Array.isArray(s7.why.alternatives), "S7: a placed slot says why it landed here and lists the runners-up", s7 && s7.why);
+    ok(s7 && ["earlier finish", "fewer swaps", "sticky", "pinned"].includes(s7.why.reason), "S7: the reason is one of the four words", s7 && s7.why.reason);
+    // the harness fleet has one U1-type printer here, so the runners-up list is
+    // legitimately empty; the shape is checked when there is one
+    ok(s7 && s7.why.alternatives.every(a => a.printerName && typeof a.later_min === "number" && typeof a.swaps === "number"),
+      "S7: each alternative carries the printer, its swaps and how much later it would finish", s7 && s7.why.alternatives);
+    ok(s7 && s7.est_source === "slicer" && s7.est_slicer === s7.est_minutes, "S3: a file never run here is planned at the slicer estimate", s7 && [s7.est_source, s7.est_slicer, s7.est_minutes]);
+
+    // ---- S3: a typed estimate wins ----
+    r = await jpost("/api/dispatch/jobs/update", { id: J4, est_minutes: 90 });
+    ok(r.body.job.est_minutes === 90 && r.body.job.est_user === true, "S3: a typed runtime is stored and flagged as the user's", r.body.job);
+    let pl = (await jget("/api/dispatch/plan?fresh=1")).body;
+    let sl = (pl.slots || []).find(x => x.job_id === J4 && !x.unplannable);
+    ok(sl && sl.est_minutes === 90 && sl.est_source === "user", "S3: …and the plan uses it", sl && [sl.est_minutes, sl.est_source]);
+    r = await jpost("/api/dispatch/jobs/update", { id: J4, est_minutes: null });
+    ok(r.body.job.est_minutes === 62 && !r.body.job.est_user, "S3: clearing it goes back to the file's own estimate", r.body.job.est_minutes);
+
+    // ---- S5 + S3: a hand-off is in flight until seen; a completion records the actual run ----
+    const u1 = u1At();
+    await jpost("/api/dispatch/maintenance", { printer: 1 - u1, down: true, note: "harness: keep it on the U1" });
+    r = await jpost("/api/print", { file: "multi.gcode", printer: u1, type: "u1", start: true, map: { 0: 0, 1: 1, 2: 2 } });
+    for (let i = 0; i < 40; i++) { await sleep(250); const jb = (await jget("/api/print-status?job=" + r.body.jobId)).body; if (jb && jb.done) break; }
+    let tj = await jobById(J4);
+    ok(tj && tj.starting_on && tj.starting_on.printer === u1, "S5: a started print marks the copy as in flight on that printer before the executor sees it", tj && tj.starting_on);
+    pl = (await jget("/api/dispatch/plan?fresh=1")).body;
+    const mine = (pl.slots || []).filter(x => x.job_id === J4 && !x.unplannable);
+    ok(mine.length === 1, "S5: the plan holds one copy back for the hand-off and places only the other", mine.length);
+    const run = (pl.running || []).find(x => x.printer === u1);
+    ok(run && run.starting === true && run.file === "multi.gcode", "S5: the running list shows it as starting on that printer", run);
+    mockU1.state.printState = "printing"; mockU1.state.filename = "multi.gcode";
+    await settle();
+    tj = await jobById(J4);
+    ok(tj && tj.printing_on === u1 && !tj.starting_on && tj.started > 0, "S5/S3: once the printer reports printing, the hand-off clears and the run clock starts", tj && { on: tj.printing_on, so: tj.starting_on, st: tj.started });
+    mockU1.state.printState = "complete";
+    await settle();
+    tj = await jobById(J4);
+    const h = tj && tj.history && tj.history[tj.history.length - 1];
+    ok(h && h.result === "complete" && typeof h.actual_min === "number" && h.est_min === 62, "S3: the completed copy records actual minutes beside the estimate", h);
+    const estFile = path.join(hubDir, "estimates.json");
+    ok(!fs.existsSync(estFile), "S3: a run shorter than half a minute (this mock's) is not learned from", fs.existsSync(estFile));
+    // two runs of this file -> the plan uses the file's own median ratio (seeded: real runs take real minutes)
+    fs.writeFileSync(estFile, JSON.stringify({ files: { "u1/multi.gcode": [{ at: Date.now(), actual: 93, est: 62, printer_id: null }, { at: Date.now(), actual: 93, est: 62, printer_id: null }] }, printers: {} }));
+    mockU1.state.printState = "standby"; mockU1.state.filename = "";
+    await settle();
+    await stopHub(); await startHub(hubDir);
+    pl = (await jget("/api/dispatch/plan?fresh=1")).body;
+    sl = (pl.slots || []).find(x => x.job_id === J4 && !x.unplannable);
+    ok(sl && sl.est_source === "file" && sl.est_runs === 2 && sl.est_minutes === 93 && sl.est_slicer === 62,
+      "S3: with two recorded runs the plan uses the file's learned time (93 from a 62 estimate) and says so", sl && [sl.est_source, sl.est_runs, sl.est_minutes, sl.est_slicer]);
+    // S5 expiry: a hand-off that never turns into a print raises attention after the TTL (source-level: 5 min is too long to wait here)
+    ok(/STARTING_TTL_MS = 5 \* 60000/.test(dispSrc) && /did not begin within 5 min/.test(dispSrc), "S5: a hand-off nobody saw printing expires into an attention note after 5 min");
+    await jpost("/api/dispatch/maintenance", { printer: 1 - u1, down: false });
+    await jpost("/api/dispatch/jobs/remove", { id: J4 });
+    try { fs.unlinkSync(estFile); } catch {}
+  }
+
   // H7 runs auth.js on its own bare Express app (the harness Hub is in open
   // mode); see test/h7-auth-checks.js. Shown failing 5 of 12 on 2.42.0.
   console.log("\n== SPRINT 2: H7 auth - proxy allowlist, per-visitor limiter, credential-bound sessions (2.43.0) ==");

@@ -64,8 +64,16 @@ module.exports = async function sprint3Checks(ok) {
 
   // ---- upload error text (hand test on 2.42.0) ----
   const printSrc = read("core/print.js");
-  ok(/sock\.on\("connect", \(\) => \{ connected = true; \}\)/.test(printSrc) && /could not connect to " \+ u\.hostname/.test(printSrc),
+  ok(/sock\.once\("connect", \(\) => \{ connected = true; \}\)/.test(printSrc) && /could not connect to " \+ u\.hostname/.test(printSrc),
     "2.44: an upload to a printer that never accepted the connection says 'could not connect', not 'stalled'");
+
+  // ---- S3/S4/S7 client half ----
+  const dui = read("public/modules/dispatch-ui.js");
+  ok(/function onEvent\(name, data\)/.test(dui) && /onShow, onFleet, onEvent,/.test(dui) && /ES\.addEventListener\("dispatch"/.test(app),
+    "S4: the Dispatch tab subscribes to the pushed plan and redraws the timeline from it");
+  ok(/data-dsp-est=/.test(dui) && /est_minutes: v === "" \? null : \+v/.test(dui), "S3: a job's runtime can be typed on its row (empty = back to the file's estimate)");
+  ok(/\["Why here",/.test(dui) && /Next best: /.test(dui), "S7: the slot panel explains the choice and lists the runners-up");
+  ok(/this file usually takes this long here/.test(dui), "S3: the slot panel says where the runtime came from");
 
   // ---- H9 ----
   const disp = read("modules/dispatch.js");
