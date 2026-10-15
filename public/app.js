@@ -2,6 +2,30 @@
 // index.html so the browser can cache it, compiled, between releases; the
 // page keeps `const VERSION` inline and this file reads it as a global).
 // Served as app.js?v=<VERSION> — see core/app.js serveIndex.
+// H6 (2.44): one place that notices the session has ended. Every /api call in
+// the page and in the modules goes through window.fetch, so a 401 from the
+// auth gate bounces to the sign-in page exactly once, with the way back in
+// ?next= - instead of every poller failing quietly and the dashboard reading
+// "Fleet unreachable" until someone reloads by hand.
+(function(){
+  if(window.__hubFetchWrapped) return;
+  window.__hubFetchWrapped=true;
+  const raw=window.fetch.bind(window);
+  let bounced=false;
+  window.fetch=async function(input, init){
+    const r=await raw(input, init);
+    try{
+      const u=typeof input==="string" ? input : ((input && input.url) || "");
+      if(r.status===401 && /^\/api\//.test(u) && !/^\/api\/auth\//.test(u) && !bounced){
+        bounced=true;
+        const next=location.pathname+location.search+location.hash;
+        location.replace("/auth.html?next="+encodeURIComponent(next));
+      }
+    }catch(e){}
+    return r;
+  };
+})();
+
 
 const $ = id => document.getElementById(id);
 // v2.23 PERF (the owner, from work over the tunnel: "several seconds to load").
@@ -159,10 +183,19 @@ $("autopick").addEventListener("click", ()=>autoPickStart());
   });
   // The 15s list refreshes also rebuild rows (file Print buttons, queue
   // actions) — same mid-tap hazard, same guard.
-  setInterval(()=>{ if(!INTERACTING) loadFiles(); }, 15000);
-  setInterval(()=>{ if(!INTERACTING) loadPrinterFiles(); }, 15000);
-  setInterval(()=>{ if(!INTERACTING) loadQueue(); }, 15000);
-  setInterval(()=>{ if(ES_OK) return; if(fleetRenderBlocked()) return; loadFleet(); }, 5000);
+  // H11 (2.44): nothing polls while the tab is hidden. A phone with the Hub
+  // in a background tab used to keep three list polls, the fleet fallback,
+  // camera frames, power and stats running over the tunnel all day. On return
+  // the page refreshes once, so what you see is current within a second.
+  setInterval(()=>{ if(document.hidden||INTERACTING) return; loadFiles(); }, 15000);
+  setInterval(()=>{ if(document.hidden||INTERACTING) return; loadPrinterFiles(); }, 15000);
+  setInterval(()=>{ if(document.hidden||INTERACTING) return; loadQueue(); }, 15000);
+  setInterval(()=>{ if(document.hidden||ES_OK) return; if(fleetRenderBlocked()) return; loadFleet(); }, 5000);
+  document.addEventListener("visibilitychange", ()=>{
+    if(document.hidden) return;
+    loadFleet(); loadFiles(); loadQueue(); loadPrinterFiles();
+    try{ tickCameras(); }catch(e){}
+  });
 }
 
 async function checkVersion(){
@@ -729,7 +762,7 @@ async function fetchCardStats(id){
 }
 // refresh open panels every 15s (temperature_store is ~110 KB on-printer; the
 // hub downsamples, but no need to hammer it on the 5s fleet cadence)
-setInterval(()=>{ STATSOPEN.forEach(id=>fetchCardStats(id)); }, 15000);
+setInterval(()=>{ if(document.hidden) return; STATSOPEN.forEach(id=>fetchCardStats(id)); }, 15000);
 
 async function loadFleet(){
   // v2.23 PERF: "high" so the fleet is never queued behind thumbnails or the
@@ -747,7 +780,8 @@ async function loadFleet(){
 // 5 s poll takes over automatically — worst case is exactly v2.3.0 behavior.
 let ES=null, ES_OK=false, ES_LAST_RENDER=0, ES_RENDER_T=null;
 function fleetRenderBlocked(){
-  if(PUSHES>0 || PICKOPEN || INTERACTING) return true;
+  // H5 (2.44): a push no longer blocks the fleet; renderFleet keeps that one card.
+  if(PICKOPEN || INTERACTING) return true;
   const a=document.activeElement;
   return !!(a && a.closest && a.closest("#fleet") && (a.tagName==="SELECT"||a.tagName==="INPUT"));
 }
@@ -1052,7 +1086,7 @@ function tickCameras(){
     }
   }
 }
-setInterval(tickCameras, CAM_POLL_MS);
+setInterval(()=>{ if(document.hidden) return; tickCameras(); }, CAM_POLL_MS);   // H11: no frames while hidden
 // Tap-to-enlarge lightbox — lives outside #fleet so renderFleet never wipes it.
 function ensureCamModal(){
   if(document.getElementById("cammodal")) return;
@@ -1989,14 +2023,20 @@ function klipperTitle(p){
 
 function renderFleet(){
   const need=neededColors();
-  const wrap=$("fleet"); wrap.innerHTML="";
+  const wrap=$("fleet");
+  // H5 (2.44): cards with a push in flight survive the rebuild untouched.
+  const keep=new Map();
+  if(PUSHING.size) wrap.querySelectorAll(".pcard[data-printer]").forEach(el=>{ const i=parseInt(el.dataset.printer,10); if(PUSHING.has(i)) keep.set(i, el); });
+  wrap.innerHTML="";
   let online=0;
   // Only the active type's instances render — cross-class targets are hidden,
   // so a file can't even be OFFERED to the wrong printer class.
   const fleetShown=(FLEET||[]).filter(p=>(p.ptype||"u1")===activeType().slug);
   fleetShown.forEach(p=>{
     if(p.online) online++;
+    if(keep.has(p.id)){ wrap.appendChild(keep.get(p.id)); return; }
     const card=document.createElement("div");
+    card.dataset.printer=String(p.id);
     card.className="pcard"+(p.online?"":" offline")+(p.maintenance?" maint":"");
     // status pill
     let pillCls="off", pillTxt="Offline";
@@ -2205,6 +2245,10 @@ function renderFleet(){
 }
 
 let PUSHES=0;
+// H5 (2.44): the printers with a push in flight. renderFleet keeps THEIR cards
+// as they are (progress bar, listeners) and rebuilds every other card, so one
+// upload no longer freezes the whole dashboard for its duration.
+const PUSHING=new Set();
 async function pushTo(printer, start, force, mapOverride){
   if(!SELECTED){ return; }
   const map={};
@@ -2213,7 +2257,7 @@ async function pushTo(printer, start, force, mapOverride){
   const mapped=Object.keys(map).length;
   const st=$("pst-"+printer);
   if(st){ st.className="pstatus work"; st.innerHTML=pushBar(0,"Starting upload…"); }
-  PUSHES++;
+  PUSHES++; PUSHING.add(printer);
   try{
     const r=await fetch("/api/print",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({file:SELECTED,printer,start,map,type:activeType().slug,force:!!force})});
     const d=await r.json();
@@ -2228,17 +2272,30 @@ async function pushTo(printer, start, force, mapOverride){
     if(d.note && st){ st.className="pstatus work"; st.innerHTML=pushBar(0,d.note); }
     await pollJob(d.jobId, st, start, mapped);
   }catch(e){ if(st){ st.className="pstatus err"; st.textContent=e.message; } }
-  finally{ PUSHES=Math.max(0,PUSHES-1); }
+  finally{ PUSHES=Math.max(0,PUSHES-1); PUSHING.delete(printer); }
   loadFleet(); loadQueue();
 }
 function pushBar(pct, label){
   return `<div class="pushbar"><div class="pushlabel">${esc(label)}</div><div class="pbar"><i style="width:${pct}%"></i></div></div>`;
 }
+// H5 (2.44): a poll that cannot reach the Hub stops after 15 misses in a row
+// (about 6 s) instead of spinning forever - a Hub restart or a dropped tunnel
+// mid-upload used to leave the card at "Uploading 37%" and, through PUSHES,
+// block every fleet re-render until the page was reloaded.
+const POLL_MAX_MISSES=15;
 async function pollJob(jobId, st, start, mapped){
+  let misses=0;
   for(;;){
     await new Promise(r=>setTimeout(r,400));
     let d;
-    try{ d=await (await fetch("/api/print-status?job="+encodeURIComponent(jobId))).json(); }catch(e){ continue; }
+    try{ d=await (await fetch("/api/print-status?job="+encodeURIComponent(jobId))).json(); misses=0; }
+    catch(e){
+      if(++misses>=POLL_MAX_MISSES){
+        if(st){ st.className="pstatus err"; st.textContent="Lost contact with the Hub while sending - the upload may still finish; check the printer's card once the Hub is back."; }
+        return;
+      }
+      continue;
+    }
     if(d.error){ if(st){ st.className="pstatus err"; st.textContent=d.error; } return; }
     if(st){
       if(d.phase==="upload" && d.total){ const pct=Math.min(100,Math.round(d.sent/d.total*100)); st.className="pstatus work"; st.innerHTML=pushBar(pct,"Uploading "+pct+"%"); }
@@ -2525,7 +2582,7 @@ async function refreshPower(){
 // live readings tick independently of the fleet poll (only if a plug exists)
 function startPowerPoll(){
   if(POWER_TIMER) return;
-  POWER_TIMER = setInterval(()=>{ if(FLEET.some(p=>p.plug)) refreshPower(); }, 6000);
+  POWER_TIMER = setInterval(()=>{ if(document.hidden) return; if(FLEET.some(p=>p.plug)) refreshPower(); }, 6000);
 }
 
 async function setPower(id, on){

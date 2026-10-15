@@ -203,6 +203,12 @@ module.exports = function mountAuth(app, express, baseDir, assetDir) {
     const { mode, password, header } = req.body || {};
     if (!["open", "password", "proxy", "forward"].includes(mode))
       return res.status(400).json({ error: "Bad mode" });
+    // H23 (2.44): the built-in tunnel and a proxy-trusting auth mode are
+    // mutually exclusive. tunnel.js refuses to start unless the mode is
+    // password; this is the other direction.
+    const tunnelOn = typeof req.app.locals.tunnelRunning === "function" && req.app.locals.tunnelRunning();
+    if (mode !== "password" && tunnelOn)
+      return res.status(409).json({ error: "The Cloudflare tunnel is running. Stop it before switching to '" + mode + "' mode - the tunnel delivers visitors straight to the Hub, so a mode that trusts a proxy header (or no gate at all) would let anyone on the internet in." });
     if (mode === "password") {
       if (!password || String(password).length < 4)
         return res.status(400).json({ error: "Password must be at least 4 characters" });

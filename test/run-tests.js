@@ -2057,7 +2057,7 @@ async function stopHub() {
   }
 
   console.log("\n== SLICE: U1-ify transplant + /api/slice queue (v2.12) ==");
-  {
+  if (process.env.U1HUB_SKIP_SLICE) console.log("  (skipped locally: fixtures live on ichabod)"); else {
     // Real-bytes fixtures are REQUIRED (deterministic count): copy
     // cube-u1.3mf + ag-u1o.3mf into test/fixtures/ (gitignored — ~4 MB).
     const FIXDIR = path.join(__dirname, "fixtures");
@@ -5539,6 +5539,11 @@ async function stopHub() {
   // mode); see test/h7-auth-checks.js. Shown failing 5 of 12 on 2.42.0.
   console.log("\n== SPRINT 2: H7 auth - proxy allowlist, per-visitor limiter, credential-bound sessions (2.43.0) ==");
   await require("./h7-auth-checks")(ok);
+
+  // Sprint 3 (2.44.0): H5/H6/H11 client behavior at the source level, H8 and
+  // H23 on bare apps; see test/sprint3-checks.js.
+  console.log("\n== SPRINT 3: reliability - pollJob cap, 401 bounce, tunnel supervisor + pinning, shelf hoist, hidden-tab pause (2.44.0) ==");
+  await require("./sprint3-checks")(ok);
 
   await stopHub();
   await mockU1.close(); await mockSv.close();

@@ -57,7 +57,25 @@ const https = require("https");
 const path = require("path");
 const zlib = require("zlib");
 
-const RELEASE_BASE = "https://github.com/cloudflare/cloudflared/releases/latest/download/";
+// H8 (2.44): the download is PINNED to one cloudflared release, not /latest/,
+// and the two builds this project ships on are checked against a sha256
+// recorded here. Other platforms are checked by asking the binary its
+// version. Whatever was downloaded has its hash written to tunnel.json and is
+// re-hashed before every launch, so a swapped executable never runs.
+// Bump PINNED when you have run the new release yourself.
+const PINNED = {
+  version: "2026.10.0",
+  sha256: {
+    "cloudflared-windows-amd64.exe": "86aee4017b26625cee8484c113558f48effa4cd47f7aa05fcf425604e5d2b23c",
+    "cloudflared-linux-amd64": "d33ff2d14475178d2012c2c56beba87389ac5ded27649519f198a7d3134a99db",
+  },
+};
+const RELEASE_BASE = "https://github.com/cloudflare/cloudflared/releases/download/" + PINNED.version + "/";
+const DOWNLOAD_TIMEOUT_MS = 90000;      // whole transfer; the asset is ~40-55 MB
+const DOWNLOAD_MAX_BYTES = 120 * 1024 * 1024;
+// H8: relaunch after an unexpected exit when autostart is on - 5 s, 10 s,
+// 20 s ... capped at 5 min, reset by a clean "Registered tunnel connection".
+const RELAUNCH_MIN_MS = 5000, RELAUNCH_MAX_MS = 300000;
 const URL_RE = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/;
 const LOG_KEEP = 80;          // ring buffer of recent cloudflared log lines
 const LOG_LINE_MAX = 300;     // per-line cap so status payloads stay small
@@ -78,6 +96,7 @@ module.exports = function mountTunnel(app, express, baseDir, hubPort) {
   }
 
   // ---- runtime state (never persisted) ----
+  let relaunchTimer = null, relaunchDelay = RELAUNCH_MIN_MS, relaunchAt = 0;   // H8 supervisor
   let child = null;          // the cloudflared process, or null
   let state = "off";         // off | starting | running | stopped | error
   let url = "";              // quick-tunnel public URL once seen in the log
@@ -106,23 +125,34 @@ module.exports = function mountTunnel(app, express, baseDir, hubPort) {
 
   // GitHub's /latest/download/ answers with a 302 to the asset CDN; Node's
   // https module does not follow redirects, so we do (cap of 5).
-  function fetchBinary(urlStr, hops, cb) {
+  function fetchBinary(urlStr, hops, cb, deadline) {
     if (hops > 5) return cb(new Error("Too many redirects"));
-    https.get(urlStr, (res) => {
+    const until = deadline || (Date.now() + DOWNLOAD_TIMEOUT_MS);
+    let done = false;
+    const finish = (e, b) => { if (done) return; done = true; cb(e, b); };
+    const req = https.get(urlStr, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         res.resume();
-        return fetchBinary(res.headers.location, hops + 1, cb);
+        return fetchBinary(res.headers.location, hops + 1, finish, until);
       }
       if (res.statusCode !== 200) {
         res.resume();
-        return cb(new Error("Download failed: HTTP " + res.statusCode));
+        return finish(new Error("Download failed: HTTP " + res.statusCode));
       }
-      const chunks = [];
-      res.on("data", (c) => chunks.push(c));
-      res.on("end", () => cb(null, Buffer.concat(chunks)));
-      res.on("error", cb);
-    }).on("error", cb);
+      const chunks = []; let size = 0;
+      res.on("data", (c) => {
+        size += c.length;
+        if (size > DOWNLOAD_MAX_BYTES) { req.destroy(new Error("Download larger than expected (" + Math.round(size / 1048576) + " MB) - refused")); return; }
+        chunks.push(c);
+      });
+      res.on("end", () => finish(null, Buffer.concat(chunks)));
+      res.on("error", finish);
+    }).on("error", finish);
+    // H8: a bounded transfer. Nothing in the Hub waits forever on the network.
+    req.setTimeout(Math.max(1000, until - Date.now()), () => req.destroy(new Error("Download timed out after " + Math.round(DOWNLOAD_TIMEOUT_MS / 1000) + " s")));
   }
+  function sha256Of(buf) { return crypto.createHash("sha256").update(buf).digest("hex"); }
+  function sha256File(p) { try { return sha256Of(fs.readFileSync(p)); } catch { return ""; } }
 
   // Minimal tar reader for the Mac .tgz builds: 512-byte headers, filename in
   // bytes 0-99, size as octal ASCII in bytes 124-135, data padded to 512.
@@ -143,8 +173,13 @@ module.exports = function mountTunnel(app, express, baseDir, hubPort) {
     throw new Error("'" + wantName + "' not found in archive");
   }
 
-  function binaryVersion(cb) {
-    if (!fs.existsSync(BIN_PATH)) return cb(null, "");
+  function binaryVersion(cb0) {
+    if (!fs.existsSync(BIN_PATH)) return cb0(null, "");
+    // H8 (2.44): a binary that fails to launch fires "error" AND "close", and
+    // the callback used to run twice - the second res.json() threw
+    // ERR_HTTP_HEADERS_SENT and took the whole Hub down from the Settings tab.
+    let called = false;
+    const cb = (e, v) => { if (called) return; called = true; cb0(e, v); };
     let out = "";
     let p;
     try { p = spawn(BIN_PATH, ["--version"], { windowsHide: true }); }
@@ -178,8 +213,17 @@ module.exports = function mountTunnel(app, express, baseDir, hubPort) {
 
     if (!fs.existsSync(BIN_PATH))
       return res && res.status(409).json({ error: "cloudflared is not downloaded yet" });
+    // H8: the executable must still be the one that was downloaded and checked.
+    if (T.binSha256) {
+      const now = sha256File(BIN_PATH);
+      if (now !== T.binSha256) {
+        state = "error"; exitInfo = "cloudflared on disk does not match the copy that was downloaded (sha256 differs) - download it again before starting the tunnel.";
+        return res && res.status(409).json({ error: exitInfo });
+      }
+    }
     if (T.mode === "token" && !T.token)
       return res && res.status(409).json({ error: "Token mode is selected but no token is saved" });
+    if (relaunchTimer) { clearTimeout(relaunchTimer); relaunchTimer = null; }
 
     const args = T.mode === "token"
       ? ["tunnel", "run", "--token", T.token]
@@ -201,7 +245,7 @@ module.exports = function mountTunnel(app, express, baseDir, hubPort) {
         const m = line.match(URL_RE);
         if (m) url = m[0];
       }
-      if (/Registered tunnel connection/.test(line)) { connected = true; state = "running"; }
+      if (/Registered tunnel connection/.test(line)) { connected = true; state = "running"; relaunchDelay = RELAUNCH_MIN_MS; }
       if (/precheck complete hard_fail=true/.test(line))
         exitInfo = "Cloudflare edge unreachable — a firewall may be blocking outbound port 7844 (QUIC/UDP) and HTTPS to argotunnel.com.";
     };
@@ -224,6 +268,17 @@ module.exports = function mountTunnel(app, express, baseDir, hubPort) {
       else {
         state = "error";
         exitInfo = exitInfo || ("cloudflared exited unexpectedly (code " + code + ")");
+        // H8: supervise. A crash at 2 a.m. used to leave the farm unreachable
+        // until someone was on the LAN; with autostart on we relaunch with
+        // backoff, and the status line says when the next try is.
+        if (T.autostart) {
+          const wait = relaunchDelay;
+          relaunchDelay = Math.min(RELAUNCH_MAX_MS, relaunchDelay * 2);
+          relaunchAt = Date.now() + wait;
+          exitInfo += " - restarting in " + Math.round(wait / 1000) + " s";
+          relaunchTimer = setTimeout(() => { relaunchTimer = null; relaunchAt = 0; if (!child && !stopping) startTunnel(null); }, wait);
+          if (relaunchTimer.unref) relaunchTimer.unref();
+        }
       }
       url = T.mode === "token" ? url : ""; // quick URLs die with the process
     });
@@ -232,6 +287,7 @@ module.exports = function mountTunnel(app, express, baseDir, hubPort) {
   }
 
   function stopTunnel(res) {
+    if (relaunchTimer) { clearTimeout(relaunchTimer); relaunchTimer = null; relaunchAt = 0; }
     if (!child) { state = "off"; return res && res.json({ ok: true, state }); }
     stopping = true;
     try { child.kill(); } catch {}
@@ -256,6 +312,8 @@ module.exports = function mountTunnel(app, express, baseDir, hubPort) {
         hostname: T.hostname || "",
         binary: { present: fs.existsSync(BIN_PATH), version: e ? "" : ver },
         startedAt, error: exitInfo,
+        relaunchAt: relaunchAt || undefined,
+        pinned: { version: PINNED.version, verified: !!T.binSha256 },
         authMode: authMode(),
         log: logRing.slice(-15),
       });
@@ -283,6 +341,10 @@ module.exports = function mountTunnel(app, express, baseDir, hubPort) {
     const asset = assetName();
     fetchBinary(RELEASE_BASE + asset, 0, (err, buf) => {
       if (err) return res.status(502).json({ error: "Download failed: " + err.message });
+      const want = PINNED.sha256[asset];
+      let gotSha = sha256Of(buf);
+      if (want && gotSha !== want)
+        return res.status(502).json({ error: "Downloaded " + asset + " does not match the pinned sha256 for " + PINNED.version + " - not installed." });
       try {
         const bin = asset.endsWith(".tgz") ? untarSingle(buf, "cloudflared") : buf;
         // write-then-rename so a half-written binary is never left in place
@@ -293,13 +355,21 @@ module.exports = function mountTunnel(app, express, baseDir, hubPort) {
       } catch (e) {
         return res.status(500).json({ error: "Could not save binary: " + e.message });
       }
+      gotSha = sha256File(BIN_PATH);   // the hash of what will actually run (differs from the archive for .tgz)
       binaryVersion((e, ver) => {
         if (e || !ver) return res.status(500).json({ error: "Downloaded binary failed to run" + (e ? ": " + e.message : "") });
-        res.json({ ok: true, version: ver, path: BIN_PATH });
+        if (String(ver).indexOf(PINNED.version) < 0)
+          return res.status(500).json({ error: "Downloaded binary reports version " + ver + ", expected " + PINNED.version });
+        T.binSha256 = gotSha; T.binVersion = PINNED.version; save();
+        res.json({ ok: true, version: ver, path: BIN_PATH, sha256: gotSha, pinned: PINNED.version });
       });
     });
   });
 
+  // H23 (2.44): auth.js asks this before letting the auth mode leave
+  // "password" - the tunnel bypasses any reverse proxy, so forward/proxy/open
+  // modes and a running tunnel are never allowed at the same time.
+  app.locals.tunnelRunning = () => !!child || !!relaunchTimer;
   app.post("/api/tunnel/start", (req, res) => startTunnel(res));
   app.post("/api/tunnel/stop", (req, res) => stopTunnel(res));
 

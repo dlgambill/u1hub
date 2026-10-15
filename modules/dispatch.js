@@ -681,7 +681,15 @@ function register(ctx) {
       if (h && h.hex) out.add(norm(h.hex));
     return out;
   }
+  // H9 (2.44): shelfByHex used to re-read and re-parse spools.json on the
+  // share for EVERY copy x lane pair inside plan() - 40 copies across 9 lanes
+  // was 360 blocking reads per plan, and plan() runs on every Dispatch load,
+  // push-back, maintenance toggle and clear-bed. plan() now reads the shelf
+  // once and hands it down; this memo covers the other callers for 2 s.
+  let SHELF_MEMO = { at: 0, by: null };
   function shelfByHex() {                        // physical rolls by color (multi-color spools excluded)
+    const now = Date.now();
+    if (SHELF_MEMO.by && now - SHELF_MEMO.at < 2000) return SHELF_MEMO.by;
     const by = {};
     const shelf = ctx.spoolShelf();
     for (const [sid, sp] of Object.entries(shelf || {})) {
@@ -689,11 +697,12 @@ function register(ctx) {
       const h = norm(sp.hex); if (!h) continue;
       if (!by[h]) by[h] = { spool_id: sid, name: sp.color_name || ("#" + h), brand: sp.brand || null };
     }
+    SHELF_MEMO = { at: now, by };
     return by;
   }
-  function swapsFor(jobColors, fp) {
+  function swapsFor(jobColors, fp, shelfIn) {
     const loaded = loadedHexes(fp);
-    const shelf = shelfByHex();
+    const shelf = shelfIn || shelfByHex();
     const swaps = [];
     for (const c of jobColors || []) {
       const h = norm(c);
@@ -898,6 +907,7 @@ function register(ctx) {
     // the pinned lane to be in `eligible`, so a pin to a machine that went down
     // falls back to the open pool and is restored when it comes back up.
     const usable = lanes.filter(l => !l.maint);
+    const shelfNow = shelfByHex();               // H9: one shelf read per plan, not one per copy x lane
     const down = lanes.length - usable.length;
     const slots = [];
     // v2.22: LOCKED. Serve the frozen snapshot instead of re-placing anything.
@@ -957,7 +967,7 @@ function register(ctx) {
           const picked = pickStart(nextStart(Math.max(l.cursor, now, floor)), est, strict, CAL(est));
           if (!picked) continue;
           const realStart = picked.start, realEnd = picked.end;
-          const swaps = swapsFor(job.colors, l.fp);
+          const swaps = swapsFor(job.colors, l.fp, shelfNow);
           // SCORING (fixed v2.11): finish time first, swaps as a weighted
           // tiebreak. Scoring swaps FIRST packed jobs onto already-used lanes
           // (a used lane inherits the last job's colors, so it scores zero

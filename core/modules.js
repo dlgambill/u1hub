@@ -75,14 +75,25 @@ const parseEstMinutes = text => (/estimated printing time/i.test(text || "") ? r
 // One-call file facts for modules (dispatch): colors + class + time estimate.
 // Reads the same cached palette as /api/print; the estimate comes from a
 // bounded read (Orca writes it in the config tail, our fixtures likewise).
+// H9 (2.44): answers are cached by path + size + mtime, so the two 256 KB
+// reads of a gcode on the share happen once per file version, not on every
+// /api/dispatch/jobs, bundle-jobs (up to 24 files) and clear-bed. The first
+// look at a new file is still synchronous (one stat, one open, two reads);
+// the rule from 2.26.2 - no sync fs on the share in a handler - is met for
+// every call after that.
+const FILE_INFO_CACHE = new Map();
+const FILE_INFO_CACHE_MAX = 500;
 function fileInfoForModules(name, typeSlug) {
   const t = typeBySlug(String(typeSlug || "u1")) || typeBySlug("u1");
   const fp = safeFile(name, t);
   if (!fp || !fs.existsSync(fp)) return { exists: false };
+  let st0 = null; try { st0 = fs.statSync(fp); } catch {}
+  const key = st0 ? fp + "|" + st0.size + "|" + Math.round(st0.mtimeMs) : null;
+  if (key && FILE_INFO_CACHE.has(key)) return FILE_INFO_CACHE.get(key);
   const pal = paletteForFile(name, t) || {};
   let est = null;
   try {
-    const st = fs.statSync(fp);
+    const st = st0 || fs.statSync(fp);
     const CH = 262144;
     const fd = fs.openSync(fp, "r");
     try {
@@ -96,8 +107,13 @@ function fileInfoForModules(name, typeSlug) {
       }
     } finally { fs.closeSync(fd); }
   } catch {}
-  return { exists: true, colors: pal.colors || [], estMinutes: est,
-           multi: !!(pal.isFS || (pal.usedCount || 0) > 1) };
+  const out = { exists: true, colors: pal.colors || [], estMinutes: est,
+                multi: !!(pal.isFS || (pal.usedCount || 0) > 1) };
+  if (key) {
+    if (FILE_INFO_CACHE.size >= FILE_INFO_CACHE_MAX) FILE_INFO_CACHE.delete(FILE_INFO_CACHE.keys().next().value);
+    FILE_INFO_CACHE.set(key, out);
+  }
+  return out;
 }
 
 

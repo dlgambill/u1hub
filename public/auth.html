@@ -132,12 +132,18 @@ $("suForward").onclick = async () => {
 };
 
 $("liBtn").onclick = async () => {
-  try { await api("/api/auth/login", { password: $("liPw").value }); location.href = "/"; }
+  try { await api("/api/auth/login", { password: $("liPw").value }); location.href = nextUrl(); }
   catch (e) { msg("liMsg", e.message, "err"); }
 };
 $("liPw").addEventListener("keydown", e => { if (e.key === "Enter") $("liBtn").click(); });
 
-$("goBtn").onclick = () => { location.href = "/"; };
+$("goBtn").onclick = () => { location.href = nextUrl(); };
+// H6 (2.44): the dashboard sends an expired session here with ?next=<path>;
+// go back there after sign-in. Only a same-origin path is honored.
+function nextUrl(){
+  try{ const n = new URLSearchParams(location.search).get("next") || ""; if (/^\/(?!\/)/.test(n)) return n; }catch(e){}
+  return "/";
+}
 $("chBtn").onclick = async () => {
   try { await api("/api/auth/setup", { mode:"password", password: $("chPw").value }); msg("chMsg", "Password changed", "ok"); $("chPw").value=""; }
   catch (e) { msg("chMsg", e.message, "err"); }

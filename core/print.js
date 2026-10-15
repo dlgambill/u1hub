@@ -95,9 +95,22 @@ function uploadWithProgress(base, fp, name, job) {
       let b = ""; res.setEncoding("utf8"); res.on("data", d => b += d);
       res.on("end", () => (res.statusCode < 300 ? resolve(b) : reject(new Error("Upload " + res.statusCode + ": " + b.slice(0, 160)))));
     });
-    req.on("error", reject);
+    // 2.44: say which of two different things happened. "stalled" is a
+    // printer that stopped answering mid-transfer; a printer that never
+    // accepted the connection is "could not connect" (unplugged, wrong
+    // address, asleep). The hand test on 2.42.0 reported the second as the
+    // first, which sends someone looking at the wrong thing.
+    let connected = false;
+    req.on("socket", sock => sock.on("connect", () => { connected = true; }));
+    req.on("error", e => {
+      if (!connected && e && /stalled/.test(e.message))
+        return reject(new Error("could not connect to " + u.hostname + " - the printer did not accept the connection (unplugged, asleep, or a wrong address?)"));
+      reject(e);
+    });
     // Socket idle limit: nothing in or out for UPLOAD_SOCKET_MS ends it.
-    req.setTimeout(UPLOAD_SOCKET_MS, () => req.destroy(new Error("upload stalled - the printer stopped answering for " + Math.round(UPLOAD_SOCKET_MS / 1000) + " s")));
+    req.setTimeout(UPLOAD_SOCKET_MS, () => req.destroy(new Error(connected
+      ? "upload stalled - the printer stopped answering for " + Math.round(UPLOAD_SOCKET_MS / 1000) + " s"
+      : "could not connect to " + u.hostname + " within " + Math.round(UPLOAD_SOCKET_MS / 1000) + " s - the printer did not accept the connection (unplugged, asleep, or a wrong address?)")));
     req.write(pre); job.sent += pre.length;
     fileStream = fs.createReadStream(fp);
     const counter = new Transform({ transform(chunk, _e, cb) { job.sent += chunk.length; cb(null, chunk); } });
@@ -110,7 +123,9 @@ function uploadWithProgress(base, fp, name, job) {
       if (bodyDone) return;
       if (job.sent !== lastSent) { lastSent = job.sent; lastMove = Date.now(); return; }
       if (Date.now() - lastMove >= UPLOAD_IDLE_MS)
-        req.destroy(new Error("upload stalled - the printer took no data for " + Math.round(UPLOAD_IDLE_MS / 1000) + " s"));
+        req.destroy(new Error(connected
+          ? "upload stalled - the printer took no data for " + Math.round(UPLOAD_IDLE_MS / 1000) + " s"
+          : "could not connect to " + u.hostname + " - the printer did not accept the connection (unplugged, asleep, or a wrong address?)"));
     }, Math.min(1000, Math.max(100, Math.floor(UPLOAD_IDLE_MS / 5))));
     counter.on("data", chunk => { if (!req.write(chunk)) { counter.pause(); req.once("drain", () => counter.resume()); } });
     counter.on("end", () => { bodyDone = true; req.write(post); job.sent += post.length; req.end(); });
