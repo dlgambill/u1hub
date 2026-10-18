@@ -156,9 +156,81 @@ const INPLACE_MODULES = [];
 function onModule(name, fn) { INPLACE_MODULES.push({ name, fn }); }
 
 
+// ---- config.json schema (F8, 2.45) ------------------------------------------
+// Hand-rolled, no dependency: the top-level keys the Hub and its modules read,
+// with the type each must have. An unknown key is a warning (a typo, or a
+// key from a newer or older build - the file is carried through untouched);
+// a known key of the wrong type fails startup with the key and the expected
+// type named, because every reader downstream assumes the shape and a
+// `"port": "4545"` or `"printers": {}` would surface as something stranger
+// three modules later. At runtime (a reload after a Settings save) a wrong
+// type is logged, never fatal - the process is serving a farm.
+const CONFIG_SCHEMA = {
+  gcodeFolder: "string", port: "number", printers: "array", types: "array", tip: "object",
+  features: "object", slicer: "object", models: "object", updates: "object", notify: "object",
+  margin: "object", advisor: "object", spoolman: "object", timelapse: "object",
+  timelapseUpload: "object", sf3dTimelapse: "object", affiliate: "object", backupDir: "string"
+};
+// Path fields a person writes relative to "where the Hub lives": resolved
+// against the base dir on load so a relative path means the same thing
+// whether the Hub was started by hand, by a service or from another folder.
+// (gcodeFolder is resolved into hub.FOLDER below, as it always was.)
+const CONFIG_PATH_FIELDS = [["models", "folder"], ["slicer", "srcFolder"], ["slicer", "template"],
+                            ["timelapse", "saveDir"], ["timelapseUpload", "logoFile"], ["sf3dTimelapse", "logoFile"], [null, "backupDir"]];
+const typeName = v => v === null ? "null" : Array.isArray(v) ? "array" : typeof v;
+// Returns { errors: ["key: expected X, got Y"], warnings: [...] }; resolves
+// relative paths in place.
+function validateConfig(cfg) {
+  const errors = [], warnings = [];
+  if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) return { errors: ["config.json must be a JSON object, got " + typeName(cfg)], warnings };
+  for (const [k, v] of Object.entries(cfg)) {
+    const want = CONFIG_SCHEMA[k];
+    if (!want) { warnings.push("unknown key \"" + k + "\" (ignored, kept as written)"); continue; }
+    if (v === null || v === undefined) continue;                  // "tip": null means "no tip"; an absent value is a default
+    const got = typeName(v);
+    if (got !== want) errors.push("\"" + k + "\" must be " + (want === "array" ? "an array" : want === "object" ? "an object" : "a " + want) + ", got " + got);
+  }
+  for (const [blk, key] of CONFIG_PATH_FIELDS) {
+    const o = blk ? cfg[blk] : cfg;
+    if (!o || typeof o !== "object" || Array.isArray(o)) continue;
+    const v = o[key];
+    if (typeof v === "string" && v.trim() && !path.isAbsolute(v.trim())) o[key] = path.resolve(BASE_DIR, v.trim());
+  }
+  return { errors, warnings };
+}
+
+let CONFIG_BOOTED = false;
 function loadConfig() {
-  try { hub.CFG = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8")); }
-  catch { hub.CFG = { ...DEFAULT_CFG }; }
+  let text = null;
+  try { text = fs.readFileSync(CONFIG_PATH, "utf8"); } catch {}
+  if (text !== null) {
+    // F8: PowerShell 5's Set-Content / Out-File write a UTF-8 BOM, which
+    // JSON.parse rejects - and a rejected config used to fall back to the
+    // defaults silently, printers and all. Strip it and say so.
+    if (text.charCodeAt(0) === 0xFEFF) {
+      text = text.slice(1);
+      hublog("warn", "config: " + CONFIG_PATH + " starts with a UTF-8 BOM (PowerShell writes one) - ignored; save from Settings once to clean it");
+      console.warn("config.json starts with a UTF-8 BOM - ignored (save from Settings once to clean it)");
+    }
+    try { hub.CFG = JSON.parse(text); }
+    catch (e) {
+      hub.CFG = { ...DEFAULT_CFG };
+      hublog("error", "config: " + CONFIG_PATH + " is not valid JSON (" + e.message + ") - running on defaults");
+      console.error("config.json is not valid JSON (" + e.message + ") - running on defaults");
+    }
+  } else hub.CFG = { ...DEFAULT_CFG };
+  {
+    const { errors, warnings } = validateConfig(hub.CFG);
+    for (const w of warnings) { hublog("warn", "config: " + w); console.warn("config.json: " + w); }
+    if (errors.length) {
+      for (const er of errors) { hublog("error", "config: " + er); console.error("config.json: " + er); }
+      if (!CONFIG_BOOTED && !process.env.U1HUB_CONFIG_LENIENT) {
+        console.error("config.json has " + errors.length + " invalid value" + (errors.length === 1 ? "" : "s") + " - fix the file (" + CONFIG_PATH + ") and start the Hub again.");
+        process.exit(1);
+      }
+    }
+    CONFIG_BOOTED = true;
+  }
   // Features are computed ONCE, at boot. Config saves during runtime update
   // config.json (featuresConfig in /api/config shows the pending state) but
   // never the live map — module routes mount at boot, so a live flip would
@@ -223,5 +295,5 @@ loadConfig();
 // mid-print and its config is state, not settings.
 const PORT = +process.env.U1HUB_PORT || hub.CFG.port || 4545;
 
-Object.assign(hub, { ACCENT_PRESETS, INPLACE_MODULES, MODULE_DEFAULTS, PORT, detectCaps, loadConfig, onModule, saveConfigError, saveConfigFile, slugify, typeBySlug, typeFolder });
+Object.assign(hub, { ACCENT_PRESETS, CONFIG_SCHEMA, INPLACE_MODULES, MODULE_DEFAULTS, PORT, detectCaps, loadConfig, onModule, saveConfigError, saveConfigFile, slugify, typeBySlug, typeFolder, validateConfig });
 };

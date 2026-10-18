@@ -190,6 +190,58 @@ module.exports = async function sprint4Checks(ok) {
     ok(/s\.why\.bed_clear \? "\. " \+ s\.why\.bed_clear/.test(dui), "S6: the Why-here line shows the queued bed clear");
   }
 
+  // ---- F8: config.json schema on load ----
+  {
+    const { spawn } = require("child_process"), net = require("net"), os = require("os");
+    const freePort = () => new Promise(r => { const sv = net.createServer(); sv.listen(0, "127.0.0.1", () => { const p = sv.address().port; sv.close(() => r(p)); }); });
+    // Boot a Hub on its own state dir and port; resolve { code, log, up } once
+    // it answers /api/version or exits.
+    const boot = async (cfgText, extraEnv) => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "u1hub-f8-"));
+      fs.writeFileSync(path.join(dir, "config.json"), cfgText);
+      const port = await freePort();
+      const ch = spawn(process.execPath, [path.join(REPO, "server.js")], { cwd: REPO, stdio: ["ignore", "pipe", "pipe"],
+        env: { ...process.env, U1HUB_DIR: dir, U1HUB_PORT: String(port), U1HUB_POLL_MS: "60000", ...(extraEnv || {}) } });
+      let log = ""; ch.stdout.on("data", d => log += d); ch.stderr.on("data", d => log += d);
+      let up = false, body = null;
+      for (let i = 0; i < 80 && ch.exitCode === null; i++) {
+        await new Promise(r => setTimeout(r, 250));
+        try { const r = await fetch("http://127.0.0.1:" + port + "/api/version"); if (r.ok) { up = true; body = await r.json(); break; } } catch {}
+      }
+      const code = ch.exitCode;
+      if (ch.exitCode === null) { ch.kill("SIGTERM"); await new Promise(r => { ch.on("exit", r); setTimeout(r, 2000); }); }
+      await new Promise(r => setTimeout(r, 100));
+      const cfgAfter = (() => { try { return fs.readFileSync(path.join(dir, "config.json"), "utf8"); } catch { return null; } })();
+      fs.rmSync(dir, { recursive: true, force: true });
+      return { code, log, up, body, port, cfgAfter };
+    };
+    const base = { gcodeFolder: "./gcode", printers: [{ name: "A", url: "http://127.0.0.1:1" }] };
+    let r = await boot("\uFEFF" + JSON.stringify(base));
+    ok(r.up && /UTF-8 BOM/.test(r.log) && /Printers: A/.test(r.log), "F8: a config.json with a UTF-8 BOM (PowerShell 5) boots with its printers and warns about the BOM", r.log.slice(-300));
+    r = await boot(JSON.stringify({ ...base, port: "4545" }));
+    ok(!r.up && r.code === 1 && /config\.json: "port" must be a number, got string/.test(r.log), "F8: a wrong type exits 1 and names the key and the expected type", { code: r.code, log: r.log.slice(-300) });
+    r = await boot(JSON.stringify({ ...base, printers: {} }));
+    ok(!r.up && r.code === 1 && /"printers" must be an array, got object/.test(r.log), "F8: ...for an array key too", { code: r.code, log: r.log.slice(-200) });
+    r = await boot(JSON.stringify({ ...base, gcodeFolderr: "./gcode", nonsense: 1 }));
+    ok(r.up && /config\.json: unknown key "gcodeFolderr"/.test(r.log) && /unknown key "nonsense"/.test(r.log), "F8: an unknown key warns and the Hub boots", r.log.slice(-300));
+    ok(r.cfgAfter && JSON.parse(r.cfgAfter).nonsense === 1, "F8: ...and the unknown key is carried through, not dropped");
+    r = await boot(JSON.stringify({ ...base, tip: null, models: { folder: "my-models" }, timelapse: { saveDir: "" } }));
+    ok(r.up && !/config\.json:/.test(r.log), "F8: null for an optional block and a blank path are fine (no warning, no error)", r.log.slice(-200));
+    // Relative paths resolve against the base dir, in memory, at load.
+    const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), "u1hub-f8v-"));
+    try {
+      const fakeHub = { BASE_DIR: dir2, CONFIG_PATH: path.join(dir2, "config.json"), DEFAULT_CFG: {}, IS_PKG: false, hublog: () => {} };
+      fs.writeFileSync(fakeHub.CONFIG_PATH, "{}");
+      require(path.join(REPO, "core", "config.js"))(fakeHub);
+      const cfg = { models: { folder: "lib/models" }, slicer: { srcFolder: "3mf", template: path.resolve(dir2, "abs.3mf") }, timelapse: { saveDir: "tl" }, backupDir: "bk" };
+      const v = fakeHub.validateConfig(cfg);
+      ok(v.errors.length === 0 && cfg.models.folder === path.resolve(dir2, "lib/models") && cfg.slicer.srcFolder === path.resolve(dir2, "3mf") && cfg.slicer.template === path.resolve(dir2, "abs.3mf") && cfg.timelapse.saveDir === path.resolve(dir2, "tl") && cfg.backupDir === path.resolve(dir2, "bk"),
+        "F8: models.folder, slicer paths, the timelapse folder and backupDir resolve against the base dir; absolute ones are left alone", cfg);
+      const v2 = fakeHub.validateConfig({ features: [], slicer: "orca", port: 4545 });
+      ok(v2.errors.length === 2 && /"features" must be an object, got array/.test(v2.errors[0]) && /"slicer" must be an object, got string/.test(v2.errors[1]), "F8: validateConfig names every wrong-typed key", v2.errors);
+    } finally { fs.rmSync(dir2, { recursive: true, force: true }); }
+  }
+
   // ---- H16 ----
   ok(/folder: path\.resolve\(ctx\.baseDir, String\(c\.folder \|\| sl\.srcFolder \|\| "models"\)\)/.test(read("modules/models.js")),
     "H16: models.folder resolves against ctx.baseDir, not process.cwd()");
