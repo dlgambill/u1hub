@@ -189,6 +189,59 @@ function pickStart(first, estMin, strict, cal) {
   return strict ? null : { start: first, end: first + dur, hops: 0, overruns: true };
 }
 
+// ---- bed clearing is a queue (S6, 2.45) -------------------------------------
+// readyAfter() makes every print that ends while nobody is around "ready"
+// BED_CLEAR_BUFFER_MIN after the next attended moment, so three prints ending
+// at 02:00 all showed ready at 08:05 and the timeline promised three starts
+// at once. One person clears one bed at a time: within one attended moment
+// the clears are staggered by BED_CLEAR_BUFFER_MIN (08:05, 08:10, 08:15) in
+// the order the plan placed the slots, which is the plan's own priority.
+//
+// One pass over the placed slots, in place. For each slot the previous print
+// on its lane (the running print, else the slot placed before it) ends at
+// some moment; readyAfter() of that end names the bed-clear moment. Slots
+// whose bed clears at the same moment form a queue. The first in it is never
+// moved (a single finish is unchanged, and the lane after a running print
+// keeps starting where it always did); each later one takes its turn
+// BED_CLEAR_BUFFER_MIN after the one before, counted from the first slot's
+// start or the ready moment, whichever is earlier - so a first slot that
+// waits for a later window does not hold the others back. A slot pushed to
+// its turn moves start, end and the bed wait together, re-reads its deadline
+// verdict, and its `why` says whose bed is cleared first. Nothing here
+// touches the deadline-over-priority order, sticky tolerance or the finish
+// policy: only ready times inside an attended window shift.
+function queueBedClears(slots, lanes, readyAfter) {
+  const BUF = BED_CLEAR_BUFFER_MIN * 60000;
+  const lastEnd = new Map();                     // lane idx -> end of the previous print on it
+  for (const l of lanes || []) if (l.busyUntil) lastEnd.set(l.idx, l.busyUntil);
+  const clears = new Map();                      // clear moment -> { anchor, names: printers queued there }
+  let shifted = 0;
+  for (const s of slots) {
+    if (!s || s.unplannable || typeof s.est_start !== "number") continue;
+    const prevEnd = lastEnd.get(s.printer);
+    if (prevEnd != null) {
+      const ready = readyAfter(prevEnd);
+      const at = ready - BUF;
+      let q = clears.get(at);
+      if (!q) { q = { anchor: Math.min(s.est_start, ready), names: [] }; clears.set(at, q); }
+      else {
+        const turn = q.anchor + q.names.length * BUF;
+        if (s.est_start < turn) {
+          const d = turn - s.est_start;
+          s.est_start += d; s.est_end += d;
+          if (s.delay) s.delay.bed = (s.delay.bed || 0) + Math.round(d / 60000);
+          if (s.deadline) s.misses_deadline = s.est_end > s.deadline;
+          s.why = { ...(s.why || {}), bed_clear: "bed clear queued behind " + q.names[q.names.length - 1] };
+          shifted++;
+        }
+      }
+      q.names.push(s.printerName);
+    }
+    lastEnd.set(s.printer, s.est_end);
+  }
+  return shifted;
+}
+
 function register(ctx) {
   const FILE = path.join(ctx.baseDir, "dispatch.json");
 
@@ -1143,6 +1196,8 @@ function register(ctx) {
     // not keep a lane reserved in the map - it would grow without bound and
     // resurrect a stale placement if the qty went back up.
     for (const k of PLACEMENT.keys()) if (!seen.has(k)) PLACEMENT.delete(k);
+    // S6 (2.45): one bed clear at a time within an attended moment.
+    queueBedClears(slots, lanes, readyAfter);
     } // end fluid placement (locked branch served the frozen snapshot above)
     // Report the whole fleet, not just the machines that got work: an idle
     // printer vanishing from the timeline hides exactly the capacity problem
@@ -2062,4 +2117,4 @@ function register(ctx) {
   ctx.provide("dispatch.maintenance", () => { ensureMapped(); return D.maintenance; });
 }
 
-module.exports = { register, pickStart };
+module.exports = { register, pickStart, queueBedClears, BED_CLEAR_BUFFER_MIN };

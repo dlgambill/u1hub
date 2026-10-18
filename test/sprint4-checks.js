@@ -143,6 +143,53 @@ module.exports = async function sprint4Checks(ok) {
   ok(!/[\u2014]/.test(app.slice(app.indexOf("// H24 (2.45): trusted proxies"), app.indexOf("// ---- remote access"))) && !/[\u2014]/.test(idx.slice(idx.indexOf('id="authSignoutAll"'), idx.indexOf('Remote access <span'))),
     "H24: the new UI text uses no em dash");
 
+  // ---- S6: bed clearing is a queue ----
+  {
+    const { queueBedClears, BED_CLEAR_BUFFER_MIN } = require(path.join(REPO, "modules", "dispatch.js"));
+    const M = 60000, H = 60 * M;
+    // A synthetic day: attended 08:00-22:00; a print that ends overnight is
+    // cleared at 08:00 and ready at 08:05, exactly as readyAfter() says.
+    const t = (h, m) => (h * 60 + (m || 0)) * M;
+    const nextStart = ms => { const d = Math.floor(ms / (24 * H)) * 24 * H, mod = ms - d; return mod < t(8) ? d + t(8) : mod >= t(22) ? d + 24 * H + t(8) : ms; };
+    const readyAfter = end => nextStart(end) + BED_CLEAR_BUFFER_MIN * M;
+    const mk = (printer, start, end, why) => ({ printer, printerName: "P" + printer, est_start: start, est_end: end, delay: { bed: 0 }, why: why || { reason: "earlier finish", alternatives: [] } });
+    // Three printers finish at 02:00; their first copies are placed at 08:00
+    // (the lane cursor after a running print), in plan priority order 2, 0, 1.
+    let lanes = [0, 1, 2].map(i => ({ idx: i, name: "P" + i, busyUntil: t(2) }));
+    let slots = [mk(2, t(8), t(8) + 3 * H), mk(0, t(8), t(8) + H), mk(1, t(8), t(8) + 2 * H)];
+    let n = queueBedClears(slots, lanes, readyAfter);
+    ok(n === 2 && slots.map(x => x.est_start).join() === [t(8), t(8, 5), t(8, 10)].join(),
+      "S6: three prints ending the same night get three distinct starts 5 min apart, in plan order (08:00, 08:05, 08:10)", slots.map(x => new Date(x.est_start).toISOString().slice(11, 16)));
+    ok(slots[0].why.bed_clear === undefined && slots[1].why.bed_clear === "bed clear queued behind P2" && slots[2].why.bed_clear === "bed clear queued behind P0",
+      "S6: each shifted slot says whose bed is cleared before it", slots.map(x => x.why.bed_clear));
+    ok(slots[1].est_end === t(8, 5) + H && slots[1].delay.bed === 5 && slots[2].delay.bed === 10 && slots[1].why.reason === "earlier finish",
+      "S6: the end and the bed wait move with the start; the S7 reason is untouched");
+    // The same three, placed after planned (not running) prints that end at
+    // 02:00: readyAfter puts the first at 08:05, the queue the rest at 08:10, 08:15.
+    lanes = [0, 1, 2].map(i => ({ idx: i, name: "P" + i, busyUntil: null }));
+    slots = [mk(0, t(0), t(2)), mk(1, t(0), t(2)), mk(2, t(0), t(2)), mk(0, t(8, 5), t(9)), mk(1, t(8, 5), t(9)), mk(2, t(8, 5), t(9))];
+    n = queueBedClears(slots, lanes, readyAfter);
+    ok(n === 2 && slots.slice(3).map(x => x.est_start).join() === [t(8, 5), t(8, 10), t(8, 15)].join(),
+      "S6: ...and after planned prints ending together the followers queue at 08:05, 08:10, 08:15", slots.slice(3).map(x => new Date(x.est_start).toISOString().slice(11, 16)));
+    // A single finish is unchanged, and a slot that starts later anyway is left alone.
+    lanes = [{ idx: 0, name: "P0", busyUntil: t(2) }, { idx: 1, name: "P1", busyUntil: t(2) }];
+    slots = [mk(0, t(8), t(9)), mk(1, t(14), t(15))];
+    n = queueBedClears(slots, lanes, readyAfter);
+    ok(n === 0 && slots[0].est_start === t(8) && slots[1].est_start === t(14) && !slots[0].why.bed_clear && !slots[1].why.bed_clear,
+      "S6: a single finish is unchanged, and a follower that waits for a later window is not pulled or pushed");
+    lanes = [{ idx: 0, name: "P0", busyUntil: t(2) }];
+    slots = [mk(0, t(8), t(9))];
+    ok(queueBedClears(slots, lanes, readyAfter) === 0 && slots[0].est_start === t(8), "S6: one printer, one finish: nothing moves");
+    // A deadline verdict is re-read after the shift.
+    lanes = [0, 1].map(i => ({ idx: i, name: "P" + i, busyUntil: t(2) }));
+    slots = [mk(0, t(8), t(9)), Object.assign(mk(1, t(8), t(9)), { deadline: t(9, 2), misses_deadline: false })];
+    queueBedClears(slots, lanes, readyAfter);
+    ok(slots[1].est_end === t(9, 5) && slots[1].misses_deadline === true, "S6: a copy pushed past its deadline by the queue now says so");
+    ok(/queueBedClears\(slots, lanes, readyAfter\);/.test(dispatch) && dispatch.indexOf("queueBedClears(slots, lanes, readyAfter);") < dispatch.indexOf("} // end fluid placement"),
+      "S6: plan() runs the pass once after fluid placement (a locked plan is held still)");
+    ok(/s\.why\.bed_clear \? "\. " \+ s\.why\.bed_clear/.test(dui), "S6: the Why-here line shows the queued bed clear");
+  }
+
   // ---- H16 ----
   ok(/folder: path\.resolve\(ctx\.baseDir, String\(c\.folder \|\| sl\.srcFolder \|\| "models"\)\)/.test(read("modules/models.js")),
     "H16: models.folder resolves against ctx.baseDir, not process.cwd()");

@@ -667,7 +667,9 @@
         : "")],
       // S7 (2.44): why this printer, and what the runners-up would have cost.
       s.why ? ["Why here", ({ "earlier finish": "finishes soonest", "fewer swaps": "fewer spool changes for a similar finish", "sticky": "kept where the last plan had it (moving would not gain much)", "pinned": "you pinned it here" })[s.why.reason] || s.why.reason +
-        (s.why.alternatives && s.why.alternatives.length ? ". Next best: " + s.why.alternatives.map(a => a.printerName + " " + (a.later_min > 0 ? "+" + fmtMin(a.later_min) : "same time") + (a.swaps ? " (" + a.swaps + " swap" + (a.swaps === 1 ? "" : "s") + ")" : "")).join(", ") : ". No other printer could take it.")] : null,
+        (s.why.alternatives && s.why.alternatives.length ? ". Next best: " + s.why.alternatives.map(a => a.printerName + " " + (a.later_min > 0 ? "+" + fmtMin(a.later_min) : "same time") + (a.swaps ? " (" + a.swaps + " swap" + (a.swaps === 1 ? "" : "s") + ")" : "")).join(", ") : ". No other printer could take it.") +
+        // S6 (2.45): one bed clear at a time - this start waits its turn
+        (s.why.bed_clear ? ". " + s.why.bed_clear.charAt(0).toUpperCase() + s.why.bed_clear.slice(1) + "." : "")] : null,
       ["Deadline", dl + (s.misses_deadline ? "   \u26a0 MISSES IT" : "")],
       s.idle_after_min ? ["Then idle", fmtMin(s.idle_after_min) + " waiting for a bed clear"] : null,
       s.contention ? ["\u26a0 Spool clash", s.contention.color + " is also needed by " + s.contention.file +
