@@ -8,7 +8,8 @@
 "use strict";
 const fs = require("fs"), path = require("path");
 const REPO = path.resolve(__dirname, "..");
-const read = p => fs.readFileSync(path.join(REPO, p), "utf8");
+// CRLF-safe: the Windows worktree checks out with autocrlf, and three checks match across a line break.
+const read = p => fs.readFileSync(path.join(REPO, p), "utf8").replace(/\r\n/g, "\n");
 
 module.exports = async function sprint4Checks(ok) {
   // ---- H10 ----
