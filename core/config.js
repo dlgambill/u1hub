@@ -86,9 +86,29 @@ function validateTypes(list) {
 }
 
 
-function saveConfigFile() {
-  try { fs.writeFileSync(CONFIG_PATH, JSON.stringify(hub.CFG, null, 2)); } catch {}
+// H15 (2.45): a save that fails SAYS so. This swallowed every write error,
+// so after a share hiccup Settings answered "Saved" with nothing on disk.
+// The write is atomic (temp file beside the config, then rename) so a crash
+// mid-write cannot leave a half-written config.json; the result is a boolean
+// and the reason is kept for the route to report. `obj` defaults to the live
+// config; /api/config passes the next one before loading it.
+hub.SAVE_CONFIG_ERROR = null;
+function saveConfigFile(obj) {
+  const tmp = CONFIG_PATH + ".tmp";
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(obj === undefined ? hub.CFG : obj, null, 2));
+    fs.renameSync(tmp, CONFIG_PATH);
+    hub.SAVE_CONFIG_ERROR = null;
+    return true;
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch {}
+    hub.SAVE_CONFIG_ERROR = (e && e.message) || String(e);
+    hublog("warn", "config: could not save " + CONFIG_PATH + " - " + hub.SAVE_CONFIG_ERROR);
+    return false;
+  }
 }
+// The sentence a settings route answers with when the save failed.
+const saveConfigError = () => "could not save settings: " + (hub.SAVE_CONFIG_ERROR || "unknown error");
 
 
 // ---- Feature modules (v2.11): what's core vs. optional ----------------------
@@ -205,5 +225,5 @@ loadConfig();
 // mid-print and its config is state, not settings.
 const PORT = +process.env.U1HUB_PORT || hub.CFG.port || 4545;
 
-Object.assign(hub, { ACCENT_PRESETS, INPLACE_MODULES, MODULE_DEFAULTS, PORT, detectCaps, loadConfig, onModule, saveConfigFile, slugify, typeBySlug, typeFolder });
+Object.assign(hub, { ACCENT_PRESETS, INPLACE_MODULES, MODULE_DEFAULTS, PORT, detectCaps, loadConfig, onModule, saveConfigError, saveConfigFile, slugify, typeBySlug, typeFolder });
 };

@@ -71,6 +71,19 @@ module.exports = async function sprint4Checks(ok) {
   ok(/\.btn\.busy::after\{[^}]*border:2px solid var\(--ink\)/.test(idx) && /@keyframes btnspin/.test(idx) && !/\.btn\.busy[^}]*#[0-9a-fA-F]{3,6}/.test(idx),
     "H14: the in-button spinner is drawn from existing tokens, no new color");
 
+  // ---- H15: honest saves ----
+  const cfg = read("core/config.js"), settings = read("core/settings.js");
+  ok(/fs\.renameSync\(tmp, CONFIG_PATH\)/.test(cfg) && /hub\.SAVE_CONFIG_ERROR = \(e && e\.message\) \|\| String\(e\);/.test(cfg) && /hublog\("warn", "config: could not save/.test(cfg) && /return false;/.test(cfg),
+    "H15: saveConfigFile writes temp-then-rename, returns false on failure and logs a warn");
+  ok(/if \(!saveConfigFile\(next\)\) return res\.status\(500\)\.json\(\{ error: saveConfigError\(\) \}\);/.test(settings) && !/fs\.writeFileSync\(CONFIG_PATH/.test(settings),
+    "H15: /api/config goes through the one writer and answers 500 with the reason");
+  const guarded = ["resources", "margin", "timelapse", "updates", "spoolman", "advisor", "slicing", "notify", "models"]
+    .filter(m => /if \(!ctx\.saveConfig\(\)\) return res\.status\(500\)\.json\(\{ error: ctx\.saveConfigError\(\) \}\);/.test(read("modules/" + m + ".js")));
+  ok(guarded.length === 9, "H15: every module settings route answers 500 when the save fails (" + guarded.length + "/9)", guarded);
+  const lib = read("core/library.js");
+  ok((lib.match(/if \(!saveConfigFile\(\)\) return res\.status\(500\)\.json\(\{ error: hub\.saveConfigError\(\) \}\);/g) || []).length === 3 && !/saveConfigFile\(\);/.test(lib),
+    "H15: the three type routes (add, update, delete) answer 500 when the save fails too");
+
   // ---- H17: metadata cache keyed by printer and file ----
   ok(/const META_CACHE = new Map\(\);/.test(fleet) && /const mk = key \+ "\\n" \+ filename;/.test(fleet) && /META_CACHE_MAX = 200/.test(fleet),
     "H17: the per-file metadata cache is keyed by printer and file and bounded");

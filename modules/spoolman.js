@@ -140,7 +140,7 @@ function register(ctx) {
     }
     if ("writeback" in b) next.writeback = b.writeback === true;
     ctx.cfg.spoolman = next;
-    ctx.saveConfig();
+    if (!ctx.saveConfig()) return res.status(500).json({ error: ctx.saveConfigError() });
     res.json(view());
   });
 

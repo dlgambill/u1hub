@@ -5762,7 +5762,7 @@ async function stopHub() {
     await sleep(600);
   }
 
-  console.log("\n== SPRINT 4: H12 bounded caches, H17 thumbnails leave the fleet cache alone (2.45.0) ==");
+  console.log("\n== SPRINT 4: H12 bounded caches, H15 honest saves, H17 thumbnails leave the fleet cache alone (2.45.0) ==");
   {
     const u1Idx = () => JSON.parse(fs.readFileSync(path.join(hubDir, "config.json"), "utf8")).printers.findIndex(p => p.url.endsWith(":" + portU1));
     // ---- H12: finished print jobs are swept, not kept until a page reads them ----
@@ -5807,6 +5807,39 @@ async function stopHub() {
     ok(mN === 0, "H17: two thumbnail requests and the following progress passes fetch the file's metadata 0 more times (" + mN + ")", mN);
     mockU1.state.printState = "standby"; mockU1.state.filename = "";
 
+    // ---- H15: a settings save that cannot write says so ----
+    const cfgPath = path.join(hubDir, "config.json");
+    const cfgText = fs.readFileSync(cfgPath, "utf8");
+    const cfgObj = JSON.parse(cfgText);
+    // Make the write fail the same way on every platform: the config path's
+    // parent is replaced by a plain file, so the temp file beside it cannot
+    // be created. (chmod does not stop a root or Windows process.)
+    await stopHub();
+    const blockDir = path.join(tmp, "h15");
+    fs.rmSync(blockDir, { recursive: true, force: true }); fs.mkdirSync(blockDir, { recursive: true });
+    fs.writeFileSync(path.join(blockDir, "config.json"), cfgText);
+    const log15 = await startHub(hubDir, { U1HUB_DIR: blockDir });
+    void log15;
+    // Now take the directory away from under the Hub: rename it and put a
+    // file in its place, so the next write hits ENOTDIR / ENOENT.
+    fs.renameSync(blockDir, blockDir + ".moved");
+    fs.writeFileSync(blockDir, "not a directory");
+    r = await jpost("/api/config", { gcodeFolder: cfgObj.gcodeFolder, printers: cfgObj.printers });
+    ok(r.status === 500 && /^could not save settings: /.test(String(r.body && r.body.error)),
+      "H15: /api/config answers 500 'could not save settings: <reason>' when config.json cannot be written", r.body);
+    r = await jpost("/api/notify/settings", { topic: "u1hub-h15" });
+    ok(r.status === 500 && /^could not save settings: /.test(String(r.body && r.body.error)),
+      "H15: a module settings route (notify) answers the same 500 instead of ok", r.body);
+    const diag = (await jget("/api/diagnostics")).body;
+    const warnLine = ((diag && diag.log) || []).find(l => /could not save/.test(JSON.stringify(l)));
+    ok(!!warnLine && /warn/i.test(JSON.stringify(warnLine)), "H15: the failure is in the Hub log as a warn line", warnLine);
+    await stopHub();
+    fs.unlinkSync(blockDir); fs.renameSync(blockDir + ".moved", blockDir);
+    ok(JSON.parse(fs.readFileSync(path.join(blockDir, "config.json"), "utf8")).printers.length === cfgObj.printers.length,
+      "H15: ...and the config on disk is exactly what it was (atomic write, nothing half-written)");
+    ok(!fs.existsSync(path.join(blockDir, "config.json.tmp")), "H15: no temp file left behind");
+    await startHub(hubDir);
+    await sleep(600);
   }
 
   // H7 runs auth.js on its own bare Express app (the harness Hub is in open

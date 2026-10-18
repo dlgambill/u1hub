@@ -144,7 +144,11 @@ const MODULE_CTX = Object.freeze({
   },
   // v2.12: modules may own a slice of config.json (slicing does — its slicer
   // block is UI-editable). They mutate ctx.cfg.<their key> and persist here.
+  // H15 (2.45): returns false when the write failed; saveConfigError() is
+  // the sentence to answer with. A settings route must not say "ok" after a
+  // false.
   saveConfig: () => saveConfigFile(),
+  saveConfigError: () => hub.saveConfigError(),
   loadout: (idx) => loadoutSnapshot(idx),
   spoolShelf: () => { try { return (JSON.parse(fs.readFileSync(path.join(BASE_DIR, "spools.json"), "utf8")) || {}).spools || {}; } catch { return {}; } },
   fleet: () => fleetSnapshot(),

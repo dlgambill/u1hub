@@ -1072,7 +1072,7 @@ function register(ctx) {
       if (x) next.u1Template = x; else if (b.clear === true) delete next.u1Template;
       ctx.cfg.models = next;
     }
-    ctx.saveConfig();
+    if (!ctx.saveConfig()) return res.status(500).json({ error: ctx.saveConfigError() });
     refresh();
     TPL.at = 0;
     const c = conf();

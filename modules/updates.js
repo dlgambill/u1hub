@@ -224,7 +224,7 @@ function register(ctx) {
       next.url = u || DEFAULTS.url;
     }
     ctx.cfg.updates = next;
-    ctx.saveConfig();
+    if (!ctx.saveConfig()) return res.status(500).json({ error: ctx.saveConfigError() });
     res.json(view());
   });
 

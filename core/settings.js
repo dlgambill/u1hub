@@ -1,11 +1,10 @@
 // core/settings.js — public config view, /api/config, /api/version
 // Split out of server.js (v2.23). Loads in the original order through the
 // shared `hub`; see server.js for the sequence. Behavior-preserving move.
-const fs = require("fs");
 const { idForIncoming } = require("./printer-ids");
 
 module.exports = function (hub) {
-const { CONFIG_PATH, MODULE_DEFAULTS, PORT, VERSION, app, loadConfig, printerOrigin, typeBySlug } = hub;
+const { MODULE_DEFAULTS, PORT, VERSION, app, loadConfig, printerOrigin, saveConfigError, saveConfigFile, typeBySlug } = hub;
 
 
 // ---- Settings: read/write config from the UI (no file editing) ----
@@ -85,8 +84,10 @@ app.post("/api/config", (req, res) => {
   // printer list wiped the ntfy topic and the Spoolman URL set five minutes
   // earlier. Carry through everything this form does not own.
   for (const k of Object.keys(hub.CFG || {})) if (!(k in next)) next[k] = hub.CFG[k];
+  // H15 (2.45): one atomic writer, and a failed write is a 500 with the
+  // reason - never "Saved" over a config that did not land.
+  if (!saveConfigFile(next)) return res.status(500).json({ error: saveConfigError() });
   try {
-    fs.writeFileSync(CONFIG_PATH, JSON.stringify(next, null, 2));
     loadConfig();
     res.json({ ok: true, ...publicCfg() });
   } catch (e) {

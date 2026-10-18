@@ -617,7 +617,7 @@ function register(ctx) {
       next.timeoutMs = n;
     }
     ctx.cfg.slicer = next;
-    ctx.saveConfig();
+    if (!ctx.saveConfig()) return res.status(500).json({ error: ctx.saveConfigError() });
     hublog("info", "slicing config updated: " + Object.keys(b).filter(k => ["srcFolder","exe","template","plate","timeoutMs"].includes(k)).join(", "));
     const c = scfg();
     res.json({ ok: true, exe: c.exe, exeFound: fs.existsSync(c.exe),

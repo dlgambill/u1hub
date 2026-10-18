@@ -46,7 +46,9 @@ app.post("/api/types", (req, res) => {
     return res.status(400).json({ error: "Type folder must be a direct subfolder of the gcode base" });
   try { fs.mkdirSync(dir, { recursive: true }); }
   catch (e) { return res.status(500).json({ error: "Could not create folder " + dir + " — " + e.message }); }
-  hub.TYPES.push(rec); hub.CFG.types = hub.TYPES; saveConfigFile();
+  hub.TYPES.push(rec); hub.CFG.types = hub.TYPES;
+  // H15 (2.45): a type that did not land on disk is not "ok".
+  if (!saveConfigFile()) return res.status(500).json({ error: hub.saveConfigError() });
   res.json({ ok: true, type: { ...rec, folder: dir } });
 });
 
@@ -59,7 +61,8 @@ app.post("/api/types/update", (req, res) => {
   const b = req.body || {};
   if (typeof b.label === "string" && b.label.trim()) t.label = b.label.trim();
   if (typeof b.accent === "string" && /^#[0-9a-fA-F]{6}$/.test(b.accent.trim())) t.accent = b.accent.trim().toUpperCase();
-  hub.CFG.types = hub.TYPES; saveConfigFile();
+  hub.CFG.types = hub.TYPES;
+  if (!saveConfigFile()) return res.status(500).json({ error: hub.saveConfigError() });
   res.json({ ok: true, type: t });
 });
 
@@ -78,7 +81,7 @@ app.post("/api/types/delete", (req, res) => {
   hub.QUEUE = hub.QUEUE.filter(e => e.type !== slug);
   if (hub.QUEUE.length !== qBefore) saveQueue();
   delete hub.TYPE_WARNINGS[slug];
-  saveConfigFile();
+  if (!saveConfigFile()) return res.status(500).json({ error: hub.saveConfigError() });
   res.json({ ok: true, note: "Folder and gcode files were preserved on disk." });
 });
 }); // end onModule("types-beta")

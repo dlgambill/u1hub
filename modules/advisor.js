@@ -368,7 +368,7 @@ function register(ctx) {
       if (u) next.url = u.replace(/\/+$/, ""); else delete next.url;
     }
     ctx.cfg.advisor = next;
-    ctx.saveConfig();
+    if (!ctx.saveConfig()) return res.status(500).json({ error: ctx.saveConfigError() });
     res.json(view());
   });
 

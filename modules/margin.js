@@ -129,7 +129,7 @@ function register(ctx) {
       next[k] = v;
     }
     ctx.cfg.margin = next;
-    ctx.saveConfig();
+    if (!ctx.saveConfig()) return res.status(500).json({ error: ctx.saveConfigError() });
     res.json({ ...conf(), defaults: DEFAULTS });
   });
 

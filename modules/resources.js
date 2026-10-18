@@ -834,7 +834,7 @@ function register(ctx) {
       next.amazon = t;
     }
     ctx.cfg.affiliate = next;
-    ctx.saveConfig();
+    if (!ctx.saveConfig()) return res.status(500).json({ error: ctx.saveConfigError() });
     const aff = affiliateConf(ctx.cfg);
     res.json({ ok: true, affiliate: { enabled: aff.enabled, tag_set: !!aff.amazon, active: !!(aff.enabled && aff.amazon) } });
   });

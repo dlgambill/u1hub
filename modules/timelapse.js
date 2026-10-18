@@ -1015,7 +1015,7 @@ function register(ctx) {
     const d = String((req.body || {}).saveDir ?? "").trim();
     if (d.length > 400) return res.status(400).json({ error: "that path is too long" });
     ctx.cfg.timelapse = { ...tcfg(), saveDir: d };
-    ctx.saveConfig();
+    if (!ctx.saveConfig()) return res.status(500).json({ error: ctx.saveConfigError() });
     const v = view();
     if (v.resolved) {
       try { await fs.promises.mkdir(v.resolved, { recursive: true }); v.folder_ok = true; }

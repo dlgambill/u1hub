@@ -155,7 +155,7 @@ function register(ctx) {
       next.enabled = !!b.enabled;
     }
     ctx.cfg.notify = next;
-    ctx.saveConfig();
+    if (!ctx.saveConfig()) return res.status(500).json({ error: ctx.saveConfigError() });
     res.json(view());
   });
 
