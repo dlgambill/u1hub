@@ -77,6 +77,11 @@ printers, and nothing leaves your network unless you turn remote access on.
 
 ---
 
+### 2.45.0 - one snapshot loop, bounded caches, honest saves
+
+- **H10 - one fleet snapshot loop.** Four timers each took their own snapshot of the farm (SSE and fleet events every 5 s, Dispatch every 10 s, the print-start watcher every 15 s with its own one-at-a-time probes) and three kept their own idea of "previous state". Now core/fleet.js runs the one loop and emits `fleet:tick` (snapshot plus per-printer transitions) on the hub's event bus; records, events and Dispatch subscribe to it, each at its old cadence. Nine offline printers no longer turn the watcher's round into 27 s against a 15 s interval, and the 20 s color reconcile fetch now gives up after 5 s instead of never. (Best practice: one poller, many subscribers - the edge is computed once.)
+- **H18 - the clear-bed hand-off window, verified.** S5 (2.44) already marks a copy `starting_on` at the start command and holds it in flight for five minutes, so a second clear-bed cannot be handed the same copy. One gap remained: between the printer first reporting the print and the executor claiming it (up to one 10 s tick), the plan's running list showed the print as untracked with no job. It now names the hand-off's job for that stretch too, as long as the printer reports that file. (Best practice: a state the system knows is never shown as unknown.)
+
 ### 2.44.1 - the phone tools button, a scan line that moves
 
 Two fixes from the first phone test of 2.44.0.

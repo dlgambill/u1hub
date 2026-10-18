@@ -35,6 +35,9 @@ function createMock(profile) {
     stallUpload: false,            // 2.42 (H3): accept an upload, then stop reading it and never answer
     stallScripts: false,           // 2.42 (H3): accept a gcode script and never answer
     stallDownload: false,          // 2.43 (H20): start sending a stored file, then stop mid-body
+    queries: 0,                    // 2.45 (H10): /printer/objects/query hits - proves one snapshot loop, not four
+    statsOnlyQueries: 0,           // 2.45 (H10): ...of which asked for print_stats alone (the old watcher's own probe)
+    metaFetches: 0,                // 2.45 (H17): /server/files/metadata hits - proves thumbnails do not evict the fleet's cache
     held: []                       // requests parked by the two knobs above
   };
   // Let go of every parked request (the harness calls this after a stall test).
@@ -64,7 +67,9 @@ function createMock(profile) {
       return send(200, { result: { objects: objectsList } });
 
     if (u.pathname === "/printer/objects/query") {
+      state.queries++;
       const want = [...u.searchParams.keys()];
+      if (want.length === 1 && want[0] === "print_stats") state.statsOnlyQueries++;
       const status = {};
       if (want.some(k => k.startsWith("print_stats"))) {
         status.print_stats = { state: state.printState, filename: state.filename, message: state.printMessage || "",
@@ -183,8 +188,10 @@ function createMock(profile) {
     if (u.pathname === "/machine/system_info")
       return send(200, { result: { system_info: { product_info: { device_name: profile === "u1" ? "U1-mock" : "SV06-mock", machine_type: profile, serial_number: "MOCK" + profile }, network: {} } } });
 
-    if (u.pathname === "/server/files/metadata")
+    if (u.pathname === "/server/files/metadata") {
+      state.metaFetches++;
       return send(200, { result: {} });
+    }
 
     // v2.35: the chamber camera's frame, as Snapmaker's plugin writes it. A
     // minimal JPEG (SOI ... EOI) after a delay, counted, so the harness can

@@ -1036,6 +1036,7 @@ async function stopHub() {
     // Reset the tray the setcolor-honesty section painted, so the swap math
     // below asserts against a known loadout (red + green on T1/T2).
     mockU1.state.ptc.filament_color_rgba[0] = "FF0000FF";
+    await sleep(450);   // H10 (2.45): one loop period, so the next snapshot carries the reset tray
     r = await jpost("/api/dispatch/jobs", { again: true, file: "multi.gcode", type: "u1", qty: 2, deadline: Date.now() + 60 * 60000 });
     ok(r.status === 200 && r.body.job.colors.length === 3 && r.body.job.est_minutes === 62 && r.body.job.multi === true,
       "job captures USED palette (3 colors — the 0 g white is defined-but-unused) + estimate (1h 2m → 62) + multi class",
@@ -2801,6 +2802,7 @@ async function stopHub() {
     // --- the executor and adopt both respect it --------------------------------
     // Put a print on the DOWN machine and make sure nothing claims it.
     mockU1.state.printState = "printing"; mockU1.state.filename = "single.gcode";
+    await sleep(450);   // H10 (2.45): one loop period, so the snapshot shows the print
     await jpost("/api/dispatch/tick", {});
     r = await jget("/api/dispatch");
     let mj = (r.body.jobs || []).find(j => j.id === MJOB);
@@ -5615,6 +5617,11 @@ async function stopHub() {
     ok(mine.length === 1, "S5: the plan holds one copy back for the hand-off and places only the other", mine.length);
     const run = (pl.running || []).find(x => x.printer === u1);
     ok(run && run.starting === true && run.file === "multi.gcode", "S5: the running list shows it as starting on that printer", run);
+    // H18 (2.45): the printer already reports the print here (the mock starts
+    // on SDCARD_PRINT_FILE and the loop's snapshot is fresh), the executor has
+    // not claimed it yet - and the running entry still names the job. On
+    // 2.44.1 this window showed the print as untracked with no job.
+    ok(run && run.job_id === J4 && run.tracked === false, "H18: between the printer reporting the print and the executor claiming it, the running entry still names the hand-off's job", run);
     mockU1.state.printState = "printing"; mockU1.state.filename = "multi.gcode";
     await settle();
     tj = await jobById(J4);
@@ -5701,6 +5708,53 @@ async function stopHub() {
     ok(!r.body.scan_progress || typeof r.body.scan_progress.dirs === "number", "2.44.1: scan_progress carries a dirs count when a walk is running", r.body.scan_progress);
   }
 
+  console.log("\n== SPRINT 4: H10 one fleet snapshot loop (2.45.0) ==");
+  {
+    // (a) One loop. The print-start watcher used to probe print_stats on its
+    // own every U1HUB_POLL_MS (400 ms here) on top of the SSE and events
+    // snapshots; now every subscriber reads the loop's one snapshot. So the
+    // printer never sees a print_stats-only query, and over 3 s it sees one
+    // loop's worth of full queries, not two pollers' worth.
+    mockU1.state.printState = "standby"; mockU1.state.filename = "";
+    await sleep(1500);
+    const q0 = mockU1.state.queries, s0 = mockU1.state.statsOnlyQueries;
+    await sleep(3000);
+    const qn = mockU1.state.queries - q0, sn = mockU1.state.statsOnlyQueries - s0;
+    ok(sn === 0, "H10: no second poller - the printer sees no print_stats-only probes (" + sn + ")", sn);
+    ok(qn <= Math.ceil(3000 / 400) + 2, "H10: one snapshot loop - at most one loop's worth of object queries in 3 s (" + qn + ")", qn);
+    // (b) A round with nine printers that never answer finishes well under the
+    // old 15 s interval: the snapshot probes in parallel under one timeout,
+    // where the watcher probed one printer at a time (9 x 3 s = 27 s a round,
+    // so a start took two rounds, ~54 s, to be stamped).
+    const hole = http.createServer((req, res) => { /* accept, never answer */ });
+    await new Promise(r => hole.listen(0, "127.0.0.1", r));
+    const holePort = hole.address().port;
+    const savedCfg = fs.readFileSync(path.join(hubDir, "config.json"), "utf8");
+    await stopHub();
+    const cfgNow = JSON.parse(savedCfg);
+    const holes = Array.from({ length: 9 }, (_, i) => ({ name: "hole-" + i, url: "http://127.0.0.1:" + holePort + "/h" + i, type: "u1" }));
+    const u1Entry = cfgNow.printers.find(p => p.url.includes(":" + portU1)) || cfgNow.printers[0];
+    fs.writeFileSync(path.join(hubDir, "config.json"), JSON.stringify({ ...cfgNow, printers: [u1Entry, ...holes] }, null, 2));
+    await startHub(hubDir);
+    await sleep(4500);                                   // the first pass (3.5 s of timeouts) primes the watcher
+    mockU1.state.printState = "printing"; mockU1.state.filename = "h10-offline.gcode";
+    const tStart = Date.now();
+    let stamped = false;
+    while (Date.now() - tStart < 12000) {
+      try { const pl = JSON.parse(fs.readFileSync(path.join(hubDir, "printlog.json"), "utf8")); if (pl.u1 && pl.u1["h10-offline.gcode"]) { stamped = true; break; } } catch {}
+      await sleep(250);
+    }
+    const tTook = Date.now() - tStart;
+    ok(stamped, "H10: with nine printers that never answer, a print start is still stamped within 12 s (" + (stamped ? tTook + " ms" : "not stamped") + ")", tTook);
+    mockU1.state.printState = "standby"; mockU1.state.filename = "";
+    await stopHub();
+    hole.closeAllConnections && hole.closeAllConnections();
+    await new Promise(r => hole.close(r));
+    fs.writeFileSync(path.join(hubDir, "config.json"), savedCfg);
+    await startHub(hubDir);
+    await sleep(600);
+  }
+
   // H7 runs auth.js on its own bare Express app (the harness Hub is in open
   // mode); see test/h7-auth-checks.js. Shown failing 5 of 12 on 2.42.0.
   console.log("\n== SPRINT 2: H7 auth - proxy allowlist, per-visitor limiter, credential-bound sessions (2.43.0) ==");
@@ -5710,6 +5764,10 @@ async function stopHub() {
   // H23 on bare apps; see test/sprint3-checks.js.
   console.log("\n== SPRINT 3: reliability - pollJob cap, 401 bounce, tunnel supervisor + pinning, shelf hoist, hidden-tab pause (2.44.0) ==");
   await require("./sprint3-checks")(ok);
+
+  // Sprint 4 (2.45.0): source-level checks and bare calls; see test/sprint4-checks.js.
+  console.log("\n== SPRINT 4: source-level - one snapshot loop, bounded caches, client ticks (2.45.0) ==");
+  await require("./sprint4-checks")(ok);
 
   await stopHub();
   await mockU1.close(); await mockSv.close();

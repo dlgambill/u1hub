@@ -150,24 +150,16 @@ function dequeueFile(name, slug) {
 const LAST_STATE = {};   // printer index -> last observed state
 
 
-async function probeState(p) {
-  const base = String(p.url).replace(/\/+$/, "");
-  try {
-    const ctrl = new AbortController();
-    const to = setTimeout(() => ctrl.abort(), 3000);
-    const r = await fetch(base + "/printer/objects/query?print_stats", { signal: ctrl.signal });
-    clearTimeout(to);
-    if (!r.ok) return null;
-    const j = await r.json();
-    const ps = (j.result && j.result.status && j.result.status.print_stats) || {};
-    return { state: ps.state || "unknown", filename: ps.filename || "" };
-  } catch { return null; }
-}
-
-
-async function pollPrintStarts() {
+// H10 (2.45): no probes of its own any more. The fleet loop in core/fleet.js
+// takes the one snapshot and hands it here on every "fleet:tick"; this reads
+// print_stats from that. Before, this walked the printers one at a time with
+// a 3 s timeout each - nine offline printers made a 27 s round against a 15 s
+// interval, and the watcher was late to every start.
+function pollPrintStarts(fleet) {
+  const byId = new Map((fleet || []).map(p => [p.id, p]));
   for (let i = 0; i < hub.PRINTERS.length; i++) {
-    const s = await probeState(hub.PRINTERS[i]);
+    const fp = byId.get(i);
+    const s = (fp && fp.online) ? { state: String(fp.state || "unknown"), filename: fp.filename || "" } : null;
     if (!s) continue;                       // unreachable: leave LAST_STATE so recovery doesn't fake a transition
     const prev = LAST_STATE[i];
     // genuine new start: a prior state exists, it wasn't already printing, and
@@ -207,11 +199,11 @@ async function pollPrintStarts() {
   }
 }
 
-// Interval is env-tunable so the test harness can drive a full start→complete
-// lifecycle in seconds; production default stays 15 s.
-setInterval(pollPrintStarts, Math.max(250, parseInt(process.env.U1HUB_POLL_MS, 10) || 15000));
-
-pollPrintStarts();   // prime LAST_STATE at startup (won't stamp — prev is undefined)
+// The loop's first pass primes LAST_STATE at startup (won't stamp - prev is
+// undefined). Cadence is the loop's (5 s; U1HUB_POLL_MS shortens it for the
+// harness), and every pass is edge-detected, so running on each one changes
+// nothing but how soon a start is noticed.
+hub.events.on("fleet:tick", t => pollPrintStarts(t.fleet));
 
 Object.assign(hub, { dequeueFile, fileContentHash, fileContentHashAsync, fmem, loadoutSnapshot, plogOf, savePrintLog, saveQueue });
 };

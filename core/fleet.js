@@ -277,12 +277,17 @@ farmWsRestart();
 // Colors don't broadcast (hardware-observed), so re-query print_task_config
 // over HTTP every 20 s per connected printer and splice it into the socket
 // cache. Touchscreen color changes therefore appear within one reconcile tick.
+const RECONCILE_TIMEOUT_MS = 5000;
 setInterval(() => {
   for (const [idx, rec] of FARMWS) {
     if (rec.status !== "open" || !rec.seenAt) continue;
     const p = hub.PRINTERS[idx]; if (!p) continue;
     const base = String(p.url).replace(/\/+$/, "");
-    fetch(base + "/printer/objects/query?print_task_config")
+    // H10 (2.45): bounded. A printer whose socket is open but whose HTTP side
+    // has gone quiet used to hold this fetch (and its socket) open forever.
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), RECONCILE_TIMEOUT_MS);
+    fetch(base + "/printer/objects/query?print_task_config", { signal: ctrl.signal })
       .then(r => r.ok ? r.json() : null)
       .then(j => {
         const ptc = j && j.result && j.result.status && j.result.status.print_task_config;
@@ -291,7 +296,7 @@ setInterval(() => {
           rec.raw.print_task_config = ptc;
           if (JSON.stringify(ptc) !== before) farmMarkDirty();
         }
-      }).catch(() => {});
+      }).catch(() => {}).finally(() => clearTimeout(to));
   }
 }, 20000);
 
@@ -329,6 +334,11 @@ setTimeout(diskPoll, 3000);
 // zero HTTP; otherwise fall back to the classic HTTP probe with a short cache
 // so SSE broadcasts can't hammer offline printers with timeout storms.
 const PROBE_CACHE = new Map(); // idx -> { data, at }
+// H10 (2.45): the loop's cadence (see fleetTick below), fixed here because the
+// probe cache has to be shorter than it - a tick must see a fresh reading.
+const TICK_MS = Math.max(250, Math.min(5000, ...[process.env.U1HUB_FLEET_TICK_MS, process.env.U1HUB_POLL_MS, process.env.U1HUB_EVENTS_POLL_MS]
+  .map(Number).filter(n => n > 0), 5000));
+const PROBE_CACHE_MS = Math.min(4000, Math.max(100, Math.round(TICK_MS * 0.8)));
 
 async function probeCached(p, idx) {
   const rec = FARMWS.get(idx);
@@ -338,7 +348,7 @@ async function probeCached(p, idx) {
     data = await shapeStatus(p, rec.raw, base);
   } else {
     const c = PROBE_CACHE.get(idx);
-    if (c && (Date.now() - c.at) < 4000) { data = c.data; }
+    if (c && (Date.now() - c.at) < PROBE_CACHE_MS) { data = c.data; }
     else { data = await probe(p); PROBE_CACHE.set(idx, { data, at: Date.now() }); }
   }
   const disk = DISK_CACHE.get(idx);
@@ -408,29 +418,75 @@ app.get("/api/events", (req, res) => {
   req.on("close", () => SSE_CLIENTS.delete(res));
 });
 
-let SSE_LAST = "", SSE_TIMER = null, SSE_BUSY = false;
+let SSE_LAST = "", SSE_TIMER = null;
 
 function farmMarkDirty() {
   if (SSE_TIMER) return;                    // debounce: batch bursts into one push
-  SSE_TIMER = setTimeout(sseBroadcast, 1000);   // v2.11: was 300 — client renders 1/s anyway
+  SSE_TIMER = setTimeout(() => { SSE_TIMER = null; fleetTick().catch(() => {}); }, 1000);   // v2.11: was 300 - client renders 1/s anyway
 }
 
-async function sseBroadcast() {
-  SSE_TIMER = null;
-  if (SSE_BUSY || SSE_CLIENTS.size === 0) return;
-  SSE_BUSY = true;
+// ---- H10 (2.45): ONE snapshot loop ------------------------------------------
+// Until 2.44 four timers each took their own snapshot of the farm (SSE 5 s,
+// fleet events 5 s, dispatch 10 s, the print-start watcher 15 s with its own
+// HTTP probes) and three of them kept their own idea of "previous state".
+// Now this loop is the only scheduled snapshot. Every pass emits
+//   hub.events "fleet:tick"  { seq, at, fleet, changes }
+// where `changes` lists each printer whose online/state/filename moved since
+// the previous pass ({ id, name, from, to }). The SSE push rides the same
+// pass. Subscribers (core/records.js, core/events.js, modules/dispatch.js)
+// act on the tick; the manual routes they expose still take a fresh snapshot
+// on demand, which is a request, not a poller.
+// Cadence: 5 s in production. The harness shortens it through U1HUB_POLL_MS
+// (the old print-start watcher knob) so a start-to-complete lifecycle runs
+// in seconds; the smallest knob set wins so no subscriber waits longer than
+// it did before.
+const TICK_PREV = new Map();   // id -> { online, state, filename }
+let TICK_SEQ = 0, TICK_BUSY = false, TICK_LAST = null;
+
+async function fleetTick() {
+  if (TICK_BUSY) return null;              // a slow pass (offline printers) is never stacked
+  TICK_BUSY = true;
   try {
-    const snap = JSON.stringify(await fleetSnapshot());
-    if (snap !== SSE_LAST) {
-      SSE_LAST = snap;
-      for (const c of SSE_CLIENTS) { try { c.write("data: " + snap + "\n\n"); } catch {} }
+    const fleet = await fleetSnapshot();
+    const changes = [];
+    const live = new Set();
+    for (const p of fleet || []) {
+      live.add(p.id);
+      const cur = { online: !!p.online, state: String(p.state || ""), filename: p.filename || "" };
+      const prev = TICK_PREV.get(p.id);
+      if (prev && (prev.online !== cur.online || prev.state !== cur.state || prev.filename !== cur.filename))
+        changes.push({ id: p.id, name: p.name, from: prev, to: cur });
+      TICK_PREV.set(p.id, cur);
     }
-  } catch {} finally { SSE_BUSY = false; }
+    for (const id of [...TICK_PREV.keys()]) if (!live.has(id)) TICK_PREV.delete(id);
+    const tick = { seq: ++TICK_SEQ, at: Date.now(), fleet, changes };
+    TICK_LAST = tick;
+    if (SSE_CLIENTS.size) {
+      const snap = JSON.stringify(fleet);
+      if (snap !== SSE_LAST) {
+        SSE_LAST = snap;
+        for (const c of SSE_CLIENTS) { try { c.write("data: " + snap + "\n\n"); } catch {} }
+      }
+    }
+    // Listeners run inside the loop. One that throws is logged, never fatal,
+    // and never stops the others (the emitter itself would rethrow).
+    for (const fn of hub.events.listeners("fleet:tick")) {
+      try { const r = fn(tick); if (r && typeof r.catch === "function") r.catch(e => hub.hublog("warn", "fleet:tick listener failed - " + (e && e.message || e))); }
+      catch (e) { hub.hublog("warn", "fleet:tick listener threw - " + (e && e.message || e)); }
+    }
+    return tick;
+  } catch (e) {
+    hub.hublog("warn", "fleet: tick failed - " + (e && e.message || e));
+    return null;
+  } finally { TICK_BUSY = false; }
 }
 
-// Slow safety tick: catches drift the sockets don't broadcast (bed temp on
-// HTTP-only printers, disk, reconciled colors) and keeps streams warm.
-setInterval(() => { farmMarkDirty(); }, 5000);
+// The one scheduled snapshot. Also catches drift the sockets don't broadcast
+// (bed temp on HTTP-only printers, disk, reconciled colors) and keeps SSE
+// streams warm. The first pass runs at once so the watchers are primed from
+// boot, as the print-start watcher always was.
+setInterval(() => { fleetTick().catch(() => {}); }, TICK_MS);
+setTimeout(() => { fleetTick().catch(() => {}); }, 0);
 
 setInterval(() => { for (const c of SSE_CLIENTS) { try { c.write(": hb\n\n"); } catch {} } }, 20000);
 
@@ -443,5 +499,5 @@ function sseEmit(name, obj) {
   for (const c of SSE_CLIENTS) { try { c.write(s); } catch {} }
 }
 
-Object.assign(hub, { decodeHeads, farmWsRestart, fileMeta, fleetSnapshot, sseEmit });
+Object.assign(hub, { decodeHeads, farmWsRestart, fileMeta, fleetSnapshot, fleetTick, fleetTickLast: () => TICK_LAST, sseEmit });
 };

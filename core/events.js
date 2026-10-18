@@ -24,17 +24,17 @@
 // on purpose finishing its last job is still news). Events are emitted
 // synchronously from one poll, so a listener that throws is caught and logged
 // — one bad subscriber cannot stop the others or the poller.
-
-const EventEmitter = require("events");
+//
+// H10 (2.45): this no longer polls. The fleet loop in core/fleet.js takes the
+// one snapshot and this runs its edge detection on every "fleet:tick" it
+// emits (hub.events is created in server.js so every core file can subscribe).
 
 module.exports = function (hub) {
   const { hublog } = hub;
   const POLL_MS = Number(process.env.U1HUB_EVENTS_POLL_MS) || 5000;
   const OFFLINE_GRACE_MS = Number(process.env.U1HUB_OFFLINE_GRACE_MS) || 90000;
 
-  const events = new EventEmitter();
-  events.setMaxListeners(50);
-  hub.events = events;
+  const events = hub.events;
 
   // id -> { online, state, filename, message, offlineSince, offlineSent, seen }
   const PREV = new Map();
@@ -53,12 +53,14 @@ module.exports = function (hub) {
   const PRINTING = new Set(["printing", "paused"]);
 
   // One pass over the fleet. Returns the events it emitted (possibly none).
-  async function check() {
+  // `given` is the loop's snapshot; without one (the manual route) a fresh
+  // snapshot is taken on demand.
+  async function check(given) {
     if (RUNNING) return [];
     RUNNING = true;
     const out = [];
     try {
-      const fleet = await hub.fleetSnapshot();
+      const fleet = given || await hub.fleetSnapshot();
       const now = Date.now();
       for (const p of fleet || []) {
         const id = p.id;
@@ -120,10 +122,6 @@ module.exports = function (hub) {
   hub.app.post("/api/fleet-events/check", async (req, res) => res.json({ emitted: await check(), recent: RECENT.slice(-20) }));
   hub.app.get("/api/fleet-events", (req, res) => res.json({ recent: RECENT.slice(-50), poll_ms: POLL_MS, offline_grace_ms: OFFLINE_GRACE_MS }));
 
-  // First pass shortly after boot seeds memory; the farm socket cache is warm
-  // by then. unref so nothing here keeps a shutting-down process alive.
-  const t0 = setTimeout(() => { check().catch(() => {}); }, 2500);
-  if (t0.unref) t0.unref();
-  const timer = setInterval(() => { check().catch(() => {}); }, POLL_MS);
-  if (timer.unref) timer.unref();
+  // The loop's first pass seeds memory; every later pass is checked for edges.
+  events.on("fleet:tick", t => check(t.fleet).catch(() => {}));
 };

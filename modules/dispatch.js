@@ -881,9 +881,18 @@ function register(ctx) {
     // executor has not seen it printing yet (upload + the 10 s tick). Without
     // this the lane looked free for a minute or two and a second clear-bed
     // could be handed the same copy.
+    // H18 (2.45): the hand-off is attributed to its job for the whole window,
+    // including the seconds between the printer first reporting the print and
+    // the executor claiming it (up to one 10 s tick). The lane's cursor is
+    // only moved when the printer still looks idle; once it reports the print
+    // its own remaining time is the better number.
     for (const l of lanes) {
       const sj = D.jobs.find(j => j.starting_on && j.printing_on == null && j.starting_on.printer === l.idx && now - (j.starting_on.at || 0) < STARTING_TTL_MS);
-      if (sj && l.cursor <= now) { l.cursor = now + learnedFor(sj, l.idx).min * 60000; l.busyUntil = l.cursor; l.startingFile = sj.file; l.startingJob = sj.id; }
+      if (!sj) continue;
+      const idle = l.cursor <= now;
+      if (!idle && !sameFile(sj, l.fp, l.idx)) continue;   // it is running something else - not this hand-off
+      l.startingFile = sj.file; l.startingJob = sj.id;
+      if (idle) { l.cursor = now + learnedFor(sj, l.idx).min * 60000; l.busyUntil = l.cursor; }
     }
     // Bundle deadlines tighten members'.
     const bundleDeadline = {};
@@ -1318,9 +1327,12 @@ function register(ctx) {
 
   // ---- executor: completion watcher (never a starter) -----------------------
   const STARTING_TTL_MS = 5 * 60000;             // S5: a hand-off that never became a print
-  async function tick() {
+  // H10 (2.45): `given` is the fleet loop's snapshot. Without one (the manual
+  // /api/dispatch/tick route) a fresh snapshot is taken on demand.
+  async function tick(given) {
     ensureMapped();
-    let fleet; try { fleet = await ctx.fleet(); } catch { return; }
+    let fleet = given;
+    if (!fleet) { try { fleet = await ctx.fleet(); } catch { return; } }
     let dirty = false;
     // S5: a copy handed to a printer at "Bed cleared -> start next" is in
     // flight until the executor sees it printing. If it never does, say so.
@@ -1408,16 +1420,24 @@ function register(ctx) {
   // full day, firing every 10 s with nobody the wiser. Log it, rate-limited so a
   // persistent fault does not flood the ring buffer.
   let LAST_TICK_ERR = 0;
-  const timer = setInterval(() => {
-    tick().catch(e => {
-      const now = Date.now();
+  // H10 (2.45): no snapshot of its own. The fleet loop (core/fleet.js, 5 s)
+  // emits "fleet:tick" with the one snapshot; the executor acts on every
+  // other one, so its cadence is what it was: first pass 10 s after boot,
+  // then every ~10 s. The slack keeps a late tick from pushing a pass out
+  // to the one after.
+  const EXEC_SLACK_MS = 1500;
+  let NEXT_EXEC = Date.now() + EXEC_TICK_MS;
+  if (ctx.events) ctx.events.on("fleet:tick", t => {
+    const now = Date.now();
+    if (now < NEXT_EXEC) return;
+    NEXT_EXEC = now + EXEC_TICK_MS - EXEC_SLACK_MS;
+    tick(t.fleet).catch(e => {
       if (now - LAST_TICK_ERR > 60000) {
         LAST_TICK_ERR = now;
-        ctx.hublog("error", "dispatch: executor tick failed — " + (e && e.message || e));
+        ctx.hublog("error", "dispatch: executor tick failed - " + (e && e.message || e));
       }
     });
-  }, EXEC_TICK_MS);
-  if (timer.unref) timer.unref();
+  });
   // Manual tick: "recheck the fleet now". Makes completions show up instantly
   // after you clear a bed by hand, and makes the harness deterministic instead
   // of racing the 10 s interval.
