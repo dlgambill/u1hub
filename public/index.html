@@ -397,6 +397,14 @@
   .btn.primary{background:var(--signal); color:var(--on-accent);} .btn.primary:hover{filter:brightness(1.06);}
   .btn.ghost{background:transparent; color:var(--ink); border-color:var(--field);} .btn.ghost:hover{border-color:var(--ink-dim);}
   .btn:disabled{opacity:.4; cursor:default;}
+  /* H14 (2.45): a command in flight. The tapped button keeps its own color and shows a
+     spinner drawn in currentColor; no new token. */
+  .btn.busy{position:relative; color:transparent !important; opacity:.8;}
+  .btn.busy::after{content:""; position:absolute; left:50%; top:50%; width:12px; height:12px; margin:-7px 0 0 -7px; border-radius:50%;
+    border:2px solid var(--ink); border-right-color:transparent; animation:btnspin .7s linear infinite;}
+  .btn.primary.busy::after{border-color:var(--on-accent); border-right-color:transparent;}
+  .btn.danger.busy::after{border-color:var(--bad); border-right-color:transparent;}
+  @keyframes btnspin{to{transform:rotate(360deg);}}
   .pstatus{font-family:var(--mono); font-size:11px; min-height:14px;}
   .pstatus.ok{color:var(--ok);} .pstatus.err{color:var(--bad);} .pstatus.work{color:var(--signal);}
   .progress{height:4px; border-radius:3px; background:var(--panel-2); overflow:hidden;}

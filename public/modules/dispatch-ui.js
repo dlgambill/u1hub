@@ -1486,12 +1486,28 @@
     if (EL && EL.style.display !== "none" && STATE) { renderReport(); renderChanges(); renderPlan(); }
   }
 
+  // H13 (2.45): the timeline redraws on every fleet tick the page already
+  // receives - running bars and ETAs are drawn against the clock, so a redraw
+  // from the plan in hand is cheap and keeps them moving. A changed awaiting
+  // list (a bed waiting to be cleared) redraws the job list too.
+  const visible = () => !!(EL && EL.style.display !== "none" && STATE && !document.hidden);
   function onFleet() {
-    if (EL && EL.style.display !== "none" && STATE) jget("/api/dispatch").then(d => {
-      if (d.body) { const was = JSON.stringify(STATE.awaiting), now2 = JSON.stringify(d.body.awaiting);
-        STATE = d.body; if (was !== now2) renderPlan(); }
+    if (!visible()) return;
+    renderPlan();
+    jget("/api/dispatch").then(d => {
+      if (!d.body || !visible()) return;
+      const was = JSON.stringify(STATE.awaiting), now2 = JSON.stringify(d.body.awaiting);
+      STATE = d.body;
+      if (was !== now2) { renderJobs(); renderPlan(); }
     });
   }
+  // ...and the plan itself is re-read every 60 s while the tab is showing and
+  // the document is visible (H11: nothing polls from a hidden tab).
+  // A field being edited (the target datetime, a priority) is left alone:
+  // the reload waits for the next minute rather than resetting it mid-edit.
+  const PLAN_RELOAD_MS = 60000;
+  const editing = () => { const a = document.activeElement; return !!(a && EL && EL.contains(a) && /^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName)); };
+  setInterval(() => { if (visible() && !editing()) load().catch(() => {}); }, PLAN_RELOAD_MS);
 
   // Claimed file action: core renders "📋 Send to Dispatch" next to "Add to
   // queue" and calls this. It's the ONLY path on phones and tablets — touch

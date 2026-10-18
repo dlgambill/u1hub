@@ -54,6 +54,23 @@ module.exports = async function sprint4Checks(ok) {
     ok(r2 && r2.duration === 0 && r2.width === 1920, "H12: an unreadable file (or no ffprobe on PATH) resolves the same way", r2);
   }
 
+  // ---- H13: Dispatch timeline follows the fleet tick ----
+  const dui = read("public/modules/dispatch-ui.js");
+  ok(/function onFleet\(\) \{\n    if \(!visible\(\)\) return;\n    renderPlan\(\);/.test(dui),
+    "H13: the timeline redraws on every fleet tick while the tab is showing (running bars and ETAs move)");
+  ok(/const PLAN_RELOAD_MS = 60000;/.test(dui) && /setInterval\(\(\) => \{ if \(visible\(\) && !editing\(\)\) load\(\)/.test(dui) && /!document\.hidden/.test(dui),
+    "H13: the plan is re-read every 60 s while visible, never from a hidden document (H11)");
+
+  // ---- H14: pause/resume/cancel buttons ----
+  const app = read("public/app.js"), idx = read("public/index.html");
+  ok(/const CTLBUSY=new Map\(\)/.test(app) && /ctlBtn\(p\.id,"cancel","Cancel","danger"\)/.test(app) && /CTLBUSY\.set\(printer, act\); ctlSetBusy\(printer, act\);/.test(app),
+    "H14: a pause/resume/cancel in flight disables the card's control buttons and survives the fleet re-render");
+  ok(/if\(CTLBUSY\.has\(printer\)\) return;/.test(app), "H14: a second tap while one is in flight sends nothing");
+  ok(/catch\(e\)\{\n    \/\/ Re-enable on error[^]*?CTLBUSY\.delete\(printer\); ctlSetBusy\(printer, null\);\n    if\(st\)\{ st\.className="pstatus err"; st\.textContent=e\.message; \}/.test(app),
+    "H14: on error the buttons come back and the card's status line says why");
+  ok(/\.btn\.busy::after\{[^}]*border:2px solid var\(--ink\)/.test(idx) && /@keyframes btnspin/.test(idx) && !/\.btn\.busy[^}]*#[0-9a-fA-F]{3,6}/.test(idx),
+    "H14: the in-button spinner is drawn from existing tokens, no new color");
+
   // ---- H17: metadata cache keyed by printer and file ----
   ok(/const META_CACHE = new Map\(\);/.test(fleet) && /const mk = key \+ "\\n" \+ filename;/.test(fleet) && /META_CACHE_MAX = 200/.test(fleet),
     "H17: the per-file metadata cache is keyed by printer and file and bounded");
