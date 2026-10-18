@@ -91,3 +91,6 @@ share-posts.md
 TIMELAPSE-PLAN.md
 # v2.40 print requests (state)
 models-requests.json
+
+# F9 (2.45): nightly state backups live beside the state, never in git
+backups/

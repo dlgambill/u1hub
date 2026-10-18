@@ -37,6 +37,7 @@ const REPO = path.join(__dirname, "..");
 // expected version from package.json once and asserts everything else
 // (server.js, index.html, live routes) against it.
 const EXPECTED_VERSION = JSON.parse(fs.readFileSync(path.join(REPO, "package.json"), "utf8")).version;
+process.env.U1HUB_NO_BACKUP = "1";   // F9: the harness boots many Hubs; none should write a backups/ folder
 const HUB_PORT = 45990;
 const HUB = "http://127.0.0.1:" + HUB_PORT;
 
@@ -5712,6 +5713,55 @@ async function stopHub() {
     await jpost("/api/models/settings", { folder: mroot });
     const r = await jget("/api/models?refresh=1");
     ok(!r.body.scan_progress || typeof r.body.scan_progress.dirs === "number", "2.44.1: scan_progress carries a dirs count when a walk is running", r.body.scan_progress);
+  }
+
+  console.log("\n== SPRINT 4: F9 /healthz and nightly state backups (2.45.0) ==");
+  {
+    // /healthz needs no cookie and no disk: a watchdog's view of "is it up".
+    let r = await fetch(HUB + "/healthz"); let b = await r.json();
+    ok(r.status === 200 && b.ok === true && b.version === require(path.join(REPO, "package.json")).version && typeof b.printers === "number" && typeof b.uptime === "number",
+      "F9: GET /healthz answers 200 {ok, version, printers, uptime} from memory", b);
+    const authSrc = fs.readFileSync(path.join(REPO, "auth.js"), "utf8");
+    ok(/"\/healthz"/.test(authSrc.slice(authSrc.indexOf("const ALLOW"), authSrc.indexOf("const ALLOW") + 400)), "F9: /healthz is allow-listed past the sign-in gate");
+    // The backup is a pure function of a state dir: run it on a scratch one
+    // for nine days and look at what it kept.
+    const { runBackup, KEEP_DAYS, STATE_FILES } = require(path.join(REPO, "core", "health.js"));
+    const sdir = path.join(tmp, "f9-state"); fs.mkdirSync(sdir, { recursive: true });
+    for (const f of ["dispatch.json", "spools.json", "config.json"]) fs.writeFileSync(path.join(sdir, f), JSON.stringify({ f }));
+    let last = null;
+    for (let d = 1; d <= 9; d++) last = runBackup(sdir, null, "2026-10-" + String(d).padStart(2, "0"));
+    const kept = fs.readdirSync(path.join(sdir, "backups")).sort();
+    ok(kept.length === KEEP_DAYS && kept[0] === "2026-10-03" && kept[kept.length - 1] === "2026-10-09", "F9: nine nightly runs keep the newest " + KEEP_DAYS + " days", kept);
+    ok(last.copied.length === 3 && last.pruned.includes("2026-10-02") && !fs.existsSync(path.join(sdir, "backups", "2026-10-01")),
+      "F9: only the files that exist are copied (3 of " + STATE_FILES.length + ") and the oldest day is pruned", last);
+    ok(JSON.parse(fs.readFileSync(path.join(sdir, "backups", "2026-10-09", "dispatch.json"), "utf8")).f === "dispatch.json" && !fs.readdirSync(path.join(sdir, "backups", "2026-10-09")).some(n => n.endsWith(".tmp")),
+      "F9: the copy is byte-identical and no .tmp is left behind");
+    const custom = path.join(tmp, "f9-elsewhere");
+    const rc = runBackup(sdir, custom, "2026-10-10");
+    ok(rc.dir === path.resolve(custom) && fs.existsSync(path.join(custom, "2026-10-10", "config.json")), "F9: backupDir in config.json moves the folder", rc.dir);
+    ok(/^backups\/?\s*$/m.test(fs.readFileSync(path.join(REPO, ".gitignore"), "utf8")), "F9: backups/ is ignored by git");
+  }
+
+  console.log("\n== SPRINT 4: F10 CI and the tag check (2.45.0) ==");
+  {
+    const { checkVersion, readVersions } = require(path.join(REPO, "scripts", "check-version.js"));
+    const vs = readVersions(REPO);
+    ok(vs.pkg && vs.pkg === vs.srv && vs.pkg === vs.log, "F10: package.json, server.js and the CHANGELOG's first heading agree on " + vs.pkg, vs);
+    ok(checkVersion("v" + vs.pkg, vs).ok && checkVersion("refs/tags/v" + vs.pkg, vs).ok, "F10: the matching tag passes, with or without refs/tags/");
+    let r = checkVersion("v9.9.9", vs);
+    ok(!r.ok && r.problems.length === 3 && /package\.json says/.test(r.problems[0]) && /server\.js VERSION says/.test(r.problems[1]) && /CHANGELOG/.test(r.problems[2]),
+      "F10: a tag that lies is refused with every mismatch named", r.problems);
+    r = checkVersion("release-1", vs);
+    ok(!r.ok && /not vX\.Y\.Z/.test(r.problems[0]), "F10: a tag that is not vX.Y.Z is refused");
+    const cli = require("child_process").spawnSync(process.execPath, [path.join(REPO, "scripts", "check-version.js"), "v0.0.1"], { encoding: "utf8" });
+    ok(cli.status === 1 && /does not match the code/.test(cli.stderr), "F10: the CLI exits 1 with the reason on stderr", cli.stderr);
+    const cli2 = require("child_process").spawnSync(process.execPath, [path.join(REPO, "scripts", "check-version.js"), "v" + vs.pkg], { encoding: "utf8" });
+    ok(cli2.status === 0, "F10: ...and 0 on the real version", cli2.stdout);
+    const ci = fs.readFileSync(path.join(REPO, ".github", "workflows", "ci.yml"), "utf8");
+    ok(/ubuntu-latest, windows-latest/.test(ci) && /node-version: 22/.test(ci) && /npm ci/.test(ci) && /node test\/run-tests\.js/.test(ci) && /U1HUB_SKIP_SLICE: "1"/.test(ci),
+      "F10: ci.yml runs the harness on Linux and Windows with Node 22, skipping only the fixture-bound SLICE section");
+    ok(/startsWith\(github\.ref, 'refs\/tags\/v'\)/.test(ci) && /scripts\/check-version\.js/.test(ci) && /tags: \["v\*"\]/.test(ci), "F10: tag builds run the version check before anything ships");
+    ok(/EXPLORER_REF: v1\.7\.0/.test(fs.readFileSync(path.join(REPO, ".github", "workflows", "release.yml"), "utf8")), "F10: release.yml is untouched (EXPLORER_REF still v1.7.0; the release checklist bumps it)");
   }
 
   console.log("\n== SPRINT 4: H10 one fleet snapshot loop (2.45.0) ==");

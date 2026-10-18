@@ -1,0 +1,43 @@
+name: ci
+
+# Run the harness on every push, pull request and v* tag, on Linux and
+# Windows (the Hub runs as a Windows service in production, so Windows is not
+# optional). On a tag build, refuse a tag whose version does not match
+# package.json, server.js and the CHANGELOG - release.yml builds the binaries
+# from the same tag, so this check runs before anything is published.
+#
+# The SLICE section needs two real slicer fixtures that are kept out of git;
+# U1HUB_SKIP_SLICE=1 skips exactly that section (the harness prints that it did).
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request: {}
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: version matches the tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: node scripts/check-version.js "${{ github.ref_name }}"
+      - name: harness
+        env:
+          U1HUB_SKIP_SLICE: "1"
+        run: node test/run-tests.js

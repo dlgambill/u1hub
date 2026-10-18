@@ -102,8 +102,9 @@ module.exports = async function sprint4Checks(ok) {
     const files = walk("");
     const withRegex = files.filter(f => read(f).includes('.replace(/\\/+$/, "")'));
     ok(withRegex.length === 1 && withRegex[0] === "core/util.js", "H19: the trailing-slash regex lives in core/util.js only (" + withRegex.join(", ") + ")");
-    const withSpools = files.filter(f => read(f).includes('"spools.json"'));
-    ok(withSpools.length === 1 && withSpools[0] === "core/spools.js", "H19: core/spools.js is the only server file that names spools.json (" + withSpools.join(", ") + ")");
+    // core/health.js (F9) copies the file byte-for-byte for the nightly backup; it never parses it, so it is not a reader.
+    const withSpools = files.filter(f => f !== "core/health.js" && read(f).includes('"spools.json"'));
+    ok(withSpools.length === 1 && withSpools[0] === "core/spools.js", "H19: core/spools.js is the only server file that reads spools.json (" + withSpools.join(", ") + ")");
     const defs = files.filter(f => /function (nameMatcher|isoWeekKey|grabFrame)\(/.test(read(f)));
     ok(defs.length === 1 && defs[0] === "core/util.js", "H19: nameMatcher, isoWeekKey and grabFrame are defined once, in core/util.js (" + defs.join(", ") + ")");
     const U = require(path.join(REPO, "core", "util.js"));

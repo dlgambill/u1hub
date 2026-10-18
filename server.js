@@ -3,7 +3,7 @@
 // and pushes the chosen file to the chosen printer via Moonraker (server-side,
 // so no browser CORS headaches).
 
-const VERSION = "2.44.1";
+const VERSION = "2.45.0";
 
 const fs = require("fs");
 const http = require("http");
@@ -20,6 +20,7 @@ require("./core/log.js")(hub);
 require("./core/config.js")(hub);
 require("./core/records.js")(hub);
 require("./core/app.js")(hub);
+require("./core/health.js")(hub);   // F9 (2.45): /healthz + nightly state backups
 require("./core/library.js")(hub);
 require("./core/print.js")(hub);
 require("./core/fleet.js")(hub);
@@ -34,6 +35,7 @@ const { BASE_DIR, CONFIG_PATH, IS_PKG, PORT, UPGRADE_HANDLERS, app, hublog } = h
 
 
 const SERVER = app.listen(PORT, () => {
+  if (hub.markListening) hub.markListening();
   const url = "http://localhost:" + PORT;
   console.log("\n  U1 Print Hub  v" + VERSION + "  →  " + url);
   console.log("  Folder:   " + hub.FOLDER);

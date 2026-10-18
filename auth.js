@@ -216,7 +216,7 @@ module.exports = function mountAuth(app, express, baseDir, assetDir) {
   // check (models.js: X-U1-Token against config.json's models.explorerToken).
   // Every other /api/models/* route is unaffected and still needs a real
   // Hub session, same as before.
-  const ALLOW = new Set(["/auth.html", "/manifest.json", "/sw.js",
+  const ALLOW = new Set(["/auth.html", "/manifest.json", "/sw.js", "/healthz",   // F9: a watchdog polls this with no cookie
                          "/icon-192.png", "/icon-512.png", "/favicon.ico",
                          "/api/models/print-request"]);
   app.use((req, res, next) => {
