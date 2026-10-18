@@ -21,8 +21,9 @@
 //
 // auth.json: { mode, salt, hash, secret, header, trusted_proxies, ver }
 // (salt/hash only in password mode; secret signs session cookies and is
-// created on first setup; trusted_proxies is the forward-mode allowlist,
-// loopback when absent; ver is bumped by every auth settings change).
+// created on first setup; trusted_proxies is the list of proxy addresses -
+// IPs or CIDRs - whose forwarded headers are believed, loopback when absent;
+// ver is bumped by every credential change and by "sign out everywhere").
 // Kept OUT of config.json deliberately — /api/config echoes config to the
 // settings UI and must never carry credentials.
 //
@@ -38,6 +39,7 @@
 
 const crypto = require("crypto");
 const fs = require("fs");
+const net = require("net");
 const path = require("path");
 
 const COOKIE = "u1hub_session";
@@ -127,7 +129,50 @@ module.exports = function mountAuth(app, express, baseDir, assetDir) {
     const a = socketAddr(req);
     const list = Array.isArray(A.trusted_proxies) && A.trusted_proxies.length
       ? A.trusted_proxies.map(norm) : ["127.0.0.1", "::1"];
-    return list.includes(a);
+    return list.some(entry => addrMatches(a, entry));
+  }
+  // H24 (2.45): an entry is a plain address or a CIDR ("10.0.0.0/24",
+  // "fd00::/64"). Hand-rolled on net.isIP so no dependency is added; an
+  // entry that does not parse matches nothing (and setup refuses to save one).
+  function addrBits(a) {
+    const v = net.isIP(a);
+    if (v === 4) return { bits: a.split(".").map(Number).reduce((acc, o) => (acc << 8n) + BigInt(o), 0n), len: 32 };
+    if (v === 6) {
+      let [head, tail] = a.split("::");
+      const hs = head ? head.split(":") : [], ts = tail ? tail.split(":") : [];
+      // an embedded IPv4 tail ("::ffff:1.2.3.4") counts as two groups
+      const expand = g => g.includes(".") ? g.split(".").map(Number).reduce((acc, o) => (acc << 8n) + BigInt(o), 0n).toString(16).padStart(8, "0").match(/.{4}/g) : [g];
+      const H = hs.flatMap(expand), T = ts.flatMap(expand);
+      const groups = tail === undefined ? H : [...H, ...Array(Math.max(0, 8 - H.length - T.length)).fill("0"), ...T];
+      if (groups.length !== 8) return null;
+      return { bits: groups.reduce((acc, g) => (acc << 16n) + BigInt(parseInt(g, 16) || 0), 0n), len: 128 };
+    }
+    return null;
+  }
+  function parseProxyEntry(entry) {
+    const m = /^([^/]+)(?:\/(\d{1,3}))?$/.exec(String(entry || "").trim());
+    if (!m) return null;
+    const base = addrBits(norm(m[1]));
+    if (!base) return null;
+    const prefix = m[2] === undefined ? base.len : +m[2];
+    if (prefix > base.len) return null;
+    return { ...base, prefix };
+  }
+  function addrMatches(addr, entry) {
+    const e = parseProxyEntry(entry), a = addrBits(addr);
+    if (!e || !a || e.len !== a.len) return false;
+    const shift = BigInt(e.len - e.prefix);
+    return (e.bits >> shift) === (a.bits >> shift);
+  }
+  // The list as saved: trimmed strings, at most 16, every one parseable.
+  // Returns { list } or { error } naming the first bad entry.
+  function validateProxies(px) {
+    if (!Array.isArray(px)) return { error: "trusted_proxies must be a list of IPs or CIDRs" };
+    const list = px.map(x => String(x == null ? "" : x).trim()).filter(Boolean);
+    if (list.length > 16) return { error: "at most 16 trusted proxies" };
+    const bad = list.find(x => !parseProxyEntry(x));
+    if (bad !== undefined) return { error: "\"" + bad.slice(0, 60) + "\" is not an IP address or CIDR range" };
+    return { list };
   }
   function clientKey(req) {
     if (fromTrustedProxy(req)) {
@@ -191,7 +236,10 @@ module.exports = function mountAuth(app, express, baseDir, assetDir) {
 
   // ---- API ----
   app.get("/api/auth/status", (req, res) => {
-    res.json({ mode: A.mode, configured: A.mode !== "open", authed: isAuthed(req) });
+    const authed = isAuthed(req);
+    res.json({ mode: A.mode, configured: A.mode !== "open", authed,
+               // H24: the Settings card edits this; only shown to someone who is in
+               trusted_proxies: authed ? (Array.isArray(A.trusted_proxies) ? A.trusted_proxies : []) : undefined });
   });
 
   // First-time setup, or settings changes once logged in.
@@ -201,6 +249,21 @@ module.exports = function mountAuth(app, express, baseDir, assetDir) {
     if (!firstRun && !isAuthed(req))
       return res.status(401).json({ error: "Log in before changing auth settings" });
     const { mode, password, header } = req.body || {};
+    // H24 (2.45): the trusted-proxy list, in any mode. A body that carries
+    // only the list (no mode) changes nothing else - not the mode, not the
+    // password, not the session version, so the caller stays signed in.
+    const pxIn = (req.body || {}).trusted_proxies !== undefined ? (req.body || {}).trusted_proxies : (req.body || {}).proxies;
+    let px = null;
+    if (pxIn !== undefined) {
+      const v = validateProxies(pxIn);
+      if (v.error) return res.status(400).json({ error: v.error });
+      px = v.list;
+    }
+    if (mode === undefined && px) {
+      if (px.length) A.trusted_proxies = px; else delete A.trusted_proxies;
+      save();
+      return res.json({ ok: true, mode: A.mode, trusted_proxies: A.trusted_proxies || [] });
+    }
     if (!["open", "password", "proxy", "forward"].includes(mode))
       return res.status(400).json({ error: "Bad mode" });
     // H23 (2.44): the built-in tunnel and a proxy-trusting auth mode are
@@ -214,11 +277,8 @@ module.exports = function mountAuth(app, express, baseDir, assetDir) {
         return res.status(400).json({ error: "Password must be at least 4 characters" });
       setPassword(password);
     } else { delete A.salt; delete A.hash; }
-    if (mode === "forward") {
-      A.header = String(header || "Remote-User");
-      const px = (req.body || {}).proxies;
-      if (Array.isArray(px)) A.trusted_proxies = px.map(x => String(x).trim()).filter(Boolean).slice(0, 16);
-    }
+    if (mode === "forward") A.header = String(header || "Remote-User");
+    if (px) { if (px.length) A.trusted_proxies = px; else delete A.trusted_proxies; }
     A.mode = mode;
     A.ver = (A.ver || 0) + 1;      // H7: any auth change retires the old sessions
     ensureSecret();
@@ -244,6 +304,25 @@ module.exports = function mountAuth(app, express, baseDir, assetDir) {
   });
 
   app.post("/api/auth/logout", (req, res) => {
+    setCookie(res, "gone", 0);
+    res.json({ ok: true });
+  });
+
+  // H24 (2.45): retire every session at once - a phone that went missing, a
+  // browser left signed in somewhere. Sessions are stateless and bound to
+  // `ver` (H7), so bumping it is the whole mechanism: every cookie issued
+  // before this moment, the caller's included, fails verification from the
+  // next request on. Only meaningful in password mode: open and proxy modes
+  // have no Hub sessions to retire, and forward mode's sessions belong to the
+  // proxy - a 409 says which, rather than a 200 that changed nothing.
+  app.post("/api/auth/signout-everywhere", (req, res) => {
+    if (A.mode !== "password")
+      return res.status(409).json({ error: A.mode === "forward"
+        ? "Sessions are held by your forward-auth proxy - sign out there."
+        : "The Hub is in " + A.mode + " mode: there are no sessions to sign out." });
+    if (!isAuthed(req)) return res.status(401).json({ error: "Not logged in" });
+    A.ver = (A.ver || 0) + 1;
+    save();
     setCookie(res, "gone", 0);
     res.json({ ok: true });
   });

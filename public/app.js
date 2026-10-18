@@ -2710,8 +2710,39 @@ async function refreshAuthLine(){
       a.mode === "proxy"    ? "proxy mode — gate off, your reverse proxy handles auth" :
       a.mode === "forward"  ? "forward-auth — identity comes from your proxy" :
                               "open — anyone who can reach this Hub can use it";
+    // H24: the trusted-proxy list is editable here; "sign out everywhere"
+    // only means something when the Hub itself holds the sessions.
+    if (Array.isArray(a.trusted_proxies) && document.activeElement !== $("authProxies")) $("authProxies").value = a.trusted_proxies.join(", ");
+    $("authSignoutAll").disabled = a.mode !== "password";
+    $("authSignoutAll").title = a.mode === "password" ? "Retire every session on every device, this one included" : "Only in password mode - the Hub holds no sessions in " + a.mode + " mode";
   }catch{ $("authHint").textContent = ""; }
 }
+// H24 (2.45): trusted proxies, saved through the setup route without a mode
+// so nothing else about access changes.
+$("authProxiesSave").addEventListener("click", async ()=>{
+  const st = $("authMsg");
+  const list = $("authProxies").value.split(/[,\s]+/).map(x=>x.trim()).filter(Boolean);
+  st.className="pstatus"; st.textContent="Saving…";
+  try{
+    const r = await fetch("/api/auth/setup",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({ trusted_proxies: list })});
+    const j = await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(j.error || ("HTTP "+r.status));
+    st.className="pstatus ok"; st.textContent = list.length ? "Saved - " + list.length + " trusted" : "Saved - loopback only";
+  }catch(e){ st.className="pstatus err"; st.textContent = e.message; }
+});
+// H24: every session on every device, this one included - so the page lands
+// on the sign-in form right after. A confirm first: there is no undo.
+$("authSignoutAll").addEventListener("click", async ()=>{
+  if(!confirm("Sign out everywhere?\nEvery device signed in to this Hub, including this one, will have to enter the password again.")) return;
+  const st = $("authMsg");
+  st.className="pstatus"; st.textContent="Signing out…";
+  try{
+    const r = await fetch("/api/auth/signout-everywhere",{method:"POST"});
+    const j = await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(j.error || ("HTTP "+r.status));
+    location.replace("/auth.html");
+  }catch(e){ st.className="pstatus err"; st.textContent = e.message; }
+});
 // ---- remote access (Cloudflare tunnel) ----
 let tunTimer = null, tunState = null;
 async function refreshTunnelLine(){

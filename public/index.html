@@ -659,7 +659,15 @@
         <label class="fl" style="margin-top:18px">Access <span class="hint" id="authHint">checking…</span></label>
         <div class="row" style="margin-top:6px">
           <button class="btn ghost" id="manageAuth">Manage access</button>
+          <button class="btn ghost" id="authSignoutAll" title="Retire every session on every device, this one included">Sign out everywhere</button>
+          <span class="pstatus" id="authMsg"></span>
         </div>
+        <!-- H24 (2.45): the proxies whose forwarded headers the Hub believes -->
+        <div class="row" style="margin-top:8px">
+          <input class="field" id="authProxies" placeholder="trusted proxies, e.g. 127.0.0.1, 10.0.0.0/24 (blank = loopback only)" style="max-width:420px" />
+          <button class="btn ghost" id="authProxiesSave">Save proxies</button>
+        </div>
+        <div class="hint" style="margin-top:5px">Only a connection from one of these addresses may claim a visitor address (cf-connecting-ip, x-forwarded-for) or a forward-auth identity header. Leave blank unless your tunnel or proxy runs on another machine.</div>
 
         <label class="fl" style="margin-top:18px">Remote access <span class="hint" id="tunHint">checking…</span></label>
         <div class="row" id="tunUrlRow" style="margin-top:6px; display:none">

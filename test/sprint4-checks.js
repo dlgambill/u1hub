@@ -133,6 +133,16 @@ module.exports = async function sprint4Checks(ok) {
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   }
 
+  // ---- H24: Settings auth card (route behavior is in test/h7-auth-checks.js) ----
+  ok(/id="authProxies"/.test(idx) && /id="authProxiesSave"/.test(idx) && /id="authSignoutAll"/.test(idx) && /id="authMsg"/.test(idx),
+    "H24: the Settings access card has the trusted-proxies field, its save button, Sign out everywhere and a status line");
+  ok(/fetch\("\/api\/auth\/setup",\{method:"POST"[^\n]*trusted_proxies: list/.test(app), "H24: the proxies save goes through /api/auth/setup with trusted_proxies only (no mode)");
+  ok(/if\(!confirm\("Sign out everywhere\?/.test(app) && /fetch\("\/api\/auth\/signout-everywhere",\{method:"POST"\}\)/.test(app) && /location\.replace\("\/auth\.html"\)/.test(app),
+    "H24: Sign out everywhere confirms first, calls the route, then lands on the sign-in page");
+  ok(/\$\("authSignoutAll"\)\.disabled = a\.mode !== "password";/.test(app), "H24: the button is disabled outside password mode");
+  ok(!/[\u2014]/.test(app.slice(app.indexOf("// H24 (2.45): trusted proxies"), app.indexOf("// ---- remote access"))) && !/[\u2014]/.test(idx.slice(idx.indexOf('id="authSignoutAll"'), idx.indexOf('Remote access <span'))),
+    "H24: the new UI text uses no em dash");
+
   // ---- H16 ----
   ok(/folder: path\.resolve\(ctx\.baseDir, String\(c\.folder \|\| sl\.srcFolder \|\| "models"\)\)/.test(read("modules/models.js")),
     "H16: models.folder resolves against ctx.baseDir, not process.cwd()");

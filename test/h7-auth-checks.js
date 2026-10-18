@@ -80,6 +80,53 @@ module.exports = async function h7Checks(ok) {
     ok(r.status === 429, "H7: a client that is not a trusted proxy cannot dodge the limiter by inventing cf-connecting-ip", r.status);
   });
 
+  // ---- H24 (2.45): sign out everywhere, editable trusted proxies ----
+  await withAuth(null, async (call, dir) => {
+    let r = await call("POST", "/api/auth/signout-everywhere");
+    ok(r.status === 409 && /open mode/.test(r.body && r.body.error || ""), "H24: sign-out-everywhere in open mode is a 409 that says why", r.status, r.body);
+    r = await call("POST", "/api/auth/setup", { body: { mode: "password", password: "pw-1234" } });
+    const c1 = r.cookie;
+    r = await call("POST", "/api/auth/login", { body: { password: "pw-1234" } });
+    const c2 = r.cookie;
+    ok((await call("GET", "/api/ping", { headers: { cookie: c1 } })).status === 200 && (await call("GET", "/api/ping", { headers: { cookie: c2 } })).status === 200, "H24: two devices are signed in");
+    r = await call("POST", "/api/auth/signout-everywhere");
+    ok(r.status === 401, "H24: sign-out-everywhere needs a signed-in session (401 without one)", r.status);
+    r = await call("POST", "/api/auth/signout-everywhere", { headers: { cookie: c1 } });
+    ok(r.status === 200 && r.body && r.body.ok === true, "H24: a signed-in caller can sign out everywhere", r.status);
+    ok((await call("GET", "/api/ping", { headers: { cookie: c1 } })).status === 401 && (await call("GET", "/api/ping", { headers: { cookie: c2 } })).status === 401,
+      "H24: ...and every older cookie, the caller's included, is now 401");
+    r = await call("POST", "/api/auth/login", { body: { password: "pw-1234" } });
+    ok(r.status === 200 && (await call("GET", "/api/ping", { headers: { cookie: r.cookie } })).status === 200, "H24: the password still works and a fresh sign-in is accepted");
+    const c3 = r.cookie;
+    // trusted_proxies: saved through the setup route without a mode, validated.
+    r = await call("POST", "/api/auth/setup", { body: { trusted_proxies: ["10.9.9.9", "192.168.1.0/24", "fd00::/64"] }, headers: { cookie: c3 } });
+    ok(r.status === 200 && r.body && r.body.trusted_proxies.length === 3, "H24: trusted_proxies saves (IPs and CIDRs) without touching the mode", r.status, r.body);
+    const a = JSON.parse(fs.readFileSync(path.join(dir, "auth.json"), "utf8"));
+    ok(a.mode === "password" && Array.isArray(a.trusted_proxies) && a.trusted_proxies[1] === "192.168.1.0/24" && a.hash, "H24: auth.json carries the list, the mode and the password are untouched", a);
+    ok((await call("GET", "/api/ping", { headers: { cookie: c3 } })).status === 200, "H24: saving the proxy list does not sign the caller out");
+    for (const bad of [["not-an-ip"], ["10.0.0.0/33"], ["10.0.0.256"], "10.9.9.9", ["1.2.3.4", "junk/8"]]) {
+      r = await call("POST", "/api/auth/setup", { body: { trusted_proxies: bad }, headers: { cookie: c3 } });
+      ok(r.status === 400 && r.body && r.body.error, "H24: garbage is refused with the entry named: " + JSON.stringify(bad), r.status, r.body);
+    }
+    const after = JSON.parse(fs.readFileSync(path.join(dir, "auth.json"), "utf8"));
+    ok(after.trusted_proxies.length === 3, "H24: a refused save leaves the list as it was");
+    r = await call("GET", "/api/auth/status", { headers: { cookie: c3 } });
+    ok(r.body && Array.isArray(r.body.trusted_proxies) && r.body.trusted_proxies.length === 3, "H24: /api/auth/status shows the list to a signed-in caller");
+    r = await call("GET", "/api/auth/status");
+    ok(r.body && r.body.trusted_proxies === undefined, "H24: ...and not to anyone else");
+    r = await call("POST", "/api/auth/setup", { body: { trusted_proxies: [] }, headers: { cookie: c3 } });
+    ok(r.status === 200 && !("trusted_proxies" in JSON.parse(fs.readFileSync(path.join(dir, "auth.json"), "utf8"))), "H24: an empty list clears it (back to loopback only)");
+  });
+  // CIDR entries match the way an exact address always has.
+  await withAuth({ mode: "forward", header: "Remote-User", secret: "s", trusted_proxies: ["127.0.0.0/8"] }, async call => {
+    const r = await call("GET", "/api/ping", { headers: { "Remote-User": "danny" } });
+    ok(r.status === 200, "H24: a CIDR that covers loopback trusts the local proxy", r.status);
+  });
+  await withAuth({ mode: "forward", header: "Remote-User", secret: "s", trusted_proxies: ["10.0.0.0/8", "::1/128"] }, async call => {
+    const r = await call("GET", "/api/ping", { headers: { "Remote-User": "danny" } });
+    ok(r.status === 401, "H24: a CIDR that does not cover the socket address trusts nothing", r.status);
+  });
+
   // Print-request token: constant-time comparison.
   const models = fs.readFileSync(path.join(REPO, "modules", "models.js"), "utf8");
   const route = models.slice(models.indexOf('app.post("/api/models/print-request"'), models.indexOf('app.get("/api/models/print-requests"'));
