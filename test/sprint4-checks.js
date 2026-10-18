@@ -36,6 +36,31 @@ module.exports = async function sprint4Checks(ok) {
     "H18: a hand-off counts as in flight in plan() from the start command until seen or 5 min (S5, unchanged)");
   ok(/if \(!idle && !sameFile\(sj, l\.fp, l\.idx\)\) continue;/.test(dispatch) && /l\.startingFile = sj\.file; l\.startingJob = sj\.id;\n      if \(idle\)/.test(dispatch),
     "H18: the running entry is attributed to the hand-off's job while the printer reports that file, not only while the lane looks idle");
+
+  // ---- H12: timelapse probe off the event loop ----
+  const tl = read("modules/timelapse.js");
+  ok(!/spawnSync\(/.test(tl) && !/readFileSync\(job\.rawVideoPath\)/.test(tl) && !/readFileSync\(finalOut\)/.test(tl) && !/writeFileSync\(tmp, bytes\)/.test(tl),
+    "H12: timelapse no longer runs ffprobe synchronously or reads whole videos on the event loop");
+  ok(/execFile\("ffprobe"/.test(tl) && /await probe\(job\.rawVideoPath\)/.test(tl) && /fs\.promises\.copyFile\(srcPath, mainIn\)/.test(tl),
+    "H12: ffprobe runs through execFile on the file where it sits; compositing copies it instead of buffering it");
+  {
+    const { probeVideo } = require(path.join(REPO, "modules", "timelapse.js"));
+    const r1 = await probeVideo(path.join(REPO, "no-such-video.mp4"), 3000);
+    ok(r1 && r1.duration === 0 && r1.frames === 0 && r1.width === 1920 && r1.height === 1080,
+      "H12: probing a missing file resolves to the fail-open defaults, never throws", r1);
+    const junk = path.join(require("os").tmpdir(), "u1hub-h12-junk-" + process.pid + ".mp4");
+    fs.writeFileSync(junk, "not a video at all");
+    const r2 = await probeVideo(junk, 3000).finally(() => { try { fs.unlinkSync(junk); } catch {} });
+    ok(r2 && r2.duration === 0 && r2.width === 1920, "H12: an unreadable file (or no ffprobe on PATH) resolves the same way", r2);
+  }
+
+  // ---- H17: metadata cache keyed by printer and file ----
+  ok(/const META_CACHE = new Map\(\);/.test(fleet) && /const mk = key \+ "\\n" \+ filename;/.test(fleet) && /META_CACHE_MAX = 200/.test(fleet),
+    "H17: the per-file metadata cache is keyed by printer and file and bounded");
+
+  // ---- H16 ----
+  ok(/folder: path\.resolve\(ctx\.baseDir, String\(c\.folder \|\| sl\.srcFolder \|\| "models"\)\)/.test(read("modules/models.js")),
+    "H16: models.folder resolves against ctx.baseDir, not process.cwd()");
 };
 
 if (require.main === module) {

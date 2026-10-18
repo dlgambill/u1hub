@@ -2914,10 +2914,16 @@ async function stopHub() {
       // gcodeFolder is resolved against BASE_DIR, which is now altDir — point
       // it back at the real fixture folder so the job below has a file to find.
       altCfg.gcodeFolder = path.join(hubDir, "gcode");
+      // H16 (2.45): a relative models folder resolves against the state dir
+      // too, not against the process's working directory (the install dir here).
+      altCfg.models = { folder: "./shelf" };
       fs.writeFileSync(path.join(altDir, "config.json"), JSON.stringify(altCfg, null, 2));
       await startHub(hubDir, { U1HUB_DIR: altDir });
       const rv = await jget("/api/version");
       ok(rv.status === 200, "U1HUB_DIR: the Hub still runs from its install dir", rv.status);
+      const rm = await jget("/api/models");
+      ok(rm.status === 200 && rm.body.folder === path.join(altDir, "shelf"),
+        "H16: models.folder './shelf' resolves against the state dir, like gcodeFolder", rm.body && rm.body.folder);
       const rj = await jpost("/api/dispatch/jobs", { again: true, file: "single.gcode", type: "u1", qty: 1 });
       ok(rj.status === 200, "U1HUB_DIR: it accepts work normally", rj.status);
       await stopHub();
@@ -5751,8 +5757,56 @@ async function stopHub() {
     hole.closeAllConnections && hole.closeAllConnections();
     await new Promise(r => hole.close(r));
     fs.writeFileSync(path.join(hubDir, "config.json"), savedCfg);
-    await startHub(hubDir);
+    // The restart carries a short job TTL for the H12 sweep check below.
+    await startHub(hubDir, { U1HUB_JOB_TTL_MS: "1500" });
     await sleep(600);
+  }
+
+  console.log("\n== SPRINT 4: H12 bounded caches, H17 thumbnails leave the fleet cache alone (2.45.0) ==");
+  {
+    const u1Idx = () => JSON.parse(fs.readFileSync(path.join(hubDir, "config.json"), "utf8")).printers.findIndex(p => p.url.endsWith(":" + portU1));
+    // ---- H12: finished print jobs are swept, not kept until a page reads them ----
+    let r = await jpost("/api/print", { file: "single.gcode", printer: u1Idx(), start: false, type: "u1" });
+    ok(r.status === 200 && r.body.jobId, "H12: a push hands back a job id", r.body);
+    const jid = r.body.jobId;
+    for (let i = 0; i < 40; i++) { await sleep(150); const jb = (await jget("/api/print-status?job=" + jid)).body; if (jb && jb.done) break; }
+    ok((await jget("/api/print-status?job=" + jid)).status === 200, "H12: ...readable once it is done");
+    await sleep(2600);                                   // TTL 1.5 s + a sweep period (0.75 s)
+    r = await jget("/api/print-status?job=" + jid);
+    ok(r.status === 404, "H12: a finished job older than the TTL is swept from the map without anyone polling it", r.status);
+    const prn = fs.readFileSync(path.join(REPO, "core", "print.js"), "utf8");
+    ok(/JOB_TTL_MS\) \|\| 30 \* 60000/.test(prn) && /JOB_SWEEP_MS = Math\.max\(200, Math\.min\(60000/.test(prn), "H12: production sweeps 30-minute-old jobs once a minute");
+
+    // ---- H12: the models shelf is decorated once per index, not per request ----
+    const mroot = path.join(tmp, "models");
+    await jpost("/api/models/settings", { folder: mroot });
+    await jget("/api/models?refresh=1"); await sleep(800);
+    const d1 = (await jget("/api/models?limit=5&debug=1")).body;
+    const d2 = (await jget("/api/models?limit=5&offset=5&debug=1")).body;
+    const d3 = (await jget("/api/models?limit=5&sort=name&debug=1")).body;
+    ok(d1.debug && typeof d1.debug.decorations === "number", "H12: ?debug=1 reports how many times the shelf was decorated", d1.debug);
+    ok(d1.debug && d2.debug && d3.debug && d2.debug.decorations === d1.debug.decorations && d3.debug.decorations === d1.debug.decorations,
+      "H12: paging and re-sorting the same index do not decorate it again", [d1.debug, d2.debug, d3.debug]);
+    await jpost("/api/models/aliases", { aliases: { "Bambu Lab": "Bambu" } });
+    const d4 = (await jget("/api/models?limit=5&debug=1")).body;
+    ok(d4.debug && d4.debug.decorations === d1.debug.decorations + 1 && (d4.creators || []).some(c => c.name === "Bambu"),
+      "H12: changing an input of the decoration (an alias) rebuilds it exactly once", [d1.debug, d4.debug]);
+    await jpost("/api/models/aliases", { aliases: {} });
+    const dp1 = (await jget("/api/models?sort=printed&debug=1")).body, dp2 = (await jget("/api/models?sort=printed&limit=3&debug=1")).body;
+    ok(dp1.printed && dp2.printed && dp2.debug.decorations === dp1.debug.decorations, "H12: 'most printed' is served from the same memo on a second request", [dp1.debug, dp2.debug]);
+
+    // ---- H17: a thumbnail request must not evict the running file's metadata ----
+    mockU1.state.printState = "printing"; mockU1.state.filename = "h17-running.gcode";
+    await sleep(900);                                    // the loop fetches the file's metadata once
+    const m0 = mockU1.state.metaFetches;
+    await fetch(HUB + "/api/pthumb?id=" + u1Idx() + "&file=h17-running.gcode");
+    await fetch(HUB + "/api/pthumb?id=" + u1Idx() + "&file=h17-running.gcode");
+    await sleep(900);                                    // two more loop passes with progress math
+    await jget("/api/fleet");
+    const mN = mockU1.state.metaFetches - m0;
+    ok(mN === 0, "H17: two thumbnail requests and the following progress passes fetch the file's metadata 0 more times (" + mN + ")", mN);
+    mockU1.state.printState = "standby"; mockU1.state.filename = "";
+
   }
 
   // H7 runs auth.js on its own bare Express app (the harness Hub is in open

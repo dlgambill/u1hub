@@ -67,11 +67,20 @@ function decodeHeads(ptc) {
 // re-fetch if the file size stops matching (re-sliced under the same name).
 // Verified 2026-07-02: screen showed 1% / 16:03 while display_status said 3%;
 // header-corrected bytes × estimated_time reproduced the screen exactly.
-const META_CACHE = {};   // key: printer name -> { file, size, start, end, est }
+// H17 (2.45): keyed by printer AND file, bounded. It was keyed by printer
+// alone, so a thumbnail request for any file (core/thumbs.js asks with no
+// size) overwrote the running file's entry and the next progress pass
+// fetched the metadata again - once per thumbnail, all day.
+const META_CACHE = new Map();   // "printer\nfile" -> { file, size, start, end, est, thumb }
+const META_CACHE_MAX = 200;
 
 async function fileMeta(base, key, filename, fileSize) {
-  const c = META_CACHE[key];
-  if (c && c.file === filename && c.size === fileSize) return c;
+  const mk = key + "\n" + filename;
+  const c = META_CACHE.get(mk);
+  // A caller that does not know the size (thumbnails) takes whatever is
+  // cached for that file; a caller that does gets a re-fetch when the size
+  // changed (re-sliced under the same name).
+  if (c && (fileSize === undefined || c.size === fileSize)) return c;
   try {
     const ctrl = new AbortController();
     const to = setTimeout(() => ctrl.abort(), 3500);
@@ -85,13 +94,14 @@ async function fileMeta(base, key, filename, fileSize) {
       if (t && t.relative_path) thumb = String(t.relative_path);
     }
     const rec = {
-      file: filename, size: fileSize,
+      file: filename, size: fileSize === undefined ? (typeof m.size === "number" ? m.size : undefined) : fileSize,
       start: m.gcode_start_byte || 0,
       end: m.gcode_end_byte || 0,
       est: m.estimated_time || 0,
       thumb
     };
-    META_CACHE[key] = rec;
+    if (META_CACHE.size >= META_CACHE_MAX) META_CACHE.delete(META_CACHE.keys().next().value);
+    META_CACHE.set(mk, rec);
     return rec;
   } catch { return null; }
 }

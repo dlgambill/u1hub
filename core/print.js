@@ -155,6 +155,28 @@ const JOBS = new Map();   // jobId -> { phase, sent, total, done, error, result,
 
 const newJobId = () => "j" + Date.now() + Math.random().toString(16).slice(2, 6);
 
+// H12 (2.45): the map only ever shrank when /api/print-status read a finished
+// job, so a page that closed mid-push, or one that never polled (Dispatch's
+// clear-bed, the harness), left its record forever. Sweep: a finished job
+// older than JOB_TTL_MS goes; one still "running" after JOB_STUCK_MS is marked
+// failed first (every printer call is bounded, so that long means a lost
+// handler) and goes on the next pass. Env-tunable so the harness can watch it.
+const JOB_TTL_MS = Math.max(1000, Number(process.env.U1HUB_JOB_TTL_MS) || 30 * 60000);
+const JOB_STUCK_MS = Math.max(JOB_TTL_MS, 6 * 3600000);
+const JOB_SWEEP_MS = Math.max(200, Math.min(60000, Math.round(JOB_TTL_MS / 2)));
+function sweepJobs(now) {
+  now = now || Date.now();
+  let swept = 0;
+  for (const [id, j] of JOBS) {
+    const age = now - (j.ts || 0);
+    if (j.done && age > JOB_TTL_MS) { JOBS.delete(id); swept++; continue; }
+    if (!j.done && age > JOB_STUCK_MS) { j.done = true; j.error = j.error || "gave up - no result after " + Math.round(JOB_STUCK_MS / 3600000) + " h"; }
+  }
+  return swept;
+}
+const jobSweeper = setInterval(() => sweepJobs(), JOB_SWEEP_MS);
+if (jobSweeper.unref) jobSweeper.unref();
+
 
 // v2.10 — filament memory recall. Hashes the local file's CONTENT and looks
 // up the last completed loadout for those bytes. Rename-proof: the same file

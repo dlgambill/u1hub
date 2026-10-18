@@ -81,7 +81,10 @@ function createMock(profile) {
       if (want.some(k => k.startsWith("print_task_config")) && profile === "u1")
         status.print_task_config = ptc;
       if (want.some(k => k.startsWith("display_status"))) status.display_status = { progress: 0 };
-      if (want.some(k => k.startsWith("virtual_sdcard"))) status.virtual_sdcard = { progress: 0 };
+      // 2.45 (H17): a real printer reports the running file's size and byte
+      // position; the Hub's progress math keys its metadata cache on the size.
+      if (want.some(k => k.startsWith("virtual_sdcard"))) status.virtual_sdcard = state.printState === "printing" || state.printState === "paused"
+        ? { progress: 0, file_size: 123456, file_position: 0, file_path: state.filename } : { progress: 0 };
       if (want.some(k => k.startsWith("heater_bed"))) status.heater_bed = { temperature: 25, target: 0 };
       if (want.some(k => k.startsWith("exclude_object"))) status.exclude_object = {};
       return send(200, { result: { status } });

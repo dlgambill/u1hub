@@ -165,7 +165,8 @@ function detectWrappers(rels, extra) {
   }
   return out;
 }
-function setWrappers(set) { WRAP = set instanceof Set ? set : new Set(); }
+let WRAP_VER = 0;   // H12 (2.45): split() depends on WRAP; the decorated-list memo keys on this
+function setWrappers(set) { WRAP = set instanceof Set ? set : new Set(); WRAP_VER++; }
 function split(rel, wrap) {
   const W = wrap || WRAP;
   let parts = rel.split("/");
@@ -468,7 +469,10 @@ function register(ctx) {
     const c = (ctx.cfg && typeof ctx.cfg.models === "object" && ctx.cfg.models) || {};
     const sl = (ctx.cfg && typeof ctx.cfg.slicer === "object" && ctx.cfg.slicer) || {};
     return {
-      folder: path.resolve(String(c.folder || sl.srcFolder || path.join(ctx.baseDir, "models"))),
+      // H16 (2.45): a relative folder resolves against the Hub's state dir,
+      // like every other path in config.json - not against wherever the
+      // process happened to be started from.
+      folder: path.resolve(ctx.baseDir, String(c.folder || sl.srcFolder || "models")),
       orcaExe: String(sl.orcaExe || "C:\\Program Files\\Snapmaker_Orca\\snapmaker-orca.exe"),
       wrappers: Array.isArray(c.wrappers) ? c.wrappers : [],
       u1Template: c.u1Template ? String(c.u1Template) : null,
@@ -494,7 +498,12 @@ function register(ctx) {
       setWrappers(detectWrappers(INDEX.items.map(it => it.rel), conf().wrappers));
     }
   } catch {}
-  const saveIndex = () => { try { fs.writeFileSync(INDEX_FILE, JSON.stringify({ folder: INDEX.folder, dirMtime: INDEX.dirMtime, items: INDEX.items, creators: INDEX.creators, truncated: !!INDEX.truncated, saved: Date.now() })); } catch {} };
+  // H12 (2.45): everything decorate() reads (the index, attributes, aliases,
+  // requests, the wrapper set) bumps this when it changes; the decorated list
+  // and the designer counts are rebuilt only when it has moved.
+  let DATA_VER = 0;
+  const bump = () => { DATA_VER++; };
+  const saveIndex = () => { bump(); try { fs.writeFileSync(INDEX_FILE, JSON.stringify({ folder: INDEX.folder, dirMtime: INDEX.dirMtime, items: INDEX.items, creators: INDEX.creators, truncated: !!INDEX.truncated, saved: Date.now() })); } catch {} };
   // v2.30: attributes a person typed (designer, name), keyed by rel, kept
   // beside the index. They ride over the folder-derived values on every
   // list, and Rename uses them to build the file's proper place.
@@ -507,14 +516,14 @@ function register(ctx) {
   const ALIAS_FILE = path.join(ctx.baseDir, "models-aliases.json");
   let ALIASES = {};
   try { ALIASES = JSON.parse(fs.readFileSync(ALIAS_FILE, "utf8")).aliases || {}; } catch {}
-  const saveAliases = () => { try { fs.writeFileSync(ALIAS_FILE, JSON.stringify({ aliases: ALIASES }, null, 2)); } catch {} };
+  const saveAliases = () => { bump(); try { fs.writeFileSync(ALIAS_FILE, JSON.stringify({ aliases: ALIASES }, null, 2)); } catch {} };
   const UNSORTED = "(unsorted)";
   const junkCreator = n => { const t = String(n || "").trim(); return !t || !/[a-z]/i.test(t) || t.replace(/[^a-z0-9]/gi, "").length <= 2 || /^\d+\s*°?\s*[cf]$/i.test(t); };
   const aliasOf = n => { const k = String(n || ""); if (Object.prototype.hasOwnProperty.call(ALIASES, k) && ALIASES[k]) return ALIASES[k]; if (/^\(no folder\)$/.test(k)) return k; return junkCreator(k) ? UNSORTED : k; };
   const ATTRS_FILE = path.join(ctx.baseDir, "models-attrs.json");
   let ATTRS = {};
   try { ATTRS = JSON.parse(fs.readFileSync(ATTRS_FILE, "utf8")).attrs || {}; } catch {}
-  const saveAttrs = () => { try { fs.writeFileSync(ATTRS_FILE, JSON.stringify({ attrs: ATTRS }, null, 2)); } catch {} };
+  const saveAttrs = () => { bump(); try { fs.writeFileSync(ATTRS_FILE, JSON.stringify({ attrs: ATTRS }, null, 2)); } catch {} };
   // v2.33: which gcode came from which shelf file, recorded when the Hub
   // watched Orca save it. Keyed by gcode basename; the value is the 3MF rel.
   // "Most printed" trusts these before it guesses from names.
@@ -530,7 +539,7 @@ function register(ctx) {
     LINKS = j.links || {};
     LINKS_META = j.meta || {};
   } catch {}
-  const saveLinks = () => { try { fs.writeFileSync(LINKS_FILE, JSON.stringify({ links: LINKS, meta: LINKS_META }, null, 2)); } catch {} };
+  const saveLinks = () => { bump(); try { fs.writeFileSync(LINKS_FILE, JSON.stringify({ links: LINKS, meta: LINKS_META }, null, 2)); } catch {} };
   // v2.40: the bug behind corrupted links found 2026-09-24
   // ("Leopard Gecko - ArtFlex x26.gcode" linked to a Cat 3MF, etc.) was the
   // open-session watcher trusting whichever gcode changed FIRST in the shared
@@ -570,7 +579,7 @@ function register(ctx) {
   const REQUESTS_FILE = path.join(ctx.baseDir, "models-requests.json");
   let REQUESTS = {};
   try { REQUESTS = JSON.parse(fs.readFileSync(REQUESTS_FILE, "utf8")).requests || {}; } catch {}
-  const saveRequests = () => { try { fs.writeFileSync(REQUESTS_FILE, JSON.stringify({ requests: REQUESTS }, null, 2)); } catch {} };
+  const saveRequests = () => { bump(); try { fs.writeFileSync(REQUESTS_FILE, JSON.stringify({ requests: REQUESTS }, null, 2)); } catch {} };
 
   // A shared secret so 3mf-explorer's server can call the endpoint below
   // without a Hub login session (the two apps run on the same machine but
@@ -685,6 +694,28 @@ function register(ctx) {
     for (const it of items) cmap.set(it.creator, (cmap.get(it.creator) || 0) + 1);
     return [...cmap.entries()].map(([name, count]) => ({ name, count })).sort((a, b) => a.name.localeCompare(b.name));
   }
+  // H12 (2.45): the decorated shelf and its designer counts, kept until the
+  // index or any input of decorate() changes. /api/models used to run
+  // decorate() over every item and count designers again on every request -
+  // a phone paging through 4,000 cards did that forty times.
+  const DECO = { index: null, at: 0, ver: -1, wrap: -1, all: null, creators: null, builds: 0 };
+  function decoratedAll(ix) {
+    if (DECO.all && DECO.index === ix && DECO.at === ix.at && DECO.ver === DATA_VER && DECO.wrap === WRAP_VER) return DECO.all;
+    DECO.index = ix; DECO.at = ix.at; DECO.ver = DATA_VER; DECO.wrap = WRAP_VER;
+    DECO.all = ix.items.map(decorate);
+    DECO.creators = creatorsOf(DECO.all);
+    DECO.builds++;
+    return DECO.all;
+  }
+  // "Most printed" matches every printed gcode against every title; keep the
+  // counts until the shelf or the history moves.
+  const PRINTED = { all: null, histAt: 0, counts: null };
+  function printCountsFor(all, h) {
+    if (PRINTED.counts && PRINTED.all === all && PRINTED.histAt === h.at) return PRINTED.counts;
+    PRINTED.all = all; PRINTED.histAt = h.at;
+    PRINTED.counts = printCounts(all, h.jobs, LINKS);
+    return PRINTED.counts;
+  }
 
   // H22 (2.44): how far a walk has got, for the tab's progress line. A first
   // scan of 4,000 files on a share used to show "rescanning…" with nothing
@@ -780,7 +811,7 @@ function register(ctx) {
     const match = nameMatcher(q.q);
     const creator = q.creator ? String(q.creator) : null;
     // v2.30: attributes ride over the folders before anything filters or counts.
-    const all = ix.items.map(decorate);
+    const all = decoratedAll(ix);
     // v2.40: a request for a file the walk never lists (anything under a "_"
     // folder, e.g. _repair - SKIP_DIR hides those so half-sorted
     // files stay off the tab) still gets a card under Requested. Built
@@ -824,7 +855,7 @@ function register(ctx) {
     let printed = null;
     if (sort === "printed") {
       const h = await historyJobs(String(q.refresh || "") === "1");
-      const pc = printCounts(all, h.jobs, LINKS);
+      const pc = printCountsFor(all, h);
       printed = { printers: h.printers, of: h.of, jobs: pc.jobs, matched: pc.matched, at: h.at };
       list = sortItems(list, sort, { counts: pc.counts }).map(it => ({ ...it, prints: pc.counts.get(it.rel) || 0 }));
     } else list = sortItems(list, sort, { seed });
@@ -839,7 +870,10 @@ function register(ctx) {
       total_all: all.length, total: list.length, offset, limit,
       sort, seed, printed,
       requested_total: all.filter(it => it.requested).length + offReqs.length,   // v2.40 (+ requests off the shelf)
-      creators: creatorsOf(all),
+      creators: DECO.creators,
+      // H12: ?debug=1 shows how many times the shelf was decorated since boot,
+      // so the harness can prove a second request did not do it again.
+      debug: String(q.debug || "") === "1" ? { decorations: DECO.builds } : undefined,
       items: list.slice(offset, offset + limit),
       orcaExe: c.orcaExe, orca_found: fs.existsSync(c.orcaExe),
       u1_template: (await u1Template()).path, u1_template_set: c.u1Template
