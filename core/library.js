@@ -5,6 +5,7 @@ const fs = require("fs");
 const http = require("http");
 const path = require("path");
 const { parseGcodeMap } = require("../parser");
+const { printerUrl } = require("./util.js");
 
 module.exports = function (hub) {
 const { ACCENT_PRESETS, app, onModule, plogOf, reqTypeOf, safeFile, saveConfigFile, savePrintLog, saveQueue, slugify, typeBySlug, typeFolder } = hub;
@@ -201,7 +202,7 @@ app.get("/api/files", async (req, res) => {
 // upload 201 / move 200 / delete 200) come in a later slice and will honor
 // each file's `permissions` flag rather than assuming everything is writable.
 async function listOnboard(p) {
-  const base = String(p.url).replace(/\/+$/, "");
+  const base = printerUrl(p);
   const ctrl = new AbortController();
   // v2.23 PERF: 2.5 s, was 5. One slow printer held the whole nine-printer
   // listing (and a browser connection) to the full timeout on every poll.
@@ -405,7 +406,7 @@ async function printerFileOpGuard(req, res) {
   if (!p) { res.status(400).json({ error: "Unknown printer" }); return null; }
   const name = cleanRel((req.body || {}).name);
   if (!name) { res.status(400).json({ error: "Bad file name" }); return null; }
-  const base = String(p.url).replace(/\/+$/, "");
+  const base = printerUrl(p);
   const ps = await queryPrintStats(base);
   if ((ps.state === "printing" || ps.state === "paused") && ps.filename === name) {
     res.status(409).json({ error: "REFUSED: '" + name + "' is the ACTIVE print on " + p.name + " (state: " + ps.state + "). The Hub will not touch a file that is printing." });
@@ -532,8 +533,8 @@ app.post("/api/printer-files/transfer", async (req, res) => {
   const name = cleanRel((req.body || {}).name);
   if (!name) return res.status(400).json({ error: "Bad file name" });
   if (name.includes("/")) return res.status(400).json({ error: "Files in subfolders can't be transferred yet" });
-  const srcBase = String(src.url).replace(/\/+$/, "");
-  const dstBase = String(dst.url).replace(/\/+$/, "");
+  const srcBase = printerUrl(src);
+  const dstBase = printerUrl(dst);
   try {
     const [srcFiles, dstFiles] = await Promise.all([listOnboard(src), listOnboard(dst)]);
     const f = srcFiles.find(x => x.name === name);
@@ -596,7 +597,7 @@ app.post("/api/printer-files/to-hub", async (req, res) => {
   const part = dest + ".u1hub-part";
   (async () => {
     try {
-      const srcBase = String(src.url).replace(/\/+$/, "");
+      const srcBase = printerUrl(src);
       // 2.43 (H20): same bounds as a printer-to-printer transfer. On a stall
       // the request is torn down and the .u1hub-part handle closed BEFORE the
       // catch below deletes it (Windows refuses to delete an open file).

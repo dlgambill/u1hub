@@ -73,7 +73,9 @@ module.exports = async function sprint4Checks(ok) {
 
   // ---- H15: honest saves ----
   const cfg = read("core/config.js"), settings = read("core/settings.js");
-  ok(/fs\.renameSync\(tmp, CONFIG_PATH\)/.test(cfg) && /hub\.SAVE_CONFIG_ERROR = \(e && e\.message\) \|\| String\(e\);/.test(cfg) && /hublog\("warn", "config: could not save/.test(cfg) && /return false;/.test(cfg),
+  // (H19 moved the temp-then-rename itself into core/util.js atomicWrite.)
+  const util = read("core/util.js");
+  ok(/atomicWrite\(CONFIG_PATH, /.test(cfg) && /fs\.renameSync\(tmp, file\)/.test(util) && /hub\.SAVE_CONFIG_ERROR = \(e && e\.message\) \|\| String\(e\);/.test(cfg) && /hublog\("warn", "config: could not save/.test(cfg) && /return false;/.test(cfg),
     "H15: saveConfigFile writes temp-then-rename, returns false on failure and logs a warn");
   ok(/if \(!saveConfigFile\(next\)\) return res\.status\(500\)\.json\(\{ error: saveConfigError\(\) \}\);/.test(settings) && !/fs\.writeFileSync\(CONFIG_PATH/.test(settings),
     "H15: /api/config goes through the one writer and answers 500 with the reason");
@@ -87,6 +89,49 @@ module.exports = async function sprint4Checks(ok) {
   // ---- H17: metadata cache keyed by printer and file ----
   ok(/const META_CACHE = new Map\(\);/.test(fleet) && /const mk = key \+ "\\n" \+ filename;/.test(fleet) && /META_CACHE_MAX = 200/.test(fleet),
     "H17: the per-file metadata cache is keyed by printer and file and bounded");
+
+  // ---- H19: one copy of each helper ----
+  {
+    // Server files: everything that runs inside the Hub process. public/ is
+    // the client, test/ and scripts/ are tooling - they keep their own copies.
+    const walk = (dir, out = []) => { for (const e of fs.readdirSync(path.join(REPO, dir), { withFileTypes: true })) {
+      if (e.name === "node_modules" || e.name === "public" || e.name === "test" || e.name === "scripts" || e.name === "docs" || e.name === ".git" || e.name === "dist") continue;
+      const rel = dir ? dir + "/" + e.name : e.name;
+      if (e.isDirectory()) walk(rel, out); else if (/\.js$/.test(e.name)) out.push(rel);
+    } return out; };
+    const files = walk("");
+    const withRegex = files.filter(f => read(f).includes('.replace(/\\/+$/, "")'));
+    ok(withRegex.length === 1 && withRegex[0] === "core/util.js", "H19: the trailing-slash regex lives in core/util.js only (" + withRegex.join(", ") + ")");
+    const withSpools = files.filter(f => read(f).includes('"spools.json"'));
+    ok(withSpools.length === 1 && withSpools[0] === "core/spools.js", "H19: core/spools.js is the only server file that names spools.json (" + withSpools.join(", ") + ")");
+    const defs = files.filter(f => /function (nameMatcher|isoWeekKey|grabFrame)\(/.test(read(f)));
+    ok(defs.length === 1 && defs[0] === "core/util.js", "H19: nameMatcher, isoWeekKey and grabFrame are defined once, in core/util.js (" + defs.join(", ") + ")");
+    const U = require(path.join(REPO, "core", "util.js"));
+    ok(U.printerUrl({ url: "http://10.0.0.5///" }) === "http://10.0.0.5" && U.printerWsUrl({ url: "http://10.0.0.5/" }) === "ws://10.0.0.5/websocket" && U.printerUrl({}) === "",
+      "H19: printerUrl strips trailing slashes; printerWsUrl derives the Moonraker socket URL");
+    ok(U.isoWeekKey(new Date(2026, 0, 1)) === "2026-W01" && U.isoWeekKey(new Date(2027, 0, 1).getTime()) === "2026-W53" && U.isoWeekKey(new Date(2026, 7, 31)) === "2026-W36",
+      "H19: isoWeekKey is ISO 8601 (Jan 1 2027 is week 53 of 2026) and takes a Date or a timestamp");
+    const m = U.nameMatcher("drag* -cave");
+    ok(m("Dragon Fox") && !m("Dragon Cave") && !m("Fox Dragon") && U.nameMatcher("?ox")("Box") && !U.nameMatcher("?ox")("Box 2") && U.nameMatcher("")("anything"),
+      "H19: nameMatcher does substring, * and ? (whole name), -word, and an empty query matches everything");
+    const dir = fs.mkdtempSync(path.join(require("os").tmpdir(), "u1hub-h19-"));
+    try {
+      const f = path.join(dir, "x.json");
+      U.atomicWrite(f, "{\"a\":1}");
+      ok(fs.readFileSync(f, "utf8") === "{\"a\":1}" && !fs.existsSync(f + ".tmp"), "H19: atomicWrite lands the file and leaves no .tmp behind");
+      let threw = null; try { U.atomicWrite(path.join(dir, "no-such-dir", "x.json"), "x"); } catch (e) { threw = e; }
+      ok(threw && threw.code === "ENOENT", "H19: atomicWrite throws on failure so a caller can latch its fallback", threw && threw.code);
+      const S = require(path.join(REPO, "core", "spools.js"));
+      let r = S.readSpools(dir);
+      ok(r.authoritative === true && Object.keys(r.spools).length === 0 && Array.isArray(r.local), "H19: readSpools: no file is an authoritative empty shelf");
+      fs.writeFileSync(path.join(dir, "spools.json"), "{ not json");
+      r = S.readSpools(dir);
+      ok(r.authoritative === false && Object.keys(r.spools).length === 0, "H19: readSpools: a corrupt file is an empty shelf that is NOT authoritative");
+      ok(S.writeSpools(dir, { spools: { sp_1: { hex: "ff0000" } }, tags: { u1: "sp_1" }, local: [] }) === true, "H19: writeSpools writes the file");
+      r = S.readSpools(dir);
+      ok(r.authoritative && r.spools.sp_1 && r.spools.sp_1.hex === "ff0000" && r.tags.u1 === "sp_1", "H19: ...and readSpools reads it back normalized");
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  }
 
   // ---- H16 ----
   ok(/folder: path\.resolve\(ctx\.baseDir, String\(c\.folder \|\| sl\.srcFolder \|\| "models"\)\)/.test(read("modules/models.js")),

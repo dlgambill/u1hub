@@ -1,6 +1,7 @@
 // core/filament.js — filament color + material write (hardware-verified gcode)
 // Split out of server.js (v2.23). Loads in the original order through the
 // shared `hub`; see server.js for the sequence. Behavior-preserving move.
+const { printerUrl } = require("./util.js");
 
 module.exports = function (hub) {
 const { app, decodeHeads } = hub;
@@ -59,7 +60,7 @@ app.post("/api/setcolor", async (req, res) => {
   const m = /^#?([0-9a-fA-F]{6})$/.exec(String(hex || ""));
   if (!m) return res.status(400).json({ error: "Color must be RRGGBB hex" });
   const rgba = m[1].toUpperCase() + "FF";
-  const base = String(p.url).replace(/\/+$/, "");
+  const base = printerUrl(p);
   try {
     let r = await fetch(base + "/printer/objects/query?print_stats&print_task_config");
     if (!r.ok) return res.status(502).json({ error: "Moonraker " + r.status });

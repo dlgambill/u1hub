@@ -9,6 +9,8 @@
 
 "use strict";
 
+const { printerUrl } = require("../core/util.js");
+
 function register(ctx) {
   // ---- Smart power control: switch a printer's plug on/off + read draw -------
   // Each printer MAY carry a typed `plug` descriptor in config.json:
@@ -118,7 +120,7 @@ function register(ctx) {
     if (typeof b.on !== "boolean") return res.status(400).json({ error: "Body needs { id, on: true|false }" });
     // SAFETY: never cut power to a printer that is printing or paused.
     if (b.on === false) {
-      const base = String(p.url).replace(/\/+$/, "");
+      const base = printerUrl(p);
       let state;
       try { state = await plugGuardState(base); }
       catch (e) { return res.status(502).json({ error: "Can't confirm " + p.name + " is idle (" + e.message + ") — refusing to power off." }); }

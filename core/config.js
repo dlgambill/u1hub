@@ -4,6 +4,7 @@
 const fs = require("fs");
 const path = require("path");
 const { ensurePrinterIds } = require("./printer-ids");
+const { atomicWrite, printerUrl } = require("./util.js");
 
 module.exports = function (hub) {
 const { BASE_DIR, CONFIG_PATH, DEFAULT_CFG, IS_PKG, hublog } = hub;
@@ -94,14 +95,11 @@ function validateTypes(list) {
 // config; /api/config passes the next one before loading it.
 hub.SAVE_CONFIG_ERROR = null;
 function saveConfigFile(obj) {
-  const tmp = CONFIG_PATH + ".tmp";
   try {
-    fs.writeFileSync(tmp, JSON.stringify(obj === undefined ? hub.CFG : obj, null, 2));
-    fs.renameSync(tmp, CONFIG_PATH);
+    atomicWrite(CONFIG_PATH, JSON.stringify(obj === undefined ? hub.CFG : obj, null, 2));   // H19: core/util.js
     hub.SAVE_CONFIG_ERROR = null;
     return true;
   } catch (e) {
-    try { fs.unlinkSync(tmp); } catch {}
     hub.SAVE_CONFIG_ERROR = (e && e.message) || String(e);
     hublog("warn", "config: could not save " + CONFIG_PATH + " - " + hub.SAVE_CONFIG_ERROR);
     return false;
@@ -201,7 +199,7 @@ async function detectCaps(idx) {
   if (!p) return null;
   const hit = CAPS.get(idx);
   if (hit) return hit;
-  const base = String(p.url).replace(/\/+$/, "");
+  const base = printerUrl(p);
   try {
     const ctrl = new AbortController();
     const to = setTimeout(() => ctrl.abort(), 3500);

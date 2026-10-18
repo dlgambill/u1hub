@@ -22,6 +22,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { atomicWrite, isoWeekKey } = require("../core/util.js");   // H19 (2.45): shared helpers
 
 const JS_SUNDAY = 0, JS_SATURDAY = 6;           // getDay(); Python's weekday() is 0=Monday
 const BED_CLEAR_BUFFER_MIN = 5;                  // gap between planned jobs on one machine
@@ -287,14 +288,8 @@ function register(ctx) {
   // at all. Maintenance is a decision a human made, and the two must never be
   // rendered or reported as the same thing.
   const maintOf = idx => D.maintenance[String(idx)] || null;
-  // ISO week key, local time (Thursday-anchored per ISO 8601).
-  function isoWeekKey(ms) {
-    const dt = new Date(ms); dt.setHours(0, 0, 0, 0);
-    dt.setDate(dt.getDate() + 3 - ((dt.getDay() + 6) % 7));
-    const jan4 = new Date(dt.getFullYear(), 0, 4);
-    const wk = 1 + Math.round(((dt - jan4) / 86400000 - 3 + ((jan4.getDay() + 6) % 7)) / 7);
-    return dt.getFullYear() + "-W" + String(wk).padStart(2, "0");
-  }
+  // ISO week key, local time (Thursday-anchored per ISO 8601): isoWeekKey
+  // from core/util.js (H19).
   function dayWindow(ms) {                        // the effective window for that calendar day
     const dt = new Date(ms);
     const ov = D.settings.weekOverrides[isoWeekKey(ms)];
@@ -323,11 +318,9 @@ function register(ctx) {
     // written with everything else and keyed by printer id (toDisk).
     if (typeof markPlanDirty === "function") markPlanDirty();   // S4: every state change replans once
     const data = JSON.stringify(toDisk(), null, 2);
-    const tmp = FILE + ".tmp";
     if (!SAVE_FALLBACK) {
       try {
-        fs.writeFileSync(tmp, data);
-        fs.renameSync(tmp, FILE);                // atomic on a local volume
+        atomicWrite(FILE, data);                 // atomic on a local volume (H19: core/util.js)
         return;
       } catch (e) {
         SAVE_FALLBACK = true;
@@ -337,7 +330,6 @@ function register(ctx) {
       }
     }
     fs.writeFileSync(FILE, data);                // fallback: not atomic, but it lands
-    try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch {}
   }
   const newId = p => p + "_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
   // Sticky placement, in TWO layers (fixed v2.12). A plan is something a human
@@ -379,7 +371,7 @@ function register(ctx) {
   let EST = { files: {}, printers: {} };
   try { const raw = JSON.parse(fs.readFileSync(EST_FILE, "utf8")); if (raw && typeof raw === "object") EST = { files: raw.files || {}, printers: raw.printers || {} }; } catch {}
   function saveEst() {
-    try { const tmp = EST_FILE + ".tmp"; fs.writeFileSync(tmp, JSON.stringify(EST, null, 2)); fs.renameSync(tmp, EST_FILE); }
+    try { atomicWrite(EST_FILE, JSON.stringify(EST, null, 2)); }
     catch (e) { ctx.hublog("warn", "dispatch: could not save estimates.json - " + e.message); }
   }
   const median = a => { const v = a.filter(Number.isFinite).sort((x, y) => x - y); if (!v.length) return null; const m = v.length >> 1; return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2; };

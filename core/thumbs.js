@@ -3,6 +3,7 @@
 // shared `hub`; see server.js for the sequence. Behavior-preserving move.
 const fs = require("fs");
 const path = require("path");
+const { printerUrl } = require("./util.js");
 
 module.exports = function (hub) {
 const { app, fileMeta, reqTypeOf, typeBySlug, typeFolder, BASE_DIR } = hub;
@@ -164,7 +165,7 @@ app.get("/api/pthumb", async (req, res) => {
   const local = await localThumb(path.basename(filename), typeBySlug(p.type || "u1"));
   if (local) return res.set("Cache-Control", "public, max-age=3600").type("png").send(local);
   // 2) printer-side metadata thumbnail (optional Moonraker feature)
-  const base = String(p.url).replace(/\/+$/, "");
+  const base = printerUrl(p);
   try {
     const meta = await fileMeta(base, p.name, filename, undefined);
     if (!meta || !meta.thumb) return res.status(404).end();

@@ -27,6 +27,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { atomicWrite } = require("../core/util.js");
 
 const DEFAULTS = Object.freeze({
   enabled: true,
@@ -102,16 +103,14 @@ function register(ctx) {
   let SAVE_FALLBACK = false;
   function save() {
     const data = JSON.stringify(S, null, 2);
-    const tmp = FILE + ".tmp";
     if (!SAVE_FALLBACK) {
-      try { fs.writeFileSync(tmp, data); fs.renameSync(tmp, FILE); return; }
+      try { atomicWrite(FILE, data); return; }
       catch (e) {
         SAVE_FALLBACK = true;
         ctx.hublog("warn", "updates: atomic save failed (" + e.code + ") — falling back to direct write");
       }
     }
     fs.writeFileSync(FILE, data);
-    try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch {}
   }
 
   function conf() {

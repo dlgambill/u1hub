@@ -5,6 +5,8 @@ const fs = require("fs");
 const http = require("http");
 const path = require("path");
 const os = require("os");
+const { printerUrl, printerWsUrl, stripSlash } = require("./util.js");
+const { readSpools } = require("./spools.js");
 
 module.exports = function (hub) {
 const { BASE_DIR, HUBLOG, IS_PKG, VERSION, app, detectCaps, fmem } = hub;
@@ -26,7 +28,7 @@ function pickIface(net) {
 
 
 async function probeInfo(p) {
-  const base = String(p.url).replace(/\/+$/, "");
+  const base = printerUrl(p);
   try {
     const ctrl = new AbortController();
     const to = setTimeout(() => ctrl.abort(), 3500);
@@ -112,7 +114,7 @@ app.get("/api/diagnostics", async (req, res) => {
   })));
 
   let spoolsBound = 0, slotsAssigned = 0;
-  try { const s = JSON.parse(fs.readFileSync(path.join(BASE_DIR, "spools.json"), "utf8")); spoolsBound = Object.keys(s.spools || {}).length; } catch {}
+  spoolsBound = Object.keys(readSpools(BASE_DIR).spools).length;
   try {
     const sl = JSON.parse(fs.readFileSync(path.join(BASE_DIR, "slots.json"), "utf8"));
     for (const m of Object.values(sl || {})) slotsAssigned += Object.keys(m || {}).length;
@@ -133,7 +135,7 @@ app.get("/api/diagnostics", async (req, res) => {
   if (withLogs) {
     for (let i = 0; i < hub.PRINTERS.length; i++) {
       if (onlyIdx !== null && i !== onlyIdx) continue;
-      const base = String(hub.PRINTERS[i].url).replace(/\/+$/, "");
+      const base = printerUrl(hub.PRINTERS[i]);
       bundle.klipperLogs["printer-" + (i + 1)] = {
         klippy: await diagFetchLogTail(base, "klippy.log"),
         moonraker: await diagFetchLogTail(base, "moonraker.log")
@@ -165,7 +167,7 @@ function printerOrigin(u) {
   try {
     const x = new URL(String(u));
     return (x.hostname + ":" + (x.port || (x.protocol === "https:" ? "443" : "80"))).toLowerCase();
-  } catch { return String(u || "").toLowerCase().replace(/\/+$/, ""); }
+  } catch { return stripSlash(String(u || "").toLowerCase()); }
 }
 
 
@@ -266,7 +268,7 @@ app.get("/api/debug/ws/start", (req, res) => {
   if (old && old.ws && old.ws.readyState <= 1) // CONNECTING or OPEN
     return res.json({ ok: true, already: true, status: old.status, buffered: old.buf.length });
 
-  const wsUrl = String(p.url).replace(/\/+$/, "").replace(/^http/, "ws") + "/websocket";
+  const wsUrl = printerWsUrl(p);
   const s = { ws: null, buf: [], nextId: 1000, status: "connecting", startedAt: Date.now(), procStatSkipped: 0, listId: null };
   WSDBG.set(idx, s);
 

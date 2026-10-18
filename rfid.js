@@ -50,25 +50,22 @@
 
 const fs = require("fs");
 const path = require("path");
+const { printerUrl } = require("./core/util.js");
+const { readSpools, writeSpools } = require("./core/spools.js");
 
 module.exports = function mountRfid(app, express, BASE_DIR, ASSET_DIR, helpers) {
-  const SPOOLS_PATH = path.join(BASE_DIR, "spools.json");
   const SNAP_LOCAL = path.join(BASE_DIR, "filament-swatches.json");   // refreshed copy (wins)
   const SNAP_BUNDLED = path.join(ASSET_DIR, "filament-swatches.json"); // shipped in repo/pkg/Docker
 
   // ---- persistent state ----------------------------------------------------
   let STATE = { spools: {}, tags: {}, local: [] };
+  // H19 (2.45): core/spools.js is the one reader and writer of spools.json;
+  // this module keeps its in-memory copy and writes through it, as before.
   function loadState() {
-    try {
-      const s = JSON.parse(fs.readFileSync(SPOOLS_PATH, "utf8"));
-      STATE = {
-        spools: (s && typeof s.spools === "object" && s.spools) || {},
-        tags: (s && typeof s.tags === "object" && s.tags) || {},
-        local: Array.isArray(s && s.local) ? s.local : []
-      };
-    } catch { STATE = { spools: {}, tags: {}, local: [] }; }
+    const s = readSpools(BASE_DIR);
+    STATE = { spools: s.spools, tags: s.tags, local: s.local };
   }
-  function saveState() { try { fs.writeFileSync(SPOOLS_PATH, JSON.stringify(STATE, null, 2)); } catch {} }
+  function saveState() { writeSpools(BASE_DIR, STATE); }
   loadState();
 
   // ---- snapshot ------------------------------------------------------------
@@ -255,7 +252,7 @@ module.exports = function mountRfid(app, express, BASE_DIR, ASSET_DIR, helpers) 
         const slot = parseInt(b.sample.slot, 10);
         if (!p) return res.status(400).json({ error: "Unknown printer" });
         if (!(slot >= 0 && slot <= 3)) return res.status(400).json({ error: "Slot must be 0–3" });
-        const base = String(p.url).replace(/\/+$/, "");
+        const base = printerUrl(p);
         const ctrl = new AbortController();
         const to = setTimeout(() => ctrl.abort(), 3500);
         const r = await fetch(base + "/printer/objects/query?print_task_config", { signal: ctrl.signal });

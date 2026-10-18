@@ -2,6 +2,7 @@
 // Split out of server.js (v2.23). Loads in the original order through the
 // shared `hub`; see server.js for the sequence. Behavior-preserving move.
 const path = require("path");
+const { printerUrl } = require("./util.js");
 
 module.exports = function (hub) {
 const { app } = hub;
@@ -13,7 +14,7 @@ const { app } = hub;
 // filament extruded — label it as length (m/km), never convert to grams.
 app.get("/api/farm/stats", async (req, res) => {
   const per = await Promise.all(hub.PRINTERS.map(async (p, i) => {
-    const base = String(p.url).replace(/\/+$/, "");
+    const base = printerUrl(p);
     try {
       const ctrl = new AbortController();
       const to = setTimeout(() => ctrl.abort(), 3500);
@@ -49,7 +50,7 @@ app.get("/api/farm/stats", async (req, res) => {
 app.get("/api/farm/history", async (req, res) => {
   const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 10));
   const per = await Promise.all(hub.PRINTERS.map(async (p, i) => {
-    const base = String(p.url).replace(/\/+$/, "");
+    const base = printerUrl(p);
     try {
       const ctrl = new AbortController();
       const to = setTimeout(() => ctrl.abort(), 3500);
@@ -81,7 +82,7 @@ app.get("/api/ptrends", async (req, res) => {
   const id = Number(req.query.id);
   const p = hub.PRINTERS[id];
   if (!p) return res.status(400).json({ error: "bad id" });
-  const base = String(p.url).replace(/\/+$/, "");
+  const base = printerUrl(p);
   try {
     const ctrl = new AbortController();
     const to = setTimeout(() => ctrl.abort(), 4000);
@@ -116,7 +117,7 @@ app.get("/api/pstats", async (req, res) => {
   const id = Number(req.query.id);
   const p = hub.PRINTERS[id];
   if (!p) return res.status(400).json({ error: "bad id" });
-  const base = String(p.url).replace(/\/+$/, "");
+  const base = printerUrl(p);
   const get = async path => {
     const ctrl = new AbortController();
     const to = setTimeout(() => ctrl.abort(), 4000);
@@ -154,7 +155,7 @@ app.post("/api/bedtemp", async (req, res) => {
   if (!p) return res.status(400).json({ error: "Unknown printer" });
   const t = Number(temp);
   if (!Number.isFinite(t) || t < 0 || t > 120) return res.status(400).json({ error: "Temp must be 0–120 °C" });
-  const base = String(p.url).replace(/\/+$/, "");
+  const base = printerUrl(p);
   try {
     const r = await fetch(base + "/printer/gcode/script?script=" + encodeURIComponent("M140 S" + Math.round(t)), { method: "POST" });
     if (!r.ok) return res.status(502).json({ error: "Moonraker " + r.status + ": " + (await r.text()).slice(0, 160) });

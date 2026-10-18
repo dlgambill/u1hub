@@ -4,6 +4,7 @@
 const express = require("express");
 const fs = require("fs");
 const path = require("path");
+const { readSpools } = require("./spools.js");
 
 module.exports = function (hub) {
 const { ASSET_DIR, AUTH, BASE_DIR, INPLACE_MODULES, PRINTER_PROXY_PREFIX, VERSION, app, detectCaps, fleetSnapshot, hublog, loadoutSnapshot, paletteForFile, safeFile, saveConfigFile, typeBySlug, typeFolder } = hub;
@@ -150,7 +151,7 @@ const MODULE_CTX = Object.freeze({
   saveConfig: () => saveConfigFile(),
   saveConfigError: () => hub.saveConfigError(),
   loadout: (idx) => loadoutSnapshot(idx),
-  spoolShelf: () => { try { return (JSON.parse(fs.readFileSync(path.join(BASE_DIR, "spools.json"), "utf8")) || {}).spools || {}; } catch { return {}; } },
+  spoolShelf: () => readSpools(BASE_DIR).spools,
   fleet: () => fleetSnapshot(),
   // v2.24: fleet edges. ctx.events.on("print.done", ev => …) — see core/events.js
   // for the event names and payloads. Listeners run inside the poller; keep

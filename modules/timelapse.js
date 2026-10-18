@@ -42,6 +42,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { spawn, execFile } = require("child_process");
+const { printerUrl, grabFrame, atomicWrite } = require("../core/util.js");
 
 // H12 (2.45): ffprobe, asynchronously, on the file where it sits. This used
 // to copy the whole video into a temp file and run three ffprobe calls with
@@ -338,9 +339,8 @@ function register(ctx) {
   let SAVE_FALLBACK = false;
   function saveQueue(items) {
     const data = JSON.stringify(items, null, 2);
-    const tmp = queuePath + ".tmp";
     if (!SAVE_FALLBACK) {
-      try { fs.writeFileSync(tmp, data); fs.renameSync(tmp, queuePath); return; }
+      try { atomicWrite(queuePath, data); return; }
       catch (e) {
         SAVE_FALLBACK = true;
         ctx.hublog("warn", "timelapse: atomic save failed (" + e.code + " " + e.message +
@@ -348,7 +348,6 @@ function register(ctx) {
       }
     }
     fs.writeFileSync(queuePath, data);
-    try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch {}
   }
 
   // ---- Capture resume state (2026-09-26) ----
@@ -383,9 +382,8 @@ function register(ctx) {
   let STATE_SAVE_FALLBACK = false;
   function saveCaptureState() {
     const data = JSON.stringify(CAPTURE_STATE, null, 2);
-    const tmp = captureStatePath + ".tmp";
     if (!STATE_SAVE_FALLBACK) {
-      try { fs.writeFileSync(tmp, data); fs.renameSync(tmp, captureStatePath); return; }
+      try { atomicWrite(captureStatePath, data); return; }
       catch (e) {
         STATE_SAVE_FALLBACK = true;
         ctx.hublog("warn", "timelapse: atomic capture-state save failed (" + e.code + " " + e.message +
@@ -393,7 +391,6 @@ function register(ctx) {
       }
     }
     fs.writeFileSync(captureStatePath, data);
-    try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch {}
   }
   function persistCaptureState(state) {
     CAPTURE_STATE[state.printer] = {
@@ -417,23 +414,10 @@ function register(ctx) {
   }
 
   // Same fetch-with-timeout-and-JPEG-SOI-check as modules/camera.js's own
-  // /api/camera grab() - deliberately duplicated rather than shared, since
-  // camera.js's version is wired to that module's own idle-reaped socket
-  // lifecycle and importing across modules isn't how this codebase is split.
-  // Returns { buf, lastModified, date } so the caller can tell a new picture
-  // from the last one the camera left on disk (see frameFreshness above).
-  async function grabFrame(base) {
-    const ctrl = new AbortController();
-    const to = setTimeout(() => ctrl.abort(), 5000);
-    try {
-      const r = await fetch(base + "/server/files/camera/monitor.jpg", { signal: ctrl.signal, cache: "no-store" });
-      clearTimeout(to);
-      if (!r.ok) return null;
-      const b = Buffer.from(await r.arrayBuffer());
-      if (!(b.length > 2 && b[0] === 0xff && b[1] === 0xd8)) return null; // valid JPEG SOI
-      return { buf: b, lastModified: r.headers.get("last-modified"), date: r.headers.get("date") };
-    } catch { clearTimeout(to); return null; }
-  }
+  // One frame from the camera plugin: grabFrame in core/util.js (H19), shared
+  // with /api/camera. Returns { buf, lastModified, date } so the caller can
+  // tell a new picture from the last one the camera left on disk (see
+  // frameFreshness above).
   const sha1 = (b) => require("crypto").createHash("sha1").update(b).digest("hex");
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -594,7 +578,7 @@ function register(ctx) {
       ctx.hublog("warn", "timelapse: can't start capture for " + printerName + " - it isn't in config.json");
       return;
     }
-    const base = String(p.url).replace(/\/+$/, "");
+    const base = printerUrl(p);
     let dir, frameIdx, lastLayer, startedAtMs;
     if (resume) {
       ({ dir, frameIdx, lastLayer, startedAtMs } = resume);

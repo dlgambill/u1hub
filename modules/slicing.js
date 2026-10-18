@@ -55,6 +55,7 @@ const os = require("os");
 const path = require("path");
 const zlib = require("zlib");
 const { spawn } = require("child_process");
+const { atomicWrite } = require("../core/util.js");
 const { launchOnDesktop } = require("./desktop.js");   // v2.39.1: Orca on the desktop when the Hub is a service
 
 // ---- crc32 (zlib.crc32 needs Node ≥22.2; table fallback keeps pkg happy) ----
@@ -344,10 +345,8 @@ function register(ctx) {
     saveTimer = setTimeout(() => {
       saveTimer = null;
       try {
-        const tmp = JOBS_PATH + ".tmp";
         // logs are trimmed for the book — the live tail is enough forensics
-        fs.writeFileSync(tmp, JSON.stringify({ jobs: JOBS.map(j => ({ ...j, log: (j.log || "").slice(-4000) })) }));
-        fs.renameSync(tmp, JOBS_PATH);
+        atomicWrite(JOBS_PATH, JSON.stringify({ jobs: JOBS.map(j => ({ ...j, log: (j.log || "").slice(-4000) })) }));
       } catch {}
     }, 300);
   }

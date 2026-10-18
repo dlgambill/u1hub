@@ -6,6 +6,8 @@
 
 "use strict";
 
+const { printerUrl, printerWsUrl, grabFrame } = require("../core/util.js");
+
 function register(ctx) {
   // ---- Chamber camera (Snapmaker camera.* plugin) ----------------------------
   // Hardware-verified 2026-08-05 (.88/.83): the U1's built-in chamber cam is NOT on
@@ -35,7 +37,7 @@ function register(ctx) {
     if (c && c.ws && (c.ws.readyState === 0 || c.ws.readyState === 1)) return c; // connecting/open
     if (c && Date.now() < c.cooldownUntil) return c;                              // throttle reconnect
     c = c || { ws: null, open: false, monitoring: false, lastReq: 0, startedAt: 0, cooldownUntil: 0 };
-    const wsUrl = String(p.url).replace(/\/+$/, "").replace(/^http/, "ws") + "/websocket";
+    const wsUrl = printerWsUrl(p);
     let ws;
     try { ws = new WebSocket(wsUrl); } catch { c.cooldownUntil = Date.now() + CAM_COOLDOWN_MS; CAM.set(idx, c); return c; }
     c.ws = ws; c.open = false; c.monitoring = false; c.cooldownUntil = Date.now() + CAM_COOLDOWN_MS;
@@ -102,18 +104,9 @@ function register(ctx) {
     if (!p) return res.status(400).end();
     if (typeof WebSocket === "undefined") return res.status(503).json({ error: "no WebSocket client" });
     const cold = camEnsure(idx);   // opens the dedicated camera socket if needed
-    const base = String(p.url).replace(/\/+$/, "");
-    const grab = async () => {
-      const ctrl = new AbortController();
-      const to = setTimeout(() => ctrl.abort(), 3500);
-      try {
-        const r = await fetch(base + "/server/files/camera/monitor.jpg", { signal: ctrl.signal });
-        clearTimeout(to);
-        if (!r.ok) return null;
-        const b = Buffer.from(await r.arrayBuffer());
-        return (b.length > 2 && b[0] === 0xff && b[1] === 0xd8) ? b : null; // valid JPEG SOI
-      } catch { clearTimeout(to); return null; }
-    };
+    const base = printerUrl(p);
+    // H19 (2.45): one grabFrame (core/util.js) for this and the timelapse.
+    const grab = async () => { const f = await grabFrame(base, 3500); return f ? f.buf : null; };
     // On a cold start the stream needs ~1.1s to write its first frame; without the
     // wait we'd serve the stale monitor.jpg left on disk. Warm streams skip this.
     // v2.35 (issue #4): one grab per printer at a time. Every browser tab and

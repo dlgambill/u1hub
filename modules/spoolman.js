@@ -28,6 +28,8 @@
 
 "use strict";
 
+const { stripSlash } = require("../core/util.js");
+
 const TIMEOUT_MS = 8000;
 const SOURCE = "spoolman";
 
@@ -37,7 +39,7 @@ function normUrl(u) {
   let x;
   try { x = new URL(String(u || "").trim()); } catch { return null; }
   if (x.protocol !== "http:" && x.protocol !== "https:") return null;
-  let s = x.origin + x.pathname.replace(/\/+$/, "");
+  let s = x.origin + stripSlash(x.pathname);
   s = s.replace(/\/api\/v\d+$/i, "");
   return s;
 }

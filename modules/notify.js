@@ -20,6 +20,8 @@
 
 "use strict";
 
+const { stripSlash } = require("../core/util.js");
+
 const DEFAULTS = Object.freeze({
   enabled: false,
   url: "https://ntfy.sh",
@@ -34,7 +36,7 @@ function normUrl(u) {
   let x;
   try { x = new URL(String(u || "").trim()); } catch { return null; }
   if (x.protocol !== "http:" && x.protocol !== "https:") return null;
-  return x.origin + x.pathname.replace(/\/+$/, "");
+  return x.origin + stripSlash(x.pathname);
 }
 
 // ntfy topic rules: letters, digits, _ and - up to 64 chars.

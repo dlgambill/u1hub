@@ -37,6 +37,7 @@ const { zipEntryContent } = require("./slicing.js");
 const U1C = require("./u1convert.js");                  // v2.38: Convert to U1 (pure; the route below does the IO)
 const TUNE = require("./tuning.js");                    // v2.42: Open in Orca with the suggested settings (pure)
 const { qtyFromName } = require("./margin.js");         // v2.40: the "x24" plate count, read one way everywhere
+const { printerUrl, nameMatcher } = require("../core/util.js");   // H19 (2.45): shared helpers
 
 const INDEX_TTL_MS = 10 * 60 * 1000;
 const MAX_DEPTH = 4;
@@ -117,21 +118,7 @@ async function withZip(fp, fn) {
 }
 
 // Server twin of app.js nameMatcher (v2.24): plain substring, * and ?, -word.
-function nameMatcher(q) {
-  const terms = String(q || "").trim().toLowerCase().split(/\s+/).filter(Boolean);
-  if (!terms.length) return () => true;
-  const tests = terms.map(t => {
-    let neg = false;
-    if (t.length > 1 && t[0] === "-") { neg = true; t = t.slice(1); }
-    let fn;
-    if (/[*?]/.test(t)) {
-      const re = new RegExp("^" + t.split(/([*?])/).map(p => p === "*" ? ".*" : p === "?" ? "." : p.replace(/[.+^${}()|[\]\\]/g, "\\$&")).join("") + "$");
-      fn = n => re.test(n);
-    } else fn = n => n.includes(t);
-    return neg ? n => !fn(n) : fn;
-  });
-  return name => { const n = String(name || "").toLowerCase(); return tests.every(fn => fn(n)); };
-}
+// H19 (2.45): lives in core/util.js; re-exported below for the harness.
 
 // rel "Creator/Model/file.3mf" -> { creator, model, name }
 // v2.30: a file at the root named the way the convention names it,
@@ -652,7 +639,7 @@ function register(ctx) {
     const printers = ctx.printers || [];
     if (!force && HIST_AT && Date.now() - HIST_AT < HIST_TTL_MS) return summarize(printers);
     if (!HIST_BUSY) HIST_BUSY = Promise.all(printers.map(async p => {
-      const base = String(p.url || "").replace(/\/+$/, "");
+      const base = printerUrl(p);
       if (!base) return;
       try {
         const ctrl = new AbortController();
@@ -671,7 +658,7 @@ function register(ctx) {
     const jobs = [];
     let answered = 0;
     for (const p of printers) {
-      const h = HIST.get(String(p.url || "").replace(/\/+$/, ""));
+      const h = HIST.get(printerUrl(p));
       if (!h) continue;
       answered++;
       jobs.push(...h.jobs);

@@ -5,6 +5,8 @@ const fs = require("fs");
 const http = require("http");
 const path = require("path");
 const { Transform } = require("stream");
+const { printerUrl } = require("./util.js");
+const { readSpools } = require("./spools.js");
 
 module.exports = function (hub) {
 const { BASE_DIR, app, dequeueFile, detectCaps, fileContentHash, fmem, hublog, paletteForFile, reqTypeOf, safeFile } = hub;
@@ -194,8 +196,7 @@ app.get("/api/filament-memory", async (req, res) => {
   catch (e) { return res.status(500).json({ error: "Could not hash file: " + e.message }); }
   const rec = fmem()[hash];
   if (!rec) return res.json({ known: false, hash });
-  let cur = {};
-  try { cur = (JSON.parse(fs.readFileSync(path.join(BASE_DIR, "spools.json"), "utf8")) || {}).spools || {}; } catch {}
+  const cur = readSpools(BASE_DIR).spools;
   const spools = (rec.spools || []).map(s => {
     const live = cur[s.spool_id];
     return live
@@ -292,7 +293,7 @@ app.post("/api/print", async (req, res) => {
     }
   } catch {} // guard is advisory — never let sniffing break a legitimate send
 
-  const base = String(p.url).replace(/\/+$/, "");
+  const base = printerUrl(p);
   const name = path.basename(fp);
   const gcode = async script => {
     const r = await fetchWithTimeout(base + "/printer/gcode/script?script=" + encodeURIComponent(script), { method: "POST" });
@@ -380,7 +381,7 @@ app.post("/api/printctl", async (req, res) => {
   if (!p) return res.status(400).json({ error: "Unknown printer" });
   const cmd = { pause: "PAUSE", resume: "RESUME", cancel: "CANCEL_PRINT" }[action];
   if (!cmd) return res.status(400).json({ error: "Bad action" });
-  const base = String(p.url).replace(/\/+$/, "");
+  const base = printerUrl(p);
   try {
     const r = await fetchWithTimeout(base + "/printer/gcode/script?script=" + encodeURIComponent(cmd), { method: "POST" });
     if (!r.ok) return res.status(502).json({ error: "Moonraker " + r.status + ": " + (await r.text()).slice(0, 160) });
@@ -395,7 +396,7 @@ app.post("/api/printctl", async (req, res) => {
 app.get("/api/plate", async (req, res) => {
   const p = hub.PRINTERS[req.query.printer];
   if (!p) return res.status(400).json({ error: "Unknown printer" });
-  const base = String(p.url).replace(/\/+$/, "");
+  const base = printerUrl(p);
   try {
     const r = await fetchWithTimeout(base + "/printer/objects/query?exclude_object", { method: "GET" });
     if (!r.ok) return res.status(502).json({ error: "Moonraker " + r.status });
@@ -416,7 +417,7 @@ app.post("/api/exclude", async (req, res) => {
   const p = hub.PRINTERS[printer];
   if (!p) return res.status(400).json({ error: "Unknown printer" });
   if (!name || /["\r\n]/.test(name)) return res.status(400).json({ error: "Bad object name" });
-  const base = String(p.url).replace(/\/+$/, "");
+  const base = printerUrl(p);
   try {
     const r = await fetchWithTimeout(base + "/printer/gcode/script?script=" + encodeURIComponent(`EXCLUDE_OBJECT NAME=${name}`), { method: "POST" });
     if (!r.ok) return res.status(502).json({ error: "Moonraker " + r.status + ": " + (await r.text()).slice(0, 160) });

@@ -2,6 +2,7 @@
 // Split out of server.js (v2.23). Loads in the original order through the
 // shared `hub`; see server.js for the sequence. Behavior-preserving move.
 const http = require("http");
+const { printerUrl, printerWsUrl } = require("./util.js");
 
 module.exports = function (hub) {
 const { app, detectCaps } = hub;
@@ -180,7 +181,7 @@ async function shapeStatus(p, st, base) {
 
 
 async function probe(p) {
-  const base = String(p.url).replace(/\/+$/, "");
+  const base = printerUrl(p);
   const url = base + "/printer/objects/query?print_task_config&print_stats&display_status&virtual_sdcard&heater_bed&exclude_object";
   try {
     const ctrl = new AbortController();
@@ -229,7 +230,7 @@ function farmWsConnect(idx) {
   rec.epoch = FARM_EPOCH;
   rec.status = "connecting";
   FARMWS.set(idx, rec);
-  const wsUrl = String(p.url).replace(/\/+$/, "").replace(/^http/, "ws") + "/websocket";
+  const wsUrl = printerWsUrl(p);
   let ws;
   try { ws = new WebSocket(wsUrl); } catch { return farmWsScheduleReconnect(idx); }
   rec.ws = ws;
@@ -292,7 +293,7 @@ setInterval(() => {
   for (const [idx, rec] of FARMWS) {
     if (rec.status !== "open" || !rec.seenAt) continue;
     const p = hub.PRINTERS[idx]; if (!p) continue;
-    const base = String(p.url).replace(/\/+$/, "");
+    const base = printerUrl(p);
     // H10 (2.45): bounded. A printer whose socket is open but whose HTTP side
     // has gone quiet used to hold this fetch (and its socket) open forever.
     const ctrl = new AbortController();
@@ -318,7 +319,7 @@ const DISK_CACHE = new Map(); // idx -> { free, total, at }
 async function diskPoll() {
   for (let i = 0; i < (hub.PRINTERS || []).length; i++) {
     const p = hub.PRINTERS[i];
-    const base = String(p.url).replace(/\/+$/, "");
+    const base = printerUrl(p);
     try {
       const ctrl = new AbortController();
       const to = setTimeout(() => ctrl.abort(), 3500);
@@ -352,7 +353,7 @@ const PROBE_CACHE_MS = Math.min(4000, Math.max(100, Math.round(TICK_MS * 0.8)));
 
 async function probeCached(p, idx) {
   const rec = FARMWS.get(idx);
-  const base = String(p.url).replace(/\/+$/, "");
+  const base = printerUrl(p);
   let data;
   if (rec && rec.status === "open" && rec.seenAt && (Date.now() - rec.seenAt) < WS_FRESH_MS) {
     data = await shapeStatus(p, rec.raw, base);

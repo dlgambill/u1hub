@@ -50,6 +50,7 @@ const path = require("path");
 const crypto = require("crypto");
 const { parseGcodeMap, parseConfig } = require("../parser.js");
 const { facts3mf, platesFromModelSettings } = require("./mesh3mf.js");
+const { stripSlash } = require("../core/util.js");
 
 const API_DEFAULT = "https://api.anthropic.com";
 const API_VERSION = "2023-06-01";
@@ -302,7 +303,7 @@ function register(ctx) {
     return {
       key: typeof c.key === "string" ? c.key : "",
       model: (c.model && typeof c.model === "string") ? c.model : MODEL_DEFAULT,
-      url: (typeof c.url === "string" && /^https?:\/\//.test(c.url)) ? c.url.replace(/\/+$/, "") : API_DEFAULT
+      url: (typeof c.url === "string" && /^https?:\/\//.test(c.url)) ? stripSlash(c.url) : API_DEFAULT
     };
   };
   const keyOk = k => /^sk-ant-[A-Za-z0-9_-]{20,}$/.test(String(k || ""));
@@ -365,7 +366,7 @@ function register(ctx) {
     if ("url" in b) {   // not in the UI; for tests and for a proxy someone runs themselves
       const u = String(b.url || "").trim();
       if (u && !/^https?:\/\//.test(u)) return res.status(400).json({ error: "url must be http(s)" });
-      if (u) next.url = u.replace(/\/+$/, ""); else delete next.url;
+      if (u) next.url = stripSlash(u); else delete next.url;
     }
     ctx.cfg.advisor = next;
     if (!ctx.saveConfig()) return res.status(500).json({ error: ctx.saveConfigError() });

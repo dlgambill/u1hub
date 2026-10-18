@@ -43,6 +43,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { printerUrl } = require("../core/util.js");
 
 const HOURS_TTL_MS = 10 * 60 * 1000;
 const CHECK_MS = 5 * 60 * 1000;
@@ -108,7 +109,7 @@ function register(ctx) {
     if (!force && HOURS_AT && Date.now() - HOURS_AT < HOURS_TTL_MS) return;
     if (HOURS_BUSY) return HOURS_BUSY;
     HOURS_BUSY = Promise.all(printers().map(async (p, i) => {
-      const base = String(p.url || "").replace(/\/+$/, "");
+      const base = printerUrl(p);
       if (!base) return;
       const ac = new AbortController();
       const t = setTimeout(() => ac.abort(), 3500);

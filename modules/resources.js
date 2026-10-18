@@ -33,6 +33,7 @@
 const fs = require("fs");
 const path = require("path");
 const { parseGcodeMap } = require("../parser.js");
+const { readSpools } = require("../core/spools.js");
 
 const HEAD_BYTES = 64 * 1024;
 const TAIL_BYTES = 512 * 1024;
@@ -173,16 +174,11 @@ function makeStore(baseDir, hublog) {
 // spools.json lives on an SMB share, and one EIO would otherwise look exactly
 // like "the user threw away every roll they own".
 function readShelf(baseDir, store, meta) {
-  let raw = {}, authoritative = false;
-  try {
-    raw = JSON.parse(fs.readFileSync(path.join(baseDir, "spools.json"), "utf8")) || {};
-    authoritative = !!(raw.spools && typeof raw.spools === "object");
-  } catch (e) {
-    // No file at all is a real answer: nothing has ever been put on the shelf.
-    // A parse error or an I/O error is not.
-    raw = {}; authoritative = !!(e && e.code === "ENOENT");
-  }
-  if (meta) meta.authoritative = authoritative;
+  // H19 (2.45): core/spools.js does the read. No file at all is a real
+  // answer (nothing has ever been put on the shelf); a parse error or an I/O
+  // error is not, and `authoritative` says which this was.
+  const raw = readSpools(baseDir);
+  if (meta) meta.authoritative = raw.authoritative;
   const out = [];
   const add = (id, s, source) => {
     if (!s) return;

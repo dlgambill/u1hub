@@ -4,6 +4,7 @@
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
+const { readSpools } = require("./spools.js");
 
 module.exports = function (hub) {
 const { BASE_DIR, hublog } = hub;
@@ -95,7 +96,7 @@ async function fileContentHashAsync(fp) {
 function loadoutSnapshot(printerIdx) {
   let slots = {}, spools = {};
   try { slots = JSON.parse(fs.readFileSync(path.join(BASE_DIR, "slots.json"), "utf8")) || {}; } catch {}
-  try { spools = (JSON.parse(fs.readFileSync(path.join(BASE_DIR, "spools.json"), "utf8")) || {}).spools || {}; } catch {}
+  spools = readSpools(BASE_DIR).spools;
   // slots.json keys on printer URL (survives config reorders) — mirror that.
   const p = hub.PRINTERS[printerIdx];
   const mine = (p && slots[String(p.url)]) || {};
