@@ -39,6 +39,12 @@
   let SORT = "newest", SEED = 0;
   try { const v = localStorage.getItem("u1.models.sort"); if (v && SORTS[v]) SORT = v; } catch {}
   let RAIL_Q = "", ERR = null, LOADING = false, ALIASES = {};
+  // 2.45.1: what the grid and the rail currently show. A poll during a
+  // rescan (every 4 s) used to rebuild both from scratch even when nothing
+  // in them had changed: every thumbnail re-requested, every chips row back
+  // to "…" and refilled, the page flashing and jumping under a scrolling
+  // thumb. Now a render that would draw the same thing skips the DOM work.
+  let GRID_SIG = "", RAIL_SIG = "";
   const TOP_N = 12;
   // v2.40: print requests from 3MF Explorer. REQ_ONLY toggles the
   // "Requested" filter (server-side, via ?requested=1); requestedTotal comes
@@ -139,9 +145,9 @@
       ".mdl-body{padding:9px 10px 10px; display:flex; flex-direction:column; gap:5px; min-width:0;}",
       ".mdl-name{font-size:13px; font-weight:600; color:var(--ink); line-height:1.3; overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;}",
       ".mdl-sub{font-family:var(--mono); font-size:10.5px; color:var(--ink-faint); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}",
-      ".mdl-chips{display:flex; gap:4px; align-items:center; min-height:14px; flex-wrap:wrap;}",
+      ".mdl-chips{display:flex; gap:4px; align-items:center; height:16px; min-height:16px; flex-wrap:nowrap; overflow:hidden; white-space:nowrap;}",
       ".mdl-chip{width:14px; height:14px; border-radius:4px; border:1px solid rgba(255,255,255,.18); flex:none;}",
-      ".mdl-chips .k{font-family:var(--mono); font-size:10px; color:var(--ink-faint);}",
+      ".mdl-chips .k{font-family:var(--mono); font-size:10px; color:var(--ink-faint); overflow:hidden; text-overflow:ellipsis; min-width:0;}",
       // F13f: one action row - the primary and the \u22ef menu; the rest behind it
       ".mdl-act{display:flex; gap:6px; margin-top:2px; flex-wrap:wrap; align-items:center;}",
       ".mdl-act .btn{font-size:11.5px; padding:4px 9px;}",
@@ -456,16 +462,25 @@
       reqBtn.textContent = "Requested" + (d.requested_total ? " (" + d.requested_total + ")" : "");
     }
     const rail = EL.querySelector("#mdl-rail");
-    const hadFocus = document.activeElement && document.activeElement.id === "mdl-railq";
-    rail.innerHTML = railHtml(d);
-    const rq = rail.querySelector("#mdl-railq");
-    rq.addEventListener("input", () => { RAIL_Q = rq.value; railDrop(); });
-    rq.addEventListener("focus", railDrop);
-    rq.addEventListener("keydown", e => { if (e.key === "Escape") { RAIL_Q = ""; rq.value = ""; railDrop(); } if (e.key === "Enter") { const first = rail.querySelector("#mdl-raildrop button"); if (first) first.click(); } });
-    document.addEventListener("click", e => { if (!e.target.closest(".mdl-railq")) { const b = rail.querySelector("#mdl-raildrop"); if (b) b.className = "mdl-raildrop"; } }, { once: true, capture: true });
-    if (hadFocus) rq.focus();
+    const railSig = CREATOR + "|" + d.total_all + "|" + (d.creators || []).map(c => (c.name || "") + ":" + c.count).join(",");
+    if (railSig !== RAIL_SIG || !rail.querySelector("#mdl-railq")) {
+      RAIL_SIG = railSig;
+      const hadFocus = document.activeElement && document.activeElement.id === "mdl-railq";
+      rail.innerHTML = railHtml(d);
+      const rq = rail.querySelector("#mdl-railq");
+      rq.addEventListener("input", () => { RAIL_Q = rq.value; railDrop(); });
+      rq.addEventListener("focus", railDrop);
+      rq.addEventListener("keydown", e => { if (e.key === "Escape") { RAIL_Q = ""; rq.value = ""; railDrop(); } if (e.key === "Enter") { const first = rail.querySelector("#mdl-raildrop button"); if (first) first.click(); } });
+      document.addEventListener("click", e => { if (!e.target.closest(".mdl-railq")) { const b = rail.querySelector("#mdl-raildrop"); if (b) b.className = "mdl-raildrop"; } }, { once: true, capture: true });
+      if (hadFocus) rq.focus();
+    }
     const grid = EL.querySelector("#mdl-grid");
     const items = (prependItems || []).concat(d.items);
+    // Everything a card draws from its item, plus the view's own switches.
+    const gridSig = (d.missing ? "missing" : "") + "|" + SORT + "|" + Q + "|" + REQ_ONLY + "|" + CREATOR + "|" + (d.orca_found === false) + "|" +
+      items.map(it => it.rel + ":" + (it.mtime || 0) + ":" + (it.prints || 0) + ":" + (it.conventional ? 1 : 0) + ":" + (it.requested ? it.requested.status + "/" + (it.requested.pieces || 0) : "")).join(";");
+    const sameGrid = gridSig === GRID_SIG && items.length > 0 && !d.missing;
+    GRID_SIG = gridSig;
     const sidebtn = EL.querySelector("#mdl-sidebtn"); if (sidebtn) sidebtn.classList.toggle("primary", document.body.classList.contains("mdl-side-open"));
     if (d.missing) {
       grid.innerHTML = '<div class="mdl-empty" style="grid-column:1/-1">No folder at <code>' + esc(d.folder) + '</code>.<br><button class="btn primary" data-showcfg="1">Point the Hub at your 3MF folder</button></div>';
@@ -474,9 +489,12 @@
       let msg, act = "";
       if (REQ_ONLY) { msg = "Nothing marked for print yet."; act = '<button class="btn ghost" data-clearfilter="req">Show everything</button>'; }
       else if (d.total_all && (Q || CREATOR)) { msg = "Nothing matches" + (Q ? " \u201c" + esc(Q) + "\u201d" : "") + (CREATOR ? " for " + esc(CREATOR === "__none__" ? "(no folder)" : CREATOR) : "") + "."; act = '<button class="btn ghost" data-clearfilter="all">Clear the filter</button>'; }
-      else if (d.refreshing || d.scanning) { grid.innerHTML = skeletons(12); return; }
+      else if (d.refreshing || d.scanning) { if (!grid.querySelector(".mdl-skel")) grid.innerHTML = skeletons(12); return; }
       else { msg = "No 3MF files under <code>" + esc(d.folder) + "</code>."; act = '<button class="btn ghost" data-showcfg="1">Check the folder</button>'; }
       grid.innerHTML = '<div class="mdl-empty" style="grid-column:1/-1">' + msg + "<br>" + act + "</div>";
+    } else if (sameGrid) {
+      // same cards in the same order: leave the DOM, the thumbnails and the
+      // filled chips rows alone (only the count line above moved)
     } else {
       let html = "", prevKey = null;
       for (const it of items) {

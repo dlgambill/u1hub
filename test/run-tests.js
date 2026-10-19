@@ -5715,6 +5715,22 @@ async function stopHub() {
     ok(!r.body.scan_progress || typeof r.body.scan_progress.dirs === "number", "2.44.1: scan_progress carries a dirs count when a walk is running", r.body.scan_progress);
   }
 
+  console.log("\n== 2.45.1: the Models grid stays put while a rescan polls (phone: flash and bounce) ==");
+  {
+    const ui = fs.readFileSync(path.join(REPO, "public", "modules", "models-ui.js"), "utf8").replace(/\r\n/g, "\n");
+    // A render that would draw the same cards in the same order leaves the DOM
+    // alone; the 4 s poll during a walk only moves the count line.
+    ok(/const sameGrid = gridSig === GRID_SIG && items\.length > 0 && !d\.missing;/.test(ui) && /\} else if \(sameGrid\) \{/.test(ui),
+      "2.45.1: the grid is rebuilt only when the cards it would show changed");
+    ok(/it\.requested \? it\.requested\.status/.test(ui) && /:" \+ \(it\.prints \|\| 0\)/.test(ui) && /\+ REQ_ONLY \+ "\|" \+ CREATOR/.test(ui),
+      "2.45.1: the grid signature covers what a card draws (file, mtime, prints, filed, request state) and the view switches");
+    ok(/if \(railSig !== RAIL_SIG \|\| !rail\.querySelector\("#mdl-railq"\)\)/.test(ui), "2.45.1: the designer rail is rebuilt only when designers or counts changed, so its typeahead survives a poll");
+    // The chips row used to grow from one line to two when it filled in on a
+    // narrow column, pushing everything below it down under a scrolling thumb.
+    ok(/\.mdl-chips\{[^}]*height:16px;[^}]*flex-wrap:nowrap;[^}]*overflow:hidden;/.test(ui), "2.45.1: the chips row has a fixed one-line height, so filling it in cannot move the cards below");
+    ok(/if \(!grid\.querySelector\("\.mdl-skel"\)\) grid\.innerHTML = skeletons\(12\);/.test(ui), "2.45.1: skeletons are not redrawn over skeletons on every poll of an empty scan");
+  }
+
   console.log("\n== SPRINT 4: F9 /healthz and nightly state backups (2.45.0) ==");
   {
     // /healthz needs no cookie and no disk: a watchdog's view of "is it up".

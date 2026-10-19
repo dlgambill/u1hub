@@ -77,6 +77,10 @@ printers, and nothing leaves your network unless you turn remote access on.
 
 ---
 
+### 2.45.1 - a Models grid that holds still
+
+- **Models tab flashing and bouncing while scrolling.** While a folder walk is running (the index refreshes in the background ten minutes after the last one, so opening the tab usually starts one), the page polls every 4 s to keep the count line moving. Each poll rebuilt the whole grid and the designer rail from scratch: every thumbnail was requested again, every color-chips row went back to "…" and refilled, open card menus closed, and the page jumped under a scrolling thumb. Now a render that would draw the same cards in the same order (same files, mtimes, printed counts, filed marks and request state, same sort, search, designer and Requested switch) leaves the DOM alone, and the rail is rebuilt only when the designers or their counts changed, so its typeahead survives a poll. The chips row also had no fixed height: on a narrow column it grew from one line to two when it filled in, pushing the cards below it down as they scrolled into view; it is one line now, with the overflow cut. (Best practice: re-render on change, not on a timer - diff what the DOM would show against what it shows and reserve the space lazy content will take.)
+
 ### 2.45.0 - one snapshot loop, bounded caches, honest saves
 
 - **H10 - one fleet snapshot loop.** Four timers each took their own snapshot of the farm (SSE and fleet events every 5 s, Dispatch every 10 s, the print-start watcher every 15 s with its own one-at-a-time probes) and three kept their own idea of "previous state". Now core/fleet.js runs the one loop and emits `fleet:tick` (snapshot plus per-printer transitions) on the hub's event bus; records, events and Dispatch subscribe to it, each at its old cadence. Nine offline printers no longer turn the watcher's round into 27 s against a 15 s interval, and the 20 s color reconcile fetch now gives up after 5 s instead of never. (Best practice: one poller, many subscribers - the edge is computed once.)
