@@ -370,12 +370,14 @@
   function skeletons(n) {
     return Array.from({ length: n }, () => '<div class="mdl-skel" aria-hidden="true"><div class="t"></div><div class="l"></div><div class="l s"></div></div>').join("");
   }
-  async function load(refresh, append) {
+  // quiet: a background poll while a walk runs. It must never dim the grid or
+  // take the pointer away - the person may be scrolling it (2.45.2).
+  async function load(refresh, append, quiet) {
     if (BUSY) return; BUSY = true; LOADING = true;
     const grid = EL.querySelector("#mdl-grid");
     // F13e: a fresh page shows skeletons, a paging call keeps the cards and dims nothing.
     if (!append && !(DATA && DATA.items && DATA.items.length)) grid.innerHTML = skeletons(12);
-    else if (!append) grid.classList.add("stale");
+    else if (!append && !quiet) grid.classList.add("stale");
     try {
       const u = "/api/models?limit=60&offset=" + OFFSET + (Q ? "&q=" + encodeURIComponent(Q) : "") + (CREATOR ? "&creator=" + encodeURIComponent(CREATOR) : "") + (refresh ? "&refresh=1" : "")
         + (SORT !== "designer" ? "&sort=" + SORT : "") + (SORT === "random" && SEED ? "&seed=" + SEED : "") + (REQ_ONLY ? "&requested=1" : "");
@@ -403,9 +405,9 @@
       if (!prev || prev.folder !== d.folder) renderCfg();
       writeHash();
       // While a scan is running and there is nothing to show yet, poll.
-      if ((d.refreshing || d.scanning) && !d.items.length) setTimeout(() => { if (!BUSY) load(); }, 2500);
+      if ((d.refreshing || d.scanning) && !d.items.length) setTimeout(() => { if (!BUSY) load(false, false, true); }, 2500);
       // H22: a walk in progress keeps the count line moving while the list stays usable.
-      else if (d.refreshing) setTimeout(() => { if (!BUSY) load(); }, 4000);
+      else if (d.refreshing) setTimeout(() => { if (!BUSY) load(false, false, true); }, 4000);
     } finally { BUSY = false; LOADING = false; grid.classList.remove("stale"); }
   }
 

@@ -5731,6 +5731,14 @@ async function stopHub() {
     ok(/if \(!grid\.querySelector\("\.mdl-skel"\)\) grid\.innerHTML = skeletons\(12\);/.test(ui), "2.45.1: skeletons are not redrawn over skeletons on every poll of an empty scan");
   }
 
+  console.log("\n== 2.45.2: a background poll never dims the Models grid ==");
+  {
+    const ui = fs.readFileSync(path.join(REPO, "public", "modules", "models-ui.js"), "utf8").replace(/\r\n/g, "\n");
+    ok(/async function load\(refresh, append, quiet\)/.test(ui) && /else if \(!append && !quiet\) grid\.classList\.add\("stale"\);/.test(ui),
+      "2.45.2: the stale fade is skipped for a quiet load");
+    ok((ui.match(/if \(!BUSY\) load\(false, false, true\);/g) || []).length === 2, "2.45.2: both rescan polls are quiet loads");
+  }
+
   console.log("\n== SPRINT 4: F9 /healthz and nightly state backups (2.45.0) ==");
   {
     // /healthz needs no cookie and no disk: a watchdog's view of "is it up".

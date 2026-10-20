@@ -77,6 +77,10 @@ printers, and nothing leaves your network unless you turn remote access on.
 
 ---
 
+### 2.45.2 - no dimming during a rescan
+
+- **Models tab dimming every few seconds.** 2.45.1 stopped the grid from being rebuilt on every background poll, but the poll still marked the grid stale for the length of each request: 55% opacity and no pointer events, so the page faded and ignored taps for a moment every 4 s while the walk ran. A poll is now quiet - it updates the count line and nothing else; the fade is kept for loads you asked for (a search, a designer, Show more, Rescan), where it says "the list below is being replaced". (Best practice: a loading state belongs to a user action, never to a background refresh.)
+
 ### 2.45.1 - a Models grid that holds still
 
 - **Models tab flashing and bouncing while scrolling.** While a folder walk is running (the index refreshes in the background ten minutes after the last one, so opening the tab usually starts one), the page polls every 4 s to keep the count line moving. Each poll rebuilt the whole grid and the designer rail from scratch: every thumbnail was requested again, every color-chips row went back to "…" and refilled, open card menus closed, and the page jumped under a scrolling thumb. Now a render that would draw the same cards in the same order (same files, mtimes, printed counts, filed marks and request state, same sort, search, designer and Requested switch) leaves the DOM alone, and the rail is rebuilt only when the designers or their counts changed, so its typeahead survives a poll. The chips row also had no fixed height: on a narrow column it grew from one line to two when it filled in, pushing the cards below it down as they scrolled into view; it is one line now, with the overflow cut. (Best practice: re-render on change, not on a timer - diff what the DOM would show against what it shows and reserve the space lazy content will take.)
