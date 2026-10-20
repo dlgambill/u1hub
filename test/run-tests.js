@@ -5750,6 +5750,11 @@ async function stopHub() {
       "2.45.3: a mouse drag on the lanes pans after 6 px, never starts on a block or button, and its ending click opens nothing");
     ok(/e\.key === "ArrowLeft"/.test(ui) && /e\.key === "Home"\) \{ e\.preventDefault\(\); toNow\(\); \}/.test(ui) && /id="dsp-guide" tabindex="0"/.test(ui),
       "2.45.3: the guide is focusable and the arrow keys, Page Up/Down and Home move it");
+    // 2.45.4: the guide scrolls vertically inside itself now, so the plan
+    // reload must carry scrollTop across the rebuild, not just scrollLeft -
+    // otherwise it snaps back to U1 every reload and a phone never reaches U9.
+    ok(/if \(prev\) \{ GSCROLL = prev\.scrollLeft; GSCROLLY = prev\.scrollTop; \}/.test(ui) && /g\.scrollTop = GSCROLLY;/.test(ui),
+      "2.45.4: the plan reload keeps the guide's vertical scroll, so it doesn't bounce back to the top");
   }
 
   console.log("\n== SPRINT 4: F9 /healthz and nightly state backups (2.45.0) ==");

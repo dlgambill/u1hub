@@ -381,6 +381,10 @@
   // and the ruler stay put, because losing track of which machine or which day
   // you are reading is the one thing a guide must never let happen.
   let GSCROLL = null;                              // survive re-render, don't jump the view
+  // 2.45.4: the vertical offset too. Since 2.45.3 the guide is bounded to the
+  // viewport and its lanes scroll inside it, so the plan reload rebuilt it at
+  // the top every few seconds - on a phone you could never reach U9.
+  let GSCROLLY = 0;
   function renderPlan() {
     const box = $$("#dsp-plan");
     const slots = (PLAN && PLAN.slots) || [];
@@ -391,7 +395,7 @@
       box.innerHTML = '<div class="dsp-empty">Nothing planned.</div>'; return;
     }
     const prev = $$("#dsp-guide");
-    if (prev) GSCROLL = prev.scrollLeft;
+    if (prev) { GSCROLL = prev.scrollLeft; GSCROLLY = prev.scrollTop; }
     const HOUR = 3600000, now = Date.now();
     // Round out to whole hours so the ruler's labels are round numbers. v2.22:
     // the axis begins where the WORK begins, not always at the present. A print
@@ -663,7 +667,7 @@
       await load();
     };
     // Restore where they were reading; land on "now" only the first time.
-    if (g) { if (GSCROLL != null) g.scrollLeft = GSCROLL; else toNow(); }
+    if (g) { if (GSCROLL != null) g.scrollLeft = GSCROLL; else toNow(); g.scrollTop = GSCROLLY; }
   }
 
   // A running print has no plan to explain — only facts, and one honest gap:

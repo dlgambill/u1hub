@@ -77,6 +77,10 @@ printers, and nothing leaves your network unless you turn remote access on.
 
 ---
 
+### 2.45.4 - the timeline keeps your place
+
+- **On a phone, scrolling down the Dispatch timeline bounced back to the top.** Since 2.45.3 the timeline scrolls up and down inside its own box, but the plan refresh that rebuilds it every few seconds only put back your place left to right, so it snapped back to the first printer and the last ones (U9 on a nine-printer farm) were out of reach. It now keeps both. (Best practice: when a refresh rebuilds a scrolling region, restore its whole scroll position - both directions - or better, update it in place.)
+
 ### 2.45.3 - a timeline you can pan from anywhere
 
 - **Moving left and right on the Dispatch timeline meant scrolling to the bottom.** The guide was as tall as its nine lanes, so its horizontal scrollbar sat below the last printer and the only ways across the day were Shift + wheel or a trip to the bottom and back. The guide is now bounded to the window (its ruler was already pinned to its top; the lanes scroll inside it and the scrollbar is always on screen), the tools row has earlier / later buttons that page by 60% of the view, dragging the lanes with the mouse pans (a drag starts after 6 px, so a click on a block still opens it, and the click that ends a drag opens nothing), and with the guide focused the arrow keys step two hours, Page Up / Page Down page, and Home returns to now. Touch pans as before. (Best practice: controls for a scrolling region live where the eye is - at its top, pinned - and direct manipulation should work on the content itself, not only on a scrollbar.)
