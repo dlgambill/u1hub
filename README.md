@@ -1,5 +1,9 @@
 # U1 Print Hub
 
+**🏆 Tier 3 award winner in Snapmaker's Innovation Fund (Phase 1, October 2026).**
+Thank you to Snapmaker, and to everyone who has tried the Hub, reported a bug
+or sent in an idea - a lot of what's below started as one of those.
+
 One dashboard for a whole farm of Snapmaker U1 printers. Other Klipper printers
 can join in too (that part is in beta).
 
@@ -26,7 +30,9 @@ paused or failed says why, in the firmware's own words, so you know whether to
 walk over. A printer that is down for maintenance says so right on the card,
 and the scheduler routes work around it until you bring it back. Tap a
 head's color on an idle printer to change it, pick the material, and it stays
-on the printer just like a color set on the touchscreen.
+on the printer just like a color set on the touchscreen. Pause, resume and
+cancel show a spinner until the printer answers and ignore a second tap in
+the meantime, so a slow printer can't get the same command twice.
 
 **Send prints without walking over.** Pick a file, see the colors it needs,
 choose which head prints which color, and push it to any idle machine. The Hub
@@ -87,7 +93,9 @@ got wrong and offers the same move, and Delete removes a file for good after
 one confirm. Sort it by designer, name, newest, oldest, random, or most
 printed - that last one counts the completed jobs in your printers' own
 history against the files they were sliced from, and says how many it could
-match rather than guessing. Convert to U1 (behind the ⋯ on a card) writes a
+match rather than guessing. While a rescan runs in the background the shelf
+holds still - no flashing, no jumping, no dimming - and only the count line
+moves. Convert to U1 (behind the ⋯ on a card) writes a
 U1 copy of a MakerWorld or other Bambu project beside it, keeping the
 designer's prime tower, walls, infill and supports on your U1's printer and
 filament presets.
@@ -147,9 +155,21 @@ printer and what the next best choices would have cost. The timeline redraws
 itself as printers finish, a copy that finishes while the Hub is restarting
 still counts, and a cancelled or failed print frees its printer right away
 and keeps that copy on the list with a note on the job. You can reorder your
-printers in Settings without anything moving to the wrong machine.
+printers in Settings without anything moving to the wrong machine. When
+several prints are due to finish overnight, the plan lines the bed clears up
+five minutes apart instead of asking you to clear three at once.
 
-![Dispatch: the week's prints laid out across the fleet](docs/dispatch.png)
+Getting around the timeline is easy from anywhere on it. It fits in the
+window, with the time ruler pinned to the top and its scrollbar always in
+view. Earlier and later buttons page through the day and now jumps back to
+the present. With a mouse you can drag the lanes, and the arrow keys work
+once you've clicked into it. On a phone, swipe it any direction - it keeps
+your place while it refreshes, so the last printer is always within reach.
+
+![Dispatch: the plan laid out across the fleet, with the earlier / now / later controls above the timeline](docs/dispatch.png)
+
+<img src="docs/dispatch-phone.png" width="300" alt="Dispatch on a phone, scrolled down to the last printer">
+
 
 **Know what to buy.** The Resources tab reads every scheduled file, adds up
 the filament by color, compares it to the spools you own, and shows what you
@@ -222,6 +242,9 @@ button, Convert to U1 right on the card, and the rest (Suggest settings, Link
 gcode, Attributes, Rename, Delete) behind the ⋯ menu. Only Open in Orca needs the Hub computer itself, because it
 opens a program there. A tab you are not looking at stops checking for
 updates, so a phone in your pocket is not using data on the Hub's behalf.
+And however many pages are open, the Hub asks each printer how it's doing
+once per pass and shares that one answer with everything, so a big farm
+isn't being asked the same question four different ways.
 
 <img src="docs/remote-phone.png" width="300" alt="The dashboard on a phone">
 
@@ -323,6 +346,16 @@ starts with `sk-ant-`), add a few dollars of credit there, and paste it into
 Settings under AI pre-flight. The key stays in `config.json` on the Hub
 computer and is never shown again. Both buttons are off until a key is in.
 
+**It looks after its own files.** Every night the Hub copies everything it
+remembers (printers, schedule, spools, logbook and the rest) into a
+`backups` folder beside them and keeps the last seven days. If a settings
+change can't be saved - a busy network share, say - it tells you instead of
+showing Saved. If `config.json` gets hand-edited into something it can't use,
+it names the setting that's wrong when it starts, and a file saved from
+Windows PowerShell no longer quietly resets it to defaults. For a watchdog or
+a home-lab monitor, `http://THE-COMPUTER'S-IP:4545/healthz` answers with the
+version and printer count, no sign-in needed.
+
 ---
 
 ## Using it away from home
@@ -338,7 +371,10 @@ prints, cameras, spools, and scheduling. If the tunnel drops, the Hub starts
 it again on its own, and the tunnel program it downloads is one pinned,
 checked version rather than whatever is newest. While the tunnel is on, the
 password stays on. If your sign-in expires after 30 days, the page takes you
-to the sign-in screen and back to where you were. The printers' own Klipper pages are
+to the sign-in screen and back to where you were. Lost a phone, or signed in
+somewhere you shouldn't stay signed in? Sign out everywhere in Settings ends
+every session at once. If the Hub sits behind your own reverse proxy, the
+same card is where you list it as trusted. The printers' own Klipper pages are
 best used on your own network; opening them from outside can depend on your
 network setup.
 
