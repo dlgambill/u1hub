@@ -77,6 +77,10 @@ printers, and nothing leaves your network unless you turn remote access on.
 
 ---
 
+### 2.45.3 - a timeline you can pan from anywhere
+
+- **Moving left and right on the Dispatch timeline meant scrolling to the bottom.** The guide was as tall as its nine lanes, so its horizontal scrollbar sat below the last printer and the only ways across the day were Shift + wheel or a trip to the bottom and back. The guide is now bounded to the window (its ruler was already pinned to its top; the lanes scroll inside it and the scrollbar is always on screen), the tools row has earlier / later buttons that page by 60% of the view, dragging the lanes with the mouse pans (a drag starts after 6 px, so a click on a block still opens it, and the click that ends a drag opens nothing), and with the guide focused the arrow keys step two hours, Page Up / Page Down page, and Home returns to now. Touch pans as before. (Best practice: controls for a scrolling region live where the eye is - at its top, pinned - and direct manipulation should work on the content itself, not only on a scrollbar.)
+
 ### 2.45.2 - no dimming during a rescan
 
 - **Models tab dimming every few seconds.** 2.45.1 stopped the grid from being rebuilt on every background poll, but the poll still marked the grid stale for the length of each request: 55% opacity and no pointer events, so the page faded and ignored taps for a moment every 4 s while the walk ran. A poll is now quiet - it updates the count line and nothing else; the fade is kept for loads you asked for (a search, a designer, Show more, Rescan), where it says "the list below is being replaced". (Best practice: a loading state belongs to a user action, never to a background refresh.)

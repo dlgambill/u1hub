@@ -5739,6 +5739,19 @@ async function stopHub() {
     ok((ui.match(/if \(!BUSY\) load\(false, false, true\);/g) || []).length === 2, "2.45.2: both rescan polls are quiet loads");
   }
 
+  console.log("\n== 2.45.3: the Dispatch timeline pans from anywhere ==");
+  {
+    const ui = fs.readFileSync(path.join(REPO, "public", "modules", "dispatch-ui.js"), "utf8").replace(/\r\n/g, "\n");
+    ok(/\.dsp-guide\{[^}]*overflow-y:auto;[^}]*max-height:calc\(100vh - 150px\);/.test(ui) && /\.dsp-gruler\{position:sticky;top:0;/.test(ui),
+      "2.45.3: the guide is bounded to the viewport with its ruler pinned, so its scrollbar is always on screen");
+    ok(/id="dsp-gprevbtn"/.test(ui) && /id="dsp-gnextbtn"/.test(ui) && /pb\.onclick = \(\) => page\(-1\)/.test(ui) && /nb\.onclick = \(\) => page\(1\)/.test(ui),
+      "2.45.3: earlier / later buttons page the guide");
+    ok(/if \(Math\.abs\(dx\) < 6 && Math\.abs\(dy\) < 6\) return; drag\.on = true;/.test(ui) && /e\.target\.closest\("button, \[data-slot\], \[data-run\], a, input"\)/.test(ui) && /if \(swallow\) \{ e\.stopPropagation\(\); e\.preventDefault\(\); \}/.test(ui),
+      "2.45.3: a mouse drag on the lanes pans after 6 px, never starts on a block or button, and its ending click opens nothing");
+    ok(/e\.key === "ArrowLeft"/.test(ui) && /e\.key === "Home"\) \{ e\.preventDefault\(\); toNow\(\); \}/.test(ui) && /id="dsp-guide" tabindex="0"/.test(ui),
+      "2.45.3: the guide is focusable and the arrow keys, Page Up/Down and Home move it");
+  }
+
   console.log("\n== SPRINT 4: F9 /healthz and nightly state backups (2.45.0) ==");
   {
     // /healthz needs no cookie and no disk: a watchdog's view of "is it up".
