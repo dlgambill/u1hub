@@ -507,7 +507,8 @@
       // offline machine is a fact the Hub discovered, a machine down for
       // maintenance is a decision you made, and a farm where those two look the
       // same is a farm where you go hunting for a fault you caused.
-      const maint = ((PLAN.printers || []).find(p => p.idx === +idx) || {}).maintenance || null;
+      const pinfo = (PLAN.printers || []).find(p => p.idx === +idx) || {};
+      const maint = pinfo.maintenance || null;
       const busyNow = RUN.find(r => r.printer === +idx);
       const wrench = `<button class="dsp-maint${maint ? " dsp-maint-on" : ""}" data-dsp-maint="${idx}"` +
         ` title="${maint ? "Bring this printer back into service" : "Take this printer down for maintenance"}"` +
@@ -527,7 +528,11 @@
         ? `<span class="dsp-gsub dsp-grunning">${busyNow.paused ? "⏸ paused" : "▶ printing now"}</span>`
         : lane.slots.length
           ? `<span class="dsp-gsub">from ${esc(fmtClock(Math.min(...lane.slots.map(s => s.est_start))))}</span>`
-          : `<span class="dsp-gsub dsp-lidle">idle — nothing planned</span>`;
+          : pinfo.window_opens
+            // 2.45.5: free outside attended hours. Say when the planner will
+            // use it again, and that a press starts the next job now.
+            ? `<span class="dsp-gsub dsp-lidle" title="Your attended hours start at ${esc(fmtClock(pinfo.window_opens))}, so the plan gives this printer nothing before then. You are here now: ▶ next hands it the next job in line.">idle until ${esc(fmtClock(pinfo.window_opens))}${pinfo.startable_now ? " · ▶ next starts one now" : ""}</span>`
+            : `<span class="dsp-gsub dsp-lidle">idle — nothing planned</span>`;
       return `<div class="dsp-grow${maint ? " dsp-rowmaint" : (busyNow ? " dsp-rowrun" : "")}">
         <div class="dsp-gcell"><span class="dsp-gpname">${esc(lane.name)}</span>${first}${clearBtn}${wrench}</div>
         <div class="dsp-gtime" style="width:${W}px">${closed}${nowLine}${runBlocks(+idx)}${blocks}</div>
@@ -816,8 +821,13 @@
         ? "\n\n\u26a0 " + next.contention.color + " is also needed by " + next.contention.file +
           " on " + next.contention.printer + " \u2014 you only have one roll unless you've bought more."
         : "";
+      // 2.45.5: a hand-start outside attended hours says what it is taking from where.
+      const handStart = next.start_now
+        ? "\n\nNothing was planned here before your attended hours open. This is the next job in line" +
+          (next.planned_on ? " (it was going to wait for " + next.planned_on + (next.planned_at ? " at " + fmtClock(next.planned_at) : "") + ")" : "") + "."
+        : "";
       if (!confirm("Set up '" + next.file + "' (copy " + next.copy + "/" + next.of + ") on " +
-                   next.printerName + mounts + warn +
+                   next.printerName + handStart + mounts + warn +
                    "\n\nThe dashboard opens next so you can confirm the tool mapping before it starts."))
         { btn.disabled = false; return; }
       // Hand off to the dashboard's tool-head picker rather than starting
@@ -895,7 +905,9 @@
     step(10, "reading the queue…");
     const d = await jget("/api/dispatch");
     step(50, "planning…");
-    const p = await jget("/api/dispatch/plan");
+    // 2.45.5: replan means replan. Without ?fresh=1 this served the cached
+    // plan (at most a tick old), so the button changed nothing you could see.
+    const p = await jget("/api/dispatch/plan?fresh=1");
     if (!p.ok || !p.body || !p.body.slots) {
       // Never overwrite a good plan with a failed fetch: what is on screen is
       // still true, and saying so beats blanking it.

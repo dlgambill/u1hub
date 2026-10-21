@@ -1215,6 +1215,36 @@ async function stopHub() {
       const firstReal = (r.body.slots || []).find(s => !s.unplannable);
       ok(firstReal && firstReal.est_start >= tomorrow0, "today off (override) → plan starts tomorrow at the earliest", firstReal && new Date(firstReal.est_start).toString().slice(0, 21));
       const withOverride = firstReal && firstReal.est_start;
+      // 2.45.5: with today switched off the farm is outside attended hours
+      // right now. Every free lane says when the window opens; a lane that
+      // could take a queued copy says next can start one; and clear-bed on a
+      // lane with nothing planned hands over the first copy in line instead
+      // of "nothing planned". The queued job here is multi-color, so only the
+      // U1 mock may take it; a single-color job is added so the SV mock has a
+      // candidate whichever lane the planner parks it on.
+      {
+        const sj = await jpost("/api/dispatch/jobs", { again: true, file: "single.gcode", type: "u1", qty: 1 });
+        const SJ = sj.body.job.id;
+        r = await jget("/api/dispatch/plan?fresh=1");
+        const pl = r.body;
+        const lanes = (pl.printers || []).filter(p => !p.busy && !p.maintenance);
+        ok(lanes.length >= 2 && lanes.every(p => p.window_opens >= tomorrow0),
+          "2.45.5: every free lane outside attended hours reports when the window opens", lanes.map(p => ({ idx: p.idx, opens: p.window_opens && new Date(p.window_opens).toString().slice(0, 21) })));
+        const sv = lanes.find(p => p.name === "SV-mock");
+        const svPlanned = (pl.slots || []).find(x => x.printer === sv.idx && !x.unplannable) || null;
+        ok(sv && (svPlanned ? !sv.startable_now : sv.startable_now === true),
+          "2.45.5: a free lane with nothing planned and an eligible copy in the queue says next can start one now",
+          { planned: !!svPlanned, startable: sv && sv.startable_now });
+        const cb = await jpost("/api/dispatch/clear-bed", { printer: sv.idx });
+        const nx = cb.body && cb.body.next;
+        ok(cb.status === 200 && nx && nx.printer === sv.idx && nx.file === "single.gcode" && (svPlanned ? !nx.start_now : nx.start_now === true),
+          "2.45.5: clear-bed on that lane hands over the first copy in line it may run (the multi-color job is not eligible), as a hand-start when nothing was planned there",
+          nx && { file: nx.file, printer: nx.printer, start_now: nx.start_now, planned_on: nx.planned_on });
+        await jpost("/api/dispatch/jobs/remove", { id: SJ });
+        const ui = fs.readFileSync(path.join(REPO, "public", "modules", "dispatch-ui.js"), "utf8");
+        ok(/jget\("\/api\/dispatch\/plan\?fresh=1"\)/.test(ui), "2.45.5: the replan button asks for a fresh plan, not the cached one");
+        ok(/idle until \$\{esc\(fmtClock\(pinfo\.window_opens\)\)\}/.test(ui) && /next\.start_now/.test(ui), "2.45.5: the lane says idle until the window opens, and the confirm explains a hand-start");
+      }
       r = await jpost("/api/dispatch/settings", { clearOverride: iso(Date.now()) });
       // The state change is the deterministic half and gets asserted directly.
       ok(r.status === 200 && !(r.body.settings.weekOverrides || {})[iso(Date.now())],

@@ -1,6 +1,6 @@
 {
   "name": "u1-print-hub",
-  "version": "2.45.4",
+  "version": "2.45.5",
   "private": true,
   "type": "commonjs",
   "bin": "server.js",

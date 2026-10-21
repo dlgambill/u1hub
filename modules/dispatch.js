@@ -1243,6 +1243,9 @@ function register(ctx) {
     // the hours inside it you are actually around for.
     const ends = slots.filter(s => !s.unplannable).map(s => s.est_end);
     const spanTo = (ends.length ? Math.max(...ends) : now) + 3600000;
+    // 2.45.5: when the next attended window opens, if it is not open now
+    const _ns = nextStart(now);
+    const windowOpens = _ns && _ns > now + 60000 ? _ns : null;
     return { generated_at: now, slots, running, target: TARGET,
              report: feasibility(slots, TARGET, now),
              attended: attendedSpans(now, spanTo),
@@ -1253,7 +1256,31 @@ function register(ctx) {
              locked, locked_at: locked && D.frozen ? D.frozen.locked_at : undefined,
              new_since_lock: newSinceLock,
              printers: lanes.map(l => ({ idx: l.idx, name: l.name, busy: !!l.note || !!l.busyUntil,   // v2.36: printing now, not "has planned work" (cursor moved)
-               maintenance: l.maint ? { since: l.maint.since, note: l.maint.note || "" } : null })) };
+               maintenance: l.maint ? { since: l.maint.since, note: l.maint.note || "" } : null,
+               // 2.45.5: a free machine outside attended hours says so, and
+               // whether pressing next could hand it a job right now.
+               window_opens: windowOpens || undefined,
+               startable_now: !!(windowOpens && !l.maint && !l.note && !l.busyUntil && !slots.some(s => s.printer === l.idx && !s.unplannable) && startNowPick(l, slots)) || undefined })) };
+  }
+  // 2.45.5: the next job a FREE lane could take right now, outside attended
+  // hours. The windows exist because nobody is there to press start; a person
+  // pressing "next" on an idle printer is there. So the pick is the first
+  // placed copy in plan order (deadline first, then priority - the planner's
+  // own order) that this lane may take: not pinned elsewhere, not pushed
+  // behind another job, and within this machine's capabilities. Every such
+  // copy was going to wait for the window on some other machine, so starting
+  // it here now is strictly earlier for it and leaves nothing else worse off.
+  function startNowPick(lane, slots) {
+    for (const s of slots || []) {
+      if (s.unplannable || s.after) continue;
+      const job = D.jobs.find(j => j.id === s.job_id);
+      if (!job) continue;
+      if (job.multi && !lane.multiColor) continue;
+      const pin = PINS.get(job.id);
+      if (pin !== undefined && pin !== lane.idx) continue;
+      return { slot: s, job };
+    }
+    return null;
   }
 
   // ---- claim reconciliation (v2.14) -----------------------------------------
@@ -1978,6 +2005,16 @@ function register(ctx) {
     PLAN_CACHE.timer = setTimeout(() => { PLAN_CACHE.timer = null; refreshPlan().catch(() => {}); }, 300);
     if (PLAN_CACHE.timer.unref) PLAN_CACHE.timer.unref();
   }
+  // 2.45.5: the lanes as plan() sees them, for the clear-bed pick (idle, maintenance, capabilities).
+  async function lanesNow() {
+    const fleet = await ctx.fleet();
+    return (fleet || []).map((fp, i) => ({ fp, i })).filter(x => x.fp && x.fp.online !== false).map(x => {
+      const st = String((x.fp.status || x.fp.state || "")).toLowerCase();
+      const busy = /print/.test(st) || /pause/.test(st);
+      return { idx: x.i, name: x.fp.name || ("printer " + (x.i + 1)), fp: x.fp, maint: maintOf(x.i),
+               multiColor: !!(x.fp.caps && x.fp.caps.multiColor), busyUntil: busy ? Date.now() + 1 : null, note: null };
+    });
+  }
   async function cachedPlan(fresh) {
     let stale = !PLAN_CACHE.value || PLAN_CACHE.dirty || (Date.now() - (PLAN_CACHE.value.generated_at || 0) > PLAN_MAX_AGE_MS);
     if (!stale && !fresh) { let f = null; try { f = await ctx.fleet(); } catch {} if (fleetSig(f) !== PLAN_CACHE.fsig) stale = true; }
@@ -2025,7 +2062,23 @@ function register(ctx) {
     if (AWAITING.delete(idx)) save();               // S1: the gate is persisted
     try {
       const p = await cachedPlan(false);          // S4: at most a tick old; no replanning under a tap
-      const next = (p.slots || []).find(s => s.printer === idx && !s.unplannable) || null;
+      let next = (p.slots || []).find(s => s.printer === idx && !s.unplannable) || null;
+      // 2.45.5: nothing planned here, but the person is at the controls. Take
+      // the next copy in line that this machine may run and start it now
+      // instead of answering "nothing planned" to a free printer.
+      if (!next) {
+        const lanes = await lanesNow();
+        const lane = lanes.find(l => l.idx === idx);
+        const pick = lane && !lane.maint && !lane.busyUntil && !lane.note ? startNowPick(lane, p.slots) : null;
+        if (pick) {
+          const swaps = swapsFor(pick.job.colors, lane.fp, shelfByHex());
+          const est = learnedFor(pick.job, idx).min;
+          const now = Date.now();
+          next = { ...pick.slot, printer: idx, printerName: lane.name, est_start: now, est_end: now + est * 60000,
+                   swaps, start_now: true, planned_on: pick.slot.printerName, planned_at: pick.slot.est_start,
+                   why: { reason: "started by hand", alternatives: [] }, contention: undefined, delay: undefined };
+        }
+      }
       // v2.23.2: say up front when the planned file is no longer in the Hub
       // library. The owner pressed "next", confirmed the filament dialog, landed on
       // an empty dashboard: the job's file had been deleted from the library
