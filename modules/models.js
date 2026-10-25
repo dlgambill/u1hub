@@ -863,7 +863,8 @@ function register(ctx) {
       debug: String(q.debug || "") === "1" ? { decorations: DECO.builds } : undefined,
       items: list.slice(offset, offset + limit),
       orcaExe: c.orcaExe, orca_found: fs.existsSync(c.orcaExe),
-      u1_template: (await u1Template()).path, u1_template_set: c.u1Template
+      u1_template: (await u1Template()).path, u1_template_set: c.u1Template,
+      pretune: ptConf()                                       // 2.46: for the Folder panel
     });
   });
 
@@ -1059,12 +1060,19 @@ function register(ctx) {
       if (x) next.u1Template = x; else if (b.clear === true) delete next.u1Template;
       ctx.cfg.models = next;
     }
+    // 2.46: tune on Mark for print, and the daily limit on new answers.
+    if ("pretune" in b) { next.pretune = b.pretune !== false && b.pretune !== "false"; ctx.cfg.models = next; }
+    if ("pretuneDailyMax" in b) {
+      const n = Number(b.pretuneDailyMax);
+      if (b.pretuneDailyMax === "" || b.pretuneDailyMax == null || !Number.isFinite(n) || n < 0) return res.status(400).json({ error: "The daily limit should be a whole number, 0 or more" });
+      next.pretuneDailyMax = Math.floor(n); ctx.cfg.models = next;
+    }
     if (!ctx.saveConfig()) return res.status(500).json({ error: ctx.saveConfigError() });
     refresh();
     TPL.at = 0;
     const c = conf();
     const t = await u1Template(true);
-    res.json({ ok: true, folder: c.folder, folder_found: fs.existsSync(c.folder), orcaExe: c.orcaExe, orca_found: fs.existsSync(c.orcaExe), u1_template: t.path, u1_template_set: c.u1Template });
+    res.json({ ok: true, folder: c.folder, folder_found: fs.existsSync(c.folder), orcaExe: c.orcaExe, orca_found: fs.existsSync(c.orcaExe), u1_template: t.path, u1_template_set: c.u1Template, pretune: ptConf() });
   });
 
   // Thumbnail: the plate PNG the designer saved inside the file, cached on
@@ -1239,7 +1247,11 @@ function register(ctx) {
     const b = req.body || {};
     const p = safePath(b.file);
     if (!p || !(await fs.promises.stat(p).then(() => true, () => false))) return res.status(404).json({ error: "not in the models folder: " + String(b.file || "") });
-    const r = await openSession(String(b.file), p, String(b.type || "u1"));
+    // 2.46: a file tuned on Mark for print opens as its tuned copy;
+    // { original: true } (the card's "original" button) opens it as it is.
+    const t = b.original ? null : await pretunedFor(String(b.file));
+    const r = await openSession(String(b.file), t ? t.copy : p, String(b.type || "u1"),
+      t ? { tuned: { pretuned: true, copy: t.copy, applied: t.applied, skipped: t.skipped, summary: t.summary, converted: t.converted || null } } : undefined);
     res.status(r.status).json(r.body);
   });
 
@@ -1262,6 +1274,31 @@ function register(ctx) {
       const d = path.join(TUNED_DIR, n);
       try { const st = await fs.promises.stat(d); if (Date.now() - st.mtimeMs > TUNED_KEEP_MS) await fs.promises.rm(d, { recursive: true, force: true }); } catch {}
     }));
+  }
+  // 2.46: the convert-and-tune step on its own, shared by the button below and
+  // the Mark for print tuner. Reads the library file, makes it a U1 project
+  // in memory when it was set up for another printer, and writes the
+  // suggested settings in. Never writes anything; resolves
+  // { status: 200, buffer, applied, skipped, converted } or { status, error }.
+  async function buildTuned(from, settings) {
+    const c = conf();
+    let src;
+    try { src = await fs.promises.readFile(from); } catch (e) { return { status: 500, error: "could not read the file: " + e.message }; }
+    let converted = null;
+    if (!U1C.isU1(src)) {
+      const t = await u1Template(true);
+      if (!t.path) return { status: 409, error: "This project is set up for another printer, so it has to become a U1 project first, and that needs the U1 template (the same one Convert to U1 uses). Save one from Snapmaker Orca as u1_template.3mf in " + c.folder + ", or set its path under ⚙ Folder." };
+      let tpl; try { tpl = await fs.promises.readFile(t.path); } catch (e) { return { status: 500, error: "could not read the U1 template: " + e.message }; }
+      const prof = await U1C.profiles(c.orcaExe);
+      let r;
+      try { r = U1C.convert(src, tpl, { keys: prof.keys, names: prof.names }); }
+      catch (e) { return { status: 422, error: e.message }; }
+      if (!r.already) { src = r.buffer; converted = { from: r.printer.from, kept: r.kept }; }
+    }
+    let tuned;
+    try { tuned = TUNE.tuneBuffer(src, settings); }
+    catch (e) { return { status: 422, error: "could not load the settings into the project: " + e.message }; }
+    return { status: 200, buffer: tuned.buffer, applied: tuned.applied, skipped: tuned.skipped, converted };
   }
   app.post("/api/models/open-tuned", async (req, res) => {
     const b = req.body || {};
@@ -1288,22 +1325,9 @@ function register(ctx) {
     } else sr = await suggest(rel, Number.isInteger(idx) ? idx : null, false);
     if (sr.status !== 200) return res.status(sr.status).json(sr.body);
     const settings = ((sr.body && sr.body.suggestion) || {}).settings || [];
-    let src;
-    try { src = await fs.promises.readFile(from); } catch (e) { return res.status(500).json({ error: "could not read the file: " + e.message }); }
-    let converted = null;
-    if (!U1C.isU1(src)) {
-      const t = await u1Template(true);
-      if (!t.path) return res.status(409).json({ error: "This project is set up for another printer, so it has to become a U1 project first, and that needs the U1 template (the same one Convert to U1 uses). Save one from Snapmaker Orca as u1_template.3mf in " + c.folder + ", or set its path under ⚙ Folder." });
-      let tpl; try { tpl = await fs.promises.readFile(t.path); } catch (e) { return res.status(500).json({ error: "could not read the U1 template: " + e.message }); }
-      const prof = await U1C.profiles(c.orcaExe);
-      let r;
-      try { r = U1C.convert(src, tpl, { keys: prof.keys, names: prof.names }); }
-      catch (e) { return res.status(422).json({ error: e.message }); }
-      if (!r.already) { src = r.buffer; converted = { from: r.printer.from, kept: r.kept }; }
-    }
-    let tuned;
-    try { tuned = TUNE.tuneBuffer(src, settings); }
-    catch (e) { return res.status(422).json({ error: "could not load the settings into the project: " + e.message }); }
+    const tuned = await buildTuned(from, settings);
+    if (tuned.status !== 200) return res.status(tuned.status).json({ error: tuned.error });
+    const converted = tuned.converted;
     const dir = path.join(TUNED_DIR, Date.now().toString(36) + "-" + crypto.randomBytes(3).toString("hex"));
     const out = path.join(dir, path.basename(from));
     try { await fs.promises.mkdir(dir, { recursive: true }); await fs.promises.writeFile(out, tuned.buffer); }
@@ -1405,13 +1429,17 @@ function register(ctx) {
     if (sha) for (const k of Object.keys(REQUESTS)) {
       if (k !== rel && REQUESTS[k].sha256 === sha && REQUESTS[k].status === "requested") delete REQUESTS[k];
     }
+    const prevTune = (REQUESTS[rel] && REQUESTS[rel].tune) || null;   // 2.46: a re-mark keeps its tune
     REQUESTS[rel] = {
       rel, sha256: String(b.sha256 || "") || (REQUESTS[rel] && REQUESTS[rel].sha256) || "",
       designer: String(b.designer || id.designer || ""), title: String(b.title || id.title || ""),
-      requestedAt: Date.now(), status: "requested"
+      requestedAt: Date.now(), status: "requested", ...(prevTune ? { tune: prevTune } : {})
     };
     saveRequests();
     hublog("info", "models: print request for " + rel + " (from 3MF Explorer)");
+    // 2.46: tune it in the background - unless it is tuned or being tuned
+    // already (a tuned file that changed since is re-queued when opened).
+    if (!prevTune || !/^(tuned|queued|running)$/.test(prevTune.status)) queueTune(rel);
     const job = maybeAutoDispatch(rel);                     // a link may already exist
     res.json({ ok: true, rel, request: REQUESTS[rel], dispatched: !!job, job: job || null });
   });
@@ -1429,8 +1457,130 @@ function register(ctx) {
     if (!REQUESTS[rel]) return res.status(404).json({ error: "no request for " + rel });
     delete REQUESTS[rel];
     saveRequests();
+    dropTuned(rel);
     res.json({ ok: true, rel });
   });
+
+  // ---- 2.46: Mark for print tunes the 3MF in the background ------------------
+  // Danny (2026-10-25): "when I hit the mark for print button, the file could
+  // be analyzed and saved with the best settings before it ever gets to the
+  // slicer." Every Mark for print - from 3MF Explorer or Designer Deck - lands
+  // in the route above, so this is the one place that sees them all. The
+  // request answers at once; the suggester (the ✦ Settings button's, with no
+  // printer picked, since none is chosen at mark time) runs here one file at a
+  // time, and its answer is written into a COPY of the file under
+  // <hub>/pretuned/<one folder per file>/<same name>. The library file is
+  // never written. Open in Orca then opens the copy (the session still
+  // belongs to the library file, so its gcode links and auto-dispatches the
+  // same way), and Open original opens the file as it is. A file changed
+  // since its tune opens as it is and is tuned again - never a stale copy.
+  // Files with no Orca settings (PrusaSlicer projects) are skipped before
+  // anything is sent, and a daily limit counts only answers that cost money,
+  // so a burst of marks cannot run up a bill. models.pretune (default on) and
+  // models.pretuneDailyMax (default 25) in config.json, both set from the
+  // Folder panel.
+  const PRETUNE_DIR = path.join(ctx.baseDir, "pretuned");
+  const PRETUNE_FILE = path.join(ctx.baseDir, "models-pretune.json");
+  let PT_DAY = { day: "", n: 0 };
+  fs.promises.readFile(PRETUNE_FILE, "utf8").then(t => { const j = JSON.parse(t); if (j && j.day) PT_DAY = j.day; }, () => {});
+  const savePtDay = () => fs.promises.writeFile(PRETUNE_FILE, JSON.stringify({ day: PT_DAY }, null, 2)).catch(() => {});
+  function ptConf() {
+    const m = (ctx.cfg && typeof ctx.cfg.models === "object" && ctx.cfg.models) || {};
+    const n = Number(m.pretuneDailyMax);
+    return { on: m.pretune !== false, max: m.pretuneDailyMax != null && m.pretuneDailyMax !== "" && Number.isFinite(n) && n >= 0 ? Math.floor(n) : 25 };
+  }
+  const today = () => new Date().toLocaleDateString("en-CA");
+  const ptDirFor = rel => path.join(PRETUNE_DIR, crypto.createHash("sha1").update(String(rel)).digest("hex").slice(0, 16));
+  function setTune(rel, t) {
+    const q = REQUESTS[rel];
+    if (!q) return;
+    q.tune = { ...(q.tune || {}), ...t, at: Date.now() };
+    saveRequests();
+  }
+  function dropTuned(rel) { fs.promises.rm(ptDirFor(rel), { recursive: true, force: true }).catch(() => {}); }
+  const PTQ = [];
+  let PT_RUNNING = false;
+  function queueTune(rel) {
+    if (!ptConf().on || !/\.3mf$/i.test(rel) || !REQUESTS[rel]) return false;
+    if (!PTQ.includes(rel)) PTQ.push(rel);
+    setTune(rel, { status: "queued", note: null });
+    setImmediate(() => { runTunes().catch(e => hublog("warn", "models: tuning stopped - " + (e && e.message || e))); });
+    return true;
+  }
+  async function runTunes() {
+    if (PT_RUNNING) return;
+    PT_RUNNING = true;
+    try { while (PTQ.length) await tuneOne(PTQ.shift()); }
+    finally { PT_RUNNING = false; }
+  }
+  async function tuneOne(rel, tries = 0) {
+    if (!REQUESTS[rel]) return;
+    const c = ptConf();
+    if (!c.on) { setTune(rel, { status: "off", note: "tuning on Mark for print is turned off" }); return; }
+    const suggest = ctx.use("advisor.suggestModel");
+    const adv = ctx.use("advisor.state");
+    const st0 = adv ? adv() : null;
+    if (!suggest || (st0 && st0.key_set === false)) { setTune(rel, { status: "skipped", note: "not tuned - AI pre-flight is off or has no API key (Settings → AI pre-flight)" }); return; }
+    const from = safePath(rel);
+    const st = from ? await fs.promises.stat(from).catch(() => null) : null;
+    if (!st) { setTune(rel, { status: "failed", note: "the file is no longer in the models folder" }); return; }
+    // An Orca or Bambu project carries Metadata/project_settings.config; a
+    // PrusaSlicer project does not, and there is nothing to write into it.
+    let orca = false;
+    try { orca = await withZip(from, z => z.entries.some(e => e.name === "Metadata/project_settings.config")); } catch {}
+    if (!orca) { setTune(rel, { status: "skipped", note: "not tuned - this file has no Orca settings to change (a PrusaSlicer project?)" }); return; }
+    if (PT_DAY.day !== today()) PT_DAY = { day: today(), n: 0 };
+    if (PT_DAY.n >= c.max) { setTune(rel, { status: "skipped", note: "not tuned - today's limit of " + c.max + " new suggestion" + (c.max === 1 ? "" : "s") + " is used up. Ask from the card's ✦ Settings, or raise the limit under ⚙ Folder." }); return; }
+    setTune(rel, { status: "running", note: null });
+    const sr = await suggest(rel, null, false);
+    if (sr.status === 409 && /already running/.test((sr.body && sr.body.error) || "") && tries < 8) {
+      setTune(rel, { status: "queued", note: "waiting for another suggestion to finish" });
+      await new Promise(r => { const t = setTimeout(r, 15000); if (t.unref) t.unref(); });
+      return tuneOne(rel, tries + 1);
+    }
+    if (sr.status !== 200) { setTune(rel, { status: "failed", note: "not tuned - " + ((sr.body && sr.body.error) || "the suggester answered " + sr.status) }); return; }
+    if (!sr.body.cached) { PT_DAY.n++; savePtDay(); }
+    const sug = sr.body.suggestion || {};
+    const b = await buildTuned(from, sug.settings || []);
+    if (b.status !== 200) { setTune(rel, { status: "failed", note: "not tuned - " + b.error }); return; }
+    const dir = ptDirFor(rel), out = path.join(dir, path.basename(from));
+    try {
+      await fs.promises.rm(dir, { recursive: true, force: true });
+      await fs.promises.mkdir(dir, { recursive: true });
+      await fs.promises.writeFile(out, b.buffer);
+    } catch (e) { setTune(rel, { status: "failed", note: "not tuned - could not write the tuned copy: " + e.message }); return; }
+    if (!REQUESTS[rel]) { dropTuned(rel); return; }              // cleared while it was being tuned
+    setTune(rel, {
+      status: "tuned", note: null, copy: out, srcMtime: st.mtimeMs, srcSize: st.size, key: sr.body.key || null,
+      summary: sug.summary || null, applied: b.applied, skipped: b.skipped, converted: b.converted,
+      cached: !!sr.body.cached, cost: sr.body.cached ? 0 : (sr.body.cost == null ? null : sr.body.cost)
+    });
+    hublog("info", "models: tuned " + rel + " on Mark for print: " + b.applied.length + " setting(s) applied, " + b.skipped.length + " not applied" +
+      (sr.body.cached ? " (cached answer)" : sr.body.cost != null ? " ($" + Number(sr.body.cost).toFixed(4) + ")" : ""));
+  }
+  // The tuned copy to open for rel, or null (no tune, or the library file
+  // changed since - then it is queued to be tuned again).
+  async function pretunedFor(rel) {
+    const q = REQUESTS[rel], t = q && q.tune;
+    if (!t || t.status !== "tuned" || !t.copy) return null;
+    const from = safePath(rel);
+    const [s, cp] = await Promise.all([from ? fs.promises.stat(from).catch(() => null) : null, fs.promises.stat(t.copy).catch(() => null)]);
+    if (!s || !cp) return null;
+    if (s.mtimeMs !== t.srcMtime || s.size !== t.srcSize) { queueTune(rel); return null; }
+    return t;
+  }
+  // After a restart: finish what was interrupted, and remove copies whose
+  // request is gone.
+  {
+    const t = setTimeout(async () => {
+      for (const [rel, q] of Object.entries(REQUESTS)) if (q.tune && /^(queued|running)$/.test(q.tune.status)) queueTune(rel);
+      let names; try { names = await fs.promises.readdir(PRETUNE_DIR); } catch { return; }
+      const keep = new Set(Object.keys(REQUESTS).map(r => path.basename(ptDirFor(r))));
+      for (const n of names) if (!keep.has(n)) await fs.promises.rm(path.join(PRETUNE_DIR, n), { recursive: true, force: true }).catch(() => {});
+    }, 20000);
+    if (t.unref) t.unref();
+  }
+  // ---- end 2.46
 
   // ---- v2.40: the manual gcode <-> 3MF link tool ------------------------------
   // GET /api/models/gcodes?type= - every gcode in that type's folder, and

@@ -297,7 +297,7 @@
   // (It did, and a Save pressed on the blanks wiped the folder - 2026-09-22.)
   function renderCfg() {
     const box = EL.querySelector("#mdl-cfg");
-    if (box.querySelector("#mdl-folder") && [box.querySelector("#mdl-folder"), box.querySelector("#mdl-orca"), box.querySelector("#mdl-u1t")].includes(document.activeElement)) return;
+    if (box.querySelector("#mdl-folder") && [box.querySelector("#mdl-folder"), box.querySelector("#mdl-orca"), box.querySelector("#mdl-u1t"), box.querySelector("#mdl-pretunemax")].includes(document.activeElement)) return;
     const folder = DATA && DATA.folder ? DATA.folder : "";
     const orca = DATA && DATA.orcaExe ? DATA.orcaExe : (SETTINGS && SETTINGS.orcaExe ? SETTINGS.orcaExe : "");
     box.innerHTML =
@@ -307,6 +307,10 @@
       '<input class="field" id="mdl-orca" placeholder="C:\\Program Files\\Snapmaker_Orca\\snapmaker-orca.exe" value="' + esc(orca) + '">' +
       '<label>U1 template <span class="hint">for Convert to U1: a project saved in Snapmaker Orca with the U1 and your usual filaments; blank uses u1_template.3mf at the top of the folder' + (DATA && DATA.u1_template ? " (found: " + esc(DATA.u1_template) + ")" : " (none found yet)") + '</span></label>' +
       '<input class="field" id="mdl-u1t" placeholder="' + esc(folder ? folder.replace(/[\\/]+$/, "") + "\\u1_template.3mf" : "u1_template.3mf") + '" value="' + esc(DATA && DATA.u1_template_set || "") + '">' +
+      // 2.46: tune on Mark for print.
+      '<label class="row" style="gap:8px; align-items:center; margin-top:8px"><input type="checkbox" id="mdl-pretune"' + (!DATA || !DATA.pretune || DATA.pretune.on ? " checked" : "") + '> Tune files when they are marked for print <span class="hint">the AI suggests settings for each marked 3MF and saves them into a copy; Open in Orca opens that copy, your file is not changed. Needs the AI pre-flight key.</span></label>' +
+      '<label>New suggestions per day, at most <span class="hint">a few cents each; a file asked about before costs nothing</span></label>' +
+      '<input class="field" id="mdl-pretunemax" type="number" min="0" step="1" style="max-width:120px" value="' + esc(DATA && DATA.pretune ? DATA.pretune.max : 25) + '">' +
       '<div class="row" style="margin-top:8px; gap:8px"><button class="btn primary" id="mdl-save" style="font-size:12px; padding:5px 12px">Save</button><span class="pstatus" id="mdl-cfgmsg"></span></div>' +
       // H22 (2.44): designer aliases - folder name = display name, one per line.
       '<label>Designer names <span class="hint">the designer list comes from the top folders; rename or merge them here without touching a file: <code>folder name = Display Name</code>, one per line. Folders that cannot be a designer (numbers, temperatures, one or two letters) are grouped as (unsorted).</span></label>' +
@@ -338,7 +342,8 @@
     box.querySelector("#mdl-save").addEventListener("click", async () => {
       const fv = box.querySelector("#mdl-folder").value.trim();
       if (!fv) { const m = box.querySelector("#mdl-cfgmsg"); m.className = "pstatus err"; m.textContent = "Enter the folder path (it was left blank)."; return; }
-      const r = await jpost("/api/models/settings", { folder: fv, orcaExe: box.querySelector("#mdl-orca").value, u1Template: box.querySelector("#mdl-u1t").value });
+      const r = await jpost("/api/models/settings", { folder: fv, orcaExe: box.querySelector("#mdl-orca").value, u1Template: box.querySelector("#mdl-u1t").value,
+        pretune: box.querySelector("#mdl-pretune").checked, pretuneDailyMax: box.querySelector("#mdl-pretunemax").value });
       const m = box.querySelector("#mdl-cfgmsg");
       if (!r.ok) { m.className = "pstatus err"; m.textContent = r.d.error || "Could not save"; return; }
       SETTINGS = r.d;
@@ -480,7 +485,7 @@
     const items = (prependItems || []).concat(d.items);
     // Everything a card draws from its item, plus the view's own switches.
     const gridSig = (d.missing ? "missing" : "") + "|" + SORT + "|" + Q + "|" + REQ_ONLY + "|" + CREATOR + "|" + (d.orca_found === false) + "|" +
-      items.map(it => it.rel + ":" + (it.mtime || 0) + ":" + (it.prints || 0) + ":" + (it.conventional ? 1 : 0) + ":" + (it.requested ? it.requested.status + "/" + (it.requested.pieces || 0) : "")).join(";");
+      items.map(it => it.rel + ":" + (it.mtime || 0) + ":" + (it.prints || 0) + ":" + (it.conventional ? 1 : 0) + ":" + (it.requested ? it.requested.status + "/" + (it.requested.pieces || 0) + "/" + (it.requested.tune ? it.requested.tune.status + (it.requested.tune.at || 0) : "") : "")).join(";");   // 2.46: a finished tune redraws its card
     const sameGrid = gridSig === GRID_SIG && items.length > 0 && !d.missing;
     GRID_SIG = gridSig;
     const sidebtn = EL.querySelector("#mdl-sidebtn"); if (sidebtn) sidebtn.classList.toggle("primary", document.body.classList.contains("mdl-side-open"));
@@ -555,7 +560,24 @@
       ? "Auto-dispatched to " + esc(it.requested.gcode || "a gcode") + (it.requested.job_id ? " (job " + esc(it.requested.job_id) + ")" : "")
       : "Marked for print in 3MF Explorer - no matching gcode yet";
     return '<div class="mdl-req' + (done ? " done" : "") + '" title="' + title + '">' + label +
-      '<button class="btn ghost" data-clearreq="' + esc(it.rel) + '" title="Clear this request (does not touch any gcode link or queued job)">clear</button></div>';
+      '<button class="btn ghost" data-clearreq="' + esc(it.rel) + '" title="Clear this request (does not touch any gcode link or queued job)">clear</button></div>' +
+      tuneChip(it);
+  }
+  // 2.46: what Mark for print's tune did. Tuned: Open in Orca opens the tuned
+  // copy, and "original" (desktop only, like Open) opens the file as it is.
+  function tuneChip(it) {
+    const t = it.requested && it.requested.tune;
+    if (!t) return "";
+    if (t.status === "tuned") {
+      const n = (t.applied || []).length;
+      const lines = (t.applied || []).map(a => (a.label || a.key) + ": " + (a.from != null && a.from !== "" ? a.from + " → " : "") + a.to);
+      const title = "Tuned when it was marked for print" + (t.summary ? " - " + t.summary : "") + (lines.length ? "\n\n" + lines.join("\n") : "") +
+        "\n\nOpen in Orca opens a copy with these settings (marked as changes you can undo); your file is not changed.";
+      return '<div class="mdl-req mdl-tune done" title="' + esc(title) + '">✦ tuned · ' + n + " setting" + (n === 1 ? "" : "s") +
+        '<button class="btn ghost mdl-origbtn" data-openorig="' + esc(it.rel) + '" title="Open the file as it is, without the suggested settings">original</button></div>';
+    }
+    if (t.status === "queued" || t.status === "running") return '<div class="mdl-req mdl-tune" title="' + esc(t.note || "Getting suggested settings for this file") + '">✦ tuning…</div>';
+    return '<div class="mdl-req mdl-tune" title="' + esc(t.note || "") + '">✦ not tuned</div>';
   }
 
   // ---- v2.30: rename / attributes / delete, all inline on the card ---------
@@ -929,6 +951,14 @@
     if (t && t.dataset.doLink != null) { doLink(t.dataset.doLink); return; }
     if (t && t.dataset.unlink != null) { doUnlink(t.dataset.unlink, t.dataset.for); return; }
     if (t && t.dataset.clearreq != null) { clearRequest(t.dataset.clearreq); return; }
+    if (t && t.dataset.openorig != null) {
+      t.disabled = true;
+      const r = await jpost("/api/models/open", { file: t.dataset.openorig, type: typeSlug(), original: true });
+      t.disabled = false;
+      if (!r.ok) { alert(r.d.error || "Could not open the file"); return; }
+      pollSessions(true);
+      return;
+    }
     if (t && t.dataset.cancel != null) { closeEdit(t.dataset.cancel); return; }
     const b = e.target.closest("[data-open]");
     if (!b) return;

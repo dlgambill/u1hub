@@ -4633,6 +4633,92 @@ async function stopHub() {
       const mjs2 = fs.readFileSync(path.join(REPO, "modules", "models.js"), "utf8");
       const tunedRoute = mjs2.slice(mjs2.indexOf('app.post("/api/models/open-tuned"'), mjs2.indexOf('app.get("/api/models/sessions"')).replace(/\/\/.*$/gm, "");
       ok(tunedRoute.length > 500 && !/Sync\(/.test(tunedRoute.replace(/existsSync\(c\.orcaExe\)/g, "")), "the tuned-open route does no synchronous file IO (the library is a share)");
+
+      // 2.46: Mark for print tunes the 3MF in the background. The request
+      // comes back at once with the tune queued; the suggestion lands in a
+      // copy outside the library, and Open in Orca opens that copy.
+      console.log("\n== 2.46: Mark for print tunes the file before it reaches the slicer ==");
+      const tuneOf = async rel => ((await jget("/api/models/print-requests")).body.requests.find(q => q.rel === rel) || {}).tune || null;
+      const settle = async rel => { for (let i = 0; i < 60; i++) { const t = await tuneOf(rel); if (t && !/^(queued|running)$/.test(t.status)) return t; await new Promise(r2 => setTimeout(r2, 250)); } return tuneOf(rel); };
+      const relB = "Harness/Tune Me/tune me.3mf";
+      const absB = path.join(mroot, relB);
+      fs.mkdirSync(path.dirname(absB), { recursive: true });
+      fs.writeFileSync(absB, buildZip(files.concat([{ name: "Metadata/tuneme.txt", data: Buffer.from("b") }])));
+      const bBytes = fs.readFileSync(absB);
+      const cB = calls.length;
+      r = await jpost("/api/models/print-request", { path: absB });
+      ok(r.status === 200 && r.body.request && r.body.request.tune && /^(queued|running)$/.test(r.body.request.tune.status),
+        "Mark for print answers at once, with the tune queued", r.body && r.body.request);
+      let tB = await settle(relB);
+      ok(tB && tB.status === "tuned" && tB.applied.some(a => a.key === "enable_support" && a.to === "1") && calls.length === cB + 1,
+        "…then the file is analyzed once and the suggestion is saved into it", { tune: tB, calls: calls.length - cB });
+      ok(tB && tB.copy && fs.existsSync(tB.copy) && path.basename(tB.copy) === "tune me.3mf" && !path.resolve(tB.copy).startsWith(path.resolve(mroot)) && fs.readFileSync(absB).equals(bBytes),
+        "…into a copy with the same name, outside the library; the library file is untouched", tB && tB.copy);
+      if (tB && tB.copy && fs.existsSync(tB.copy)) {
+        const { zipRead, zipEntryContent } = require(path.join(REPO, "modules", "slicing.js"));
+        const ps = JSON.parse(zipEntryContent(zipRead(fs.readFileSync(tB.copy)).find(x => x.name === "Metadata/project_settings.config")).toString());
+        ok(ps.printer_model === "Snapmaker U1" && ps.enable_support === "1" && /enable_support/.test((ps.different_settings_to_system || [])[0] || ""),
+          "the tuned copy is a U1 project with the suggestion marked as changes Orca can undo", { printer: ps.printer_model, support: ps.enable_support });
+        ok(/TARGET PRINTER: not chosen/.test(calls[calls.length - 1].body.messages[0].content[1].text), "no printer is picked at mark time, and the brief says so");
+      }
+      r = await jpost("/api/models/print-request", { path: absB });
+      ok(r.status === 200 && r.body.request.tune && r.body.request.tune.status === "tuned" && calls.length === cB + 1, "marking the same file again keeps the tune and asks nothing", { tune: r.body.request.tune && r.body.request.tune.status, calls: calls.length - cB });
+      r = await jpost("/api/models/open", { file: relB, type: "u1" });
+      ok(r.status === 200 && r.body.session && r.body.session.file === relB && r.body.session.tuned && r.body.session.tuned.pretuned === true && r.body.session.tuned.copy === tB.copy,
+        "Open in Orca opens the tuned copy, and the session still belongs to the library file", r.body && r.body.session);
+      r = await jpost("/api/models/open", { file: relB, type: "u1", original: true });
+      ok(r.status === 200 && r.body.session && !r.body.session.tuned, "Open original opens the file as it is", r.body && r.body.session);
+      // The file changes after it was tuned: it opens as it is and is tuned again.
+      fs.writeFileSync(absB, buildZip(files.concat([{ name: "Metadata/tuneme.txt", data: Buffer.from("changed") }])));
+      const cB2 = calls.length, newMtime = fs.statSync(absB).mtimeMs, oldAt = tB.at;
+      r = await jpost("/api/models/open", { file: relB, type: "u1" });
+      ok(r.status === 200 && r.body.session && !r.body.session.tuned, "a file changed since it was tuned opens as it is - never a stale copy", r.body && r.body.session);
+      tB = await settle(relB);
+      // The change here doesn't touch what the analysis reads (geometry,
+      // settings, render), so the saved answer is reused for free - but the
+      // copy is rebuilt from the new file.
+      ok(tB && tB.status === "tuned" && tB.srcMtime === newMtime && tB.at > oldAt && tB.cached === true && calls.length === cB2,
+        "…and is tuned again from the new file (the same analysis inputs reuse the saved answer, at no cost)", { tune: tB && tB.status, srcMtime: tB && tB.srcMtime, calls: calls.length - cB2 });
+      // A PrusaSlicer project has no Orca settings to tune: skipped before anything is sent.
+      const relP = "Harness/Prusa Thing/prusa thing.3mf";
+      fs.mkdirSync(path.dirname(path.join(mroot, relP)), { recursive: true });
+      fs.writeFileSync(path.join(mroot, relP), buildZip([files[0], files[1], { name: "Metadata/Slic3r_PE.config", data: Buffer.from("; layer_height = 0.2\n") }]));
+      const cP = calls.length;
+      r = await jpost("/api/models/print-request", { path: path.join(mroot, relP) });
+      const tP = await settle(relP);
+      ok(tP && tP.status === "skipped" && /Prusa/.test(tP.note) && calls.length === cP, "a PrusaSlicer project is skipped with the reason, and nothing is sent", tP);
+      // The daily limit counts only answers that cost money.
+      await jpost("/api/models/settings", { pretuneDailyMax: 0 });
+      const relC = "Harness/Over Limit/over limit.3mf";
+      fs.mkdirSync(path.dirname(path.join(mroot, relC)), { recursive: true });
+      fs.writeFileSync(path.join(mroot, relC), buildZip(files.concat([{ name: "Metadata/c.txt", data: Buffer.from("c") }])));
+      const cC = calls.length;
+      r = await jpost("/api/models/print-request", { path: path.join(mroot, relC) });
+      const tC = await settle(relC);
+      ok(tC && tC.status === "skipped" && /limit/.test(tC.note) && calls.length === cC, "past the daily limit: skipped with the reason, nothing sent", tC);
+      // Off in settings: Mark for print works as before, no tune.
+      r = await jpost("/api/models/settings", { pretune: false, pretuneDailyMax: 25 });
+      ok(r.status === 200 && r.body.pretune && r.body.pretune.on === false && r.body.pretune.max === 25, "the switch and the limit save from the Folder panel's route", r.body && r.body.pretune);
+      const relD = "Harness/Off/off.3mf";
+      fs.mkdirSync(path.dirname(path.join(mroot, relD)), { recursive: true });
+      fs.writeFileSync(path.join(mroot, relD), buildZip(files.concat([{ name: "Metadata/d.txt", data: Buffer.from("d") }])));
+      const cD = calls.length;
+      r = await jpost("/api/models/print-request", { path: path.join(mroot, relD) });
+      await new Promise(r2 => setTimeout(r2, 500));
+      ok(r.status === 200 && !(r.body.request && r.body.request.tune) && !(await tuneOf(relD)) && calls.length === cD, "turned off: the request is filed, nothing is tuned or sent", r.body && r.body.request);
+      await jpost("/api/models/settings", { pretune: true });
+      // Clearing a request removes its tuned copy.
+      const copyB = tB && tB.copy;
+      r = await jpost("/api/models/print-request/clear", { file: relB });
+      await new Promise(r2 => setTimeout(r2, 300));
+      ok(r.status === 200 && copyB && !fs.existsSync(copyB), "clearing the request removes its tuned copy", copyB);
+      for (const rel of [relP, relC, relD]) await jpost("/api/models/print-request/clear", { file: rel });
+      const mjs3 = fs.readFileSync(path.join(REPO, "modules", "models.js"), "utf8");
+      const ptCode = mjs3.slice(mjs3.indexOf("// ---- 2.46: Mark for print tunes"), mjs3.indexOf("// ---- end 2.46")).replace(/\/\/.*$/gm, "");
+      ok(ptCode.length > 1500 && !/Sync\(/.test(ptCode), "the background tuner does no synchronous file IO", ptCode.length);
+      const mui2 = fs.readFileSync(path.join(REPO, "public", "modules", "models-ui.js"), "utf8");
+      ok(/data-openorig=/.test(mui2) && /original: true/.test(mui2) && /mdl-tune/.test(mui2) && /id="mdl-pretune"/.test(mui2) && /pretuneDailyMax/.test(mui2),
+        "the card shows the tune and an Open original button, and the Folder panel has the switch and the daily limit");
       await jpost("/api/models/settings", { orcaExe: path.join(tmp, "no-such-orca.exe"), u1Template: "", clear: true });
       await jpost("/api/models/settings", { folder: mroot });
     }
@@ -4650,9 +4736,10 @@ async function stopHub() {
     r = await jpost("/api/advisor/model", { file: relA, printer: U1ID, force: true });
     ok(r.status === 502 && /answered 500/.test(r.body.error), "an API error is relayed as a sentence", r.body);
     reply.status = 200;
+    const cBrief = calls.length;   // 2.46: Mark for print's tuner also calls the mock above, so count from here
     const bt = await fetch(HUB + "/api/advisor/model/brief?file=" + encodeURIComponent(relA) + "&printer=" + U1ID);
     const btxt = await bt.text();
-    ok(bt.status === 200 && /\[image: Metadata\/plate_1\.png/.test(btxt) && /GEOMETRY/.test(btxt) && /LOADED IN ITS HEADS/.test(btxt) && calls.length === 6, "the brief preview shows what would be sent, without sending it", bt.status);
+    ok(bt.status === 200 && /\[image: Metadata\/plate_1\.png/.test(btxt) && /GEOMETRY/.test(btxt) && /LOADED IN ITS HEADS/.test(btxt) && calls.length === cBrief, "the brief preview shows what would be sent, without sending it", bt.status);
     await jpost("/api/slots/clear", { spool_id: "spoolman_1" });
     await jpost("/api/advisor/settings", { key: "" });
     await jpost("/api/models/settings", { folder: "", clear: true });
