@@ -4467,6 +4467,23 @@ async function stopHub() {
       ok(f.size_mm.join("x") === "40x10x30" && f.height_mm === 30 && f.volume_cm3 === 2, "facts3mf: footprint spans both cubes, height reaches the floating one, volume is two cubes", f.size_mm);
       ok(f.overhang.bed_contact_cm2 === 1 && f.overhang.floating_instances === 1 && f.overhang.flat_unsupported_pct === 8.3, "facts3mf: one cube touches the bed, the other floats and its whole underside is unsupported (100 of 1200 mm2)", f.overhang);
       ok(f.paint.colors === 2 && f.paint.painted_tris === 12 && f.paint.painted_pct === 50, "facts3mf: painted faces are counted per placement, two paint colors", f.paint);
+      // 2.47: support paint (enforcers/blockers the designer painted) is counted
+      // apart from color paint: Orca/Bambu write paint_supports, Prusa
+      // slic3rpe:custom_supports. Two faces painted, two placements on plate 1.
+      ok(f.support_paint && f.support_paint.painted_tris === 0, "facts3mf: no support paint in the plain file", f.support_paint);
+      {
+        const objS = objXml.replace(/<triangle /, '<triangle paint_supports="4" ').replace(/(<triangle (?!paint_supports)[^>]*?)\/>/, '$1 slic3rpe:custom_supports="8"/>');
+        const zs = { entries: zipRead(buildZip(files.map(x => x.name === "3D/Objects/o.model" ? { name: x.name, data: Buffer.from(objS) } : x))), content: async e => zipEntryContent(e) };
+        const fs2 = await mesh.facts3mf(zs, { only: new Set(pl.plates[0].objects), names: pl.names });
+        ok(fs2.support_paint.painted_tris === 4 && fs2.paint.painted_tris === 12, "facts3mf: support-painted faces are counted per placement (Orca and Prusa spellings), apart from color paint", { sup: fs2.support_paint, paint: fs2.paint });
+        const bl = amod.modelBriefLines("s.3mf", fs2, null, [], { n: 1, of: 1 }).join("\n");
+        ok(/SUPPORT PAINT: 4 faces/.test(bl), "brief: the designer's painted supports are named", bl.split("\n").find(l => /SUPPORT/.test(l)));
+      }
+      ok(/HOUSE RULES/.test(amod.MODEL_SYSTEM) && /12% gyroid/.test(amod.MODEL_SYSTEM) && /0\.16/.test(amod.MODEL_SYSTEM) && /fastest/.test(amod.MODEL_SYSTEM) && /"structural"/.test(amod.MODEL_SYSTEM),
+        "the suggester is told the house rules and the goal (best look at the fastest speed), and asked to flag structural parts");
+      ok(amod.parseSuggestion('{"summary":"s","settings":[{"key":"wall_loops","value":"4"}],"structural":{"is":true,"why":"carries a load"}}').structural.is === true &&
+         amod.parseSuggestion('{"summary":"s","settings":[{"key":"wall_loops","value":"4"}]}').structural.is === false,
+        "parseSuggestion keeps the structural flag, defaulting to not structural");
       ok(f.parts.length === 1 && f.parts[0].copies === 2 && f.parts[0].name === "cube A", "facts3mf: parts group by mesh with a copy count and the first placement's name", f.parts);
       ok(f.metadata.Title === "Test Cubes" && f.metadata.ProfileTitle === "0.2mm, 2 walls" && !("Description" in f.metadata), "facts3mf: title and profile ride along, the designer's HTML listing does not", f.metadata);
       const all = await mesh.facts3mf(z, {});
@@ -4534,6 +4551,44 @@ async function stopHub() {
       const same = eIn.filter(x => x.name !== "Metadata/project_settings.config").every(x => { const y = eOut.find(z => z.name === x.name); return y && zipEntryContent(y).equals(zipEntryContent(x)); });
       ok(same && eOut.length === eIn.length && JSON.parse(zipEntryContent(eOut.find(x => x.name === "Metadata/project_settings.config")).toString()).layer_height === "0.16",
         "tuneBuffer: only the settings file changes; meshes, paint and renders come through byte for byte");
+
+      // 2.47: house rules - Danny's shop defaults, enforced in code so the AI
+      // decides only inside them (2026-10-25: the Meerkat and the IXPatch
+      // Charizard both came back with supports turned on, on models their
+      // designers print without any).
+      console.log("\n== 2.47: house rules ==");
+      r = T.applyTuning({ layer_height: "0.2", enable_support: "0" }, [{ key: "layer_height", value: "0.2 mm" }, { key: "enable_support", value: "1" }]);
+      ok(r.applied.length === 1 && r.applied[0].key === "enable_support" && r.skipped.some(x => x.key === "layer_height" && /already/.test(x.reason)),
+        "a suggestion that matches the file is not a change (no more \"30 -> 30\")", r);
+      ok(T.isFlexi({ texts: ["Charizard - Flexi Articulated Pokémon"], designer: "IXPatch", designers: [] }).flexi &&
+         T.isFlexi({ texts: ["Meerkat"], designer: "3DGOB", designers: ["3DGOB"] }).flexi &&
+         T.isFlexi({ texts: ["Dragon - Print-in-Place"], designer: "x", designers: [] }).flexi &&
+         !T.isFlexi({ texts: ["Charizard Dice Tower", "Flexible filament guide"], designer: "Vulture Labs", designers: ["3DGOB"] }).flexi,
+        "flexi: Flexi, Articulated or Print-in-Place in the title or a part name, or a designer on the list - and \"Flexible\" is not \"Flexi\"");
+      const hps = { layer_height: "0.2", enable_support: "0", sparse_infill_density: "15%", sparse_infill_pattern: "grid", wall_loops: "2" };
+      const ai = [{ key: "enable_support", value: "1" }, { key: "support_type", value: "tree(auto)" }, { key: "layer_height", value: "0.12 mm", set: "0.12" }, { key: "sparse_infill_density", value: "20%" }, { key: "brim_width", value: "8" }];
+      let h = T.houseRules(hps, ai, { flexi: { flexi: true, why: "the title says Flexi" }, supportPaint: 0, structural: { is: false } });
+      let hk = h.settings.map(x => x.key);
+      ok(!hk.includes("enable_support") && !hk.includes("support_type") && h.notes.some(n => n.key === "enable_support" && /flexi/i.test(n.reason)),
+        "a flexi keeps the designer's support settings - the AI's support rows are dropped, with the reason", h.notes);
+      ok(!hk.includes("layer_height") && h.notes.some(n => n.key === "layer_height" && /0\.16/.test(n.reason)) && hk.includes("brim_width"),
+        "layers never below 0.16 mm; a brim suggestion still goes through", h.notes);
+      ok(h.settings.find(x => x.key === "sparse_infill_density").set === "12%" && h.settings.find(x => x.key === "sparse_infill_pattern").set === "gyroid" && h.notes.some(n => n.key === "sparse_infill_density" && /12% gyroid/.test(n.reason)),
+        "infill is the house 12% gyroid; the AI's 20% is refused when it did not call the part structural", h.settings);
+      h = T.houseRules(hps, ai, { flexi: { flexi: false }, supportPaint: 0, structural: { is: true, why: "a wall hook that carries weight" } });
+      hk = h.settings.map(x => x.key);
+      ok(hk.includes("enable_support") && h.settings.find(x => x.key === "sparse_infill_density").set === "20%" && h.settings.find(x => x.key === "sparse_infill_pattern").set === "gyroid",
+        "structural, with a reason: the AI's 20% stands (as gyroid), and on a non-flexi it may turn supports on", h.settings);
+      h = T.houseRules(hps, [{ key: "sparse_infill_density", value: "8%" }], { flexi: { flexi: false }, supportPaint: 0, structural: { is: true, why: "x" } });
+      ok(h.settings.find(x => x.key === "sparse_infill_density").set === "12%", "structural never means less than the house 12%", h.settings);
+      h = T.houseRules({ ...hps, enable_support: "1" }, [{ key: "enable_support", value: "0" }], { flexi: { flexi: false }, supportPaint: 40, structural: { is: false } });
+      ok(!h.settings.some(x => x.key === "enable_support") && h.notes.some(n => /painted/.test(n.reason)), "supports the designer painted are never switched off", h.notes);
+      h = T.houseRules({ ...hps, enable_support: "1" }, [{ key: "enable_support", value: "0" }], { flexi: { flexi: false }, supportPaint: null, structural: { is: false } });
+      ok(!h.settings.some(x => x.key === "enable_support"), "…nor when the paint could not be counted (the safe side)", h.notes);
+      const th = T.tuneBuffer(zin, ai, { flexi: { flexi: true, why: "t" }, supportPaint: 0, structural: { is: false } });
+      const thps = JSON.parse(zipEntryContent(zipRead(th.buffer).find(x => x.name === "Metadata/project_settings.config")).toString());
+      ok(thps.enable_support === undefined && thps.sparse_infill_density === "12%" && thps.sparse_infill_pattern === "gyroid" && thps.brim_width === "8" && th.skipped.some(x => /flexi/i.test(x.reason)),
+        "tuneBuffer with the house rules: house infill written, the AI's flexi supports not, and the reasons ride in the skipped list", { ps: thps, skipped: th.skipped });
     }
 
     // The route, against a mock Messages endpoint that understands content blocks.
@@ -4696,6 +4751,19 @@ async function stopHub() {
       r = await jpost("/api/models/print-request", { path: path.join(mroot, relC) });
       const tC = await settle(relC);
       ok(tC && tC.status === "skipped" && /limit/.test(tC.note) && calls.length === cC, "past the daily limit: skipped with the reason, nothing sent", tC);
+      // 2.47: the same suggestion (supports on) for a file named Flexi keeps
+      // the designer's supports, and every tune writes the house infill.
+      await jpost("/api/models/settings", { pretuneDailyMax: 25 });
+      const relF = "Harness/Flexi Cubes/Flexi Cubes.3mf";
+      fs.mkdirSync(path.dirname(path.join(mroot, relF)), { recursive: true });
+      fs.writeFileSync(path.join(mroot, relF), buildZip(files.concat([{ name: "Metadata/f.txt", data: Buffer.from("f") }])));
+      r = await jpost("/api/models/print-request", { path: path.join(mroot, relF) });
+      const tF = await settle(relF);
+      ok(tF && tF.status === "tuned" && !tF.applied.some(a => a.key === "enable_support") && tF.skipped.some(x => x.key === "enable_support" && /flexi/i.test(x.reason)) &&
+         tF.applied.some(a => a.key === "sparse_infill_pattern" && a.to === "gyroid") && tF.applied.some(a => a.key === "sparse_infill_density" && a.to === "12%") && tF.house && tF.house.flexi === true,
+        "Mark for print on a flexi: the AI's supports are not applied (reason on the card), the house 12% gyroid is", tF);
+      ok(/HOUSE NOTE: .*flexi/i.test(calls[calls.length - 1].body.messages[0].content[1].text), "…and the brief told the AI it is a flexi, so it need not suggest supports");
+      await jpost("/api/models/print-request/clear", { file: relF });
       // Off in settings: Mark for print works as before, no tune.
       r = await jpost("/api/models/settings", { pretune: false, pretuneDailyMax: 25 });
       ok(r.status === 200 && r.body.pretune && r.body.pretune.on === false && r.body.pretune.max === 25, "the switch and the limit save from the Folder panel's route", r.body && r.body.pretune);

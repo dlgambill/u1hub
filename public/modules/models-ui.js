@@ -571,9 +571,13 @@
     if (t.status === "tuned") {
       const n = (t.applied || []).length;
       const lines = (t.applied || []).map(a => (a.label || a.key) + ": " + (a.from != null && a.from !== "" ? a.from + " → " : "") + a.to);
+      // 2.47: what the house rules kept from the AI, and what it says to watch.
+      const house = (t.skipped || []).filter(x => /^house rule/.test(x.reason || "")).map(x => x.key + " " + (x.value || "") + " - " + x.reason.replace(/^house rule: /, ""));
+      const watch = (t.watch || []).map(w => "• " + w);
       const title = "Tuned when it was marked for print" + (t.summary ? " - " + t.summary : "") + (lines.length ? "\n\n" + lines.join("\n") : "") +
+        (house.length ? "\n\nKept by house rules:\n" + house.join("\n") : "") + (watch.length ? "\n\nWatch:\n" + watch.join("\n") : "") +
         "\n\nOpen in Orca opens a copy with these settings (marked as changes you can undo); your file is not changed.";
-      return '<div class="mdl-req mdl-tune done" title="' + esc(title) + '">✦ tuned · ' + n + " setting" + (n === 1 ? "" : "s") +
+      return '<div class="mdl-req mdl-tune done" title="' + esc(title) + '">✦ tuned · ' + n + " setting" + (n === 1 ? "" : "s") + (t.house && t.house.flexi ? " · flexi" : "") +
         '<button class="btn ghost mdl-origbtn" data-openorig="' + esc(it.rel) + '" title="Open the file as it is, without the suggested settings">original</button></div>';
     }
     if (t.status === "queued" || t.status === "running") return '<div class="mdl-req mdl-tune" title="' + esc(t.note || "Getting suggested settings for this file") + '">✦ tuning…</div>';

@@ -150,6 +150,11 @@ function applyTuning(ps, settings) {
     const n = normalize(key, raw);
     if (n.error) { skipped.push({ key, value: shown, reason: n.error }); continue; }
     const rule = TUNE[key];
+    // 2.47: a value the file already has is not a change - it used to be
+    // written anyway and counted ("support angle 30 -> 30"), so the card
+    // overstated what was tuned and Orca marked untouched settings as edited.
+    const curVals = asArr(out[key]).map(v => String(v));
+    if (curVals.length && curVals.every(v => v === n.value)) { skipped.push({ key, value: shown, reason: "already " + n.value + " in the file" }); continue; }
     if (rule.filament) {
       if (!oneMaterial) { skipped.push({ key, value: shown, reason: "the slots hold different materials; set it per filament in Orca" }); continue; }
       const cur = asArr(out[key]);
@@ -171,17 +176,100 @@ function applyTuning(ps, settings) {
   return { ps: out, applied, skipped };
 }
 
+// ---- 2.47: house rules ------------------------------------------------------
+// Danny's shop defaults, enforced HERE so the AI decides only inside them.
+// The prompt states them too (advisor.js MODEL_SYSTEM), but a prompt is a
+// suggestion: on 2026-10-25 the 3DGOB Meerkat and the IXPatch Charizard both
+// came back with supports turned on, though their designers print them
+// without any (and painted none). The rules:
+//   - infill is 12% gyroid, unless the AI calls the part structural and says
+//     why; then its density stands (never under 12%), still as gyroid;
+//   - on a flexi / articulated / print-in-place model, support settings stay
+//     exactly as the designer set them - tree supports grow into the joint
+//     gaps and fuse them;
+//   - supports the designer painted are never switched off (and when the
+//     paint could not be counted, supports are not switched off either);
+//   - layers never below 0.16 mm (Danny prints 95% of his jobs at 0.16).
+const HOUSE = { infill: "12%", infillPct: 12, pattern: "gyroid", minLayer: 0.16 };
+const FLEXI_DESIGNERS = ["IXPatch", "3DGOB", "Flexi Factory", "Flexi Toys Lab", "FlexiSTL"];
+const FLEXI_RE = /\b(flexi|flexy|articulated|articulating|print[\s_-]*in[\s_-]*place)\b/i;
+const SUPPORT_KEYS = new Set(["enable_support", "support_type", "support_threshold_angle", "support_on_build_plate_only"]);
+const INFILL_KEYS = new Set(["sparse_infill_density", "sparse_infill_pattern"]);
+
+// texts: title, file name, part names; designer: the designer folder;
+// designers: the shop's list of designers whose models are flexis.
+function isFlexi({ texts = [], designer = "", designers = FLEXI_DESIGNERS } = {}) {
+  for (const t of texts) { const m = FLEXI_RE.exec(String(t || "")); if (m) return { flexi: true, why: "\"" + m[1] + "\" in \"" + String(t).slice(0, 60) + "\"" }; }
+  const d = String(designer || "").trim().toLowerCase();
+  if (d && (designers || []).some(x => String(x).trim().toLowerCase() === d)) return { flexi: true, why: designer + " is on the flexi designer list" };
+  return { flexi: false, why: null };
+}
+
+// The designer folder from a library rel ("U1/IXPatch/Charizard/x.3mf" -> "IXPatch").
+function designerFromRel(rel) {
+  const parts = String(rel || "").split(/[\\/]+/).filter(Boolean);
+  if (parts.length > 1 && /^(u1|prusa-format|bambu)$/i.test(parts[0])) parts.shift();
+  return parts.length > 1 ? parts[0] : "";
+}
+
+const numOf = row => { const m = /-?\d+(?:\.\d+)?/.exec(String(row.set != null && String(row.set).trim() !== "" ? row.set : row.value)); return m ? Number(m[0]) : NaN; };
+const valOf = row => String(row.set != null && String(row.set).trim() !== "" ? row.set : row.value);
+
+// ps: the project's settings; settings: the AI's rows; h: { flexi: { flexi, why },
+// supportPaint: faces (null = unknown), structural: { is, why } }.
+// Returns { settings (what may be written), notes [{ key, value, reason }] }.
+function houseRules(ps, settings, h) {
+  h = h || {};
+  const flexi = h.flexi && h.flexi.flexi;
+  const structural = !!(h.structural && h.structural.is);
+  const designerSupports = String((ps || {}).enable_support) === "1";
+  const out = [], notes = [];
+  const note = (row, reason) => notes.push({ key: row.key, value: row.value != null ? String(row.value) : "", reason: "house rule: " + reason });
+  let density = null, pattern = null;
+  for (const row of Array.isArray(settings) ? settings : []) {
+    const key = String((row && row.key) || "").trim();
+    if (SUPPORT_KEYS.has(key)) {
+      if (flexi) { note(row, "flexi / print-in-place - supports stay as the designer set them (" + (h.flexi.why || "flexi") + ")"); continue; }
+      if (key === "enable_support" && designerSupports && !ON.test(valOf(row).trim()) && (h.supportPaint == null || h.supportPaint > 0)) {
+        note(row, h.supportPaint ? "the designer painted supports on " + h.supportPaint + " faces; they stay on" : "supports stay on - the painted supports could not be counted");
+        continue;
+      }
+    }
+    if (key === "layer_height" && numOf(row) < HOUSE.minLayer) { note(row, "layers never below " + HOUSE.minLayer + " mm"); continue; }
+    if (INFILL_KEYS.has(key)) {
+      if (!structural) { note(row, "infill is 12% gyroid unless the part is structural"); continue; }
+      if (key === "sparse_infill_density") density = row; else pattern = row;
+      continue;
+    }
+    out.push(row);
+  }
+  // Infill last, so it reads as the house setting it is.
+  let d = HOUSE.infill;
+  if (structural && density) {
+    const n = numOf(density);
+    if (n >= HOUSE.infillPct) d = n + "%";
+    else note(density, "structural infill is never under the house 12%");
+  }
+  if (structural && pattern && valOf(pattern).toLowerCase() !== HOUSE.pattern) note(pattern, "infill pattern is gyroid");
+  out.push({ key: "sparse_infill_density", label: structural ? "Infill (structural)" : "Infill (house)", value: d, set: d, why: structural ? (h.structural.why || "structural part") : "house default" });
+  out.push({ key: "sparse_infill_pattern", label: "Infill pattern (house)", value: HOUSE.pattern, set: HOUSE.pattern, why: "house default" });
+  return { settings: out, notes };
+}
+
 // The whole 3MF: every entry kept byte for byte except the settings file.
-function tuneBuffer(buf, settings) {
+// house (2.47): when given, the house rules run first and their notes lead
+// the skipped list.
+function tuneBuffer(buf, settings, house) {
   const entries = zipRead(buf);
   const e = entries.find(x => x.name === PS);
   if (!e) throw new Error("not a project 3MF (no project_settings.config)");
   let ps;
   try { ps = JSON.parse(zipEntryContent(e).toString("utf8")); }
   catch { throw new Error("project_settings.config is not valid JSON"); }
-  const r = applyTuning(ps, settings);
+  const hr = house ? houseRules(ps, settings, house) : { settings, notes: [] };
+  const r = applyTuning(ps, hr.settings);
   const out = entries.map(x => x.name === PS ? makeEntry(PS, Buffer.from(JSON.stringify(r.ps, null, 4), "utf8")) : x);
-  return { buffer: zipWrite(out), applied: r.applied, skipped: r.skipped, printer: String(ps.printer_model || "") };
+  return { buffer: zipWrite(out), applied: r.applied, skipped: hr.notes.concat(r.skipped), printer: String(ps.printer_model || "") };
 }
 
-module.exports = { TUNE, normalize, applyTuning, tuneBuffer };
+module.exports = { TUNE, normalize, applyTuning, tuneBuffer, HOUSE, FLEXI_DESIGNERS, isFlexi, designerFromRel, houseRules };

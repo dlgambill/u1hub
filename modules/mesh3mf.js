@@ -99,11 +99,14 @@ async function parseModel(text) {
         // painted face carries an attribute an unpainted one does not.
         const pc = attr(tag, "paint_color") || attr(tag, "slic3rpe:mmu_segmentation");
         if (pc) { cur.painted++; cur.paint.set(pc, (cur.paint.get(pc) || 0) + 1); }
+        // 2.47: support enforcers/blockers the designer painted - Orca and
+        // Bambu write paint_supports, Prusa slic3rpe:custom_supports.
+        if (attr(tag, "paint_supports") || attr(tag, "slic3rpe:custom_supports")) cur.supPainted++;
       }
       continue;
     }
     if (c1 === 111 /* o */ && tag.startsWith("<object ")) {
-      cur = { id: attr(tag, "id"), vx: [], ti: [], paint: new Map(), painted: 0, components: [] };
+      cur = { id: attr(tag, "id"), vx: [], ti: [], paint: new Map(), painted: 0, supPainted: 0, components: [] };
       out.objects.set(cur.id, cur);
       continue;
     }
@@ -118,7 +121,7 @@ async function parseModel(text) {
     }
   }
   for (const o of out.objects.values()) {
-    o.mesh = o.ti.length ? { verts: Float64Array.from(o.vx), tris: Uint32Array.from(o.ti), paint: o.paint, painted: o.painted } : null;
+    o.mesh = o.ti.length ? { verts: Float64Array.from(o.vx), tris: Uint32Array.from(o.ti), paint: o.paint, painted: o.painted, supPainted: o.supPainted } : null;
     delete o.vx; delete o.ti;
   }
   return out;
@@ -231,7 +234,7 @@ async function facts3mf(z, opts) {
   const inst = [];
   for (const lf of leaves) {
     const s = await measure(lf.mesh, lf.M);
-    inst.push({ ...s, key: lf.key, rootId: lf.rootId, painted: lf.mesh.painted, paint: lf.mesh.paint });
+    inst.push({ ...s, key: lf.key, rootId: lf.rootId, painted: lf.mesh.painted, paint: lf.mesh.paint, supPainted: lf.mesh.supPainted || 0 });
   }
   if (!inst.length) return { ok: false, reason: truncated ? "mesh data past the size budget" : "no printable mesh found", truncated, bytes };
 
@@ -261,6 +264,7 @@ async function facts3mf(z, opts) {
   // Paint: distinct colors across every instance (a color id is per project).
   const paint = new Map(); let paintedArea = 0, paintedTris = 0;
   for (const s of inst) { if (s.painted) { paintedTris += s.painted; for (const [k, v] of s.paint) paint.set(k, (paint.get(k) || 0) + v); } }
+  const supTris = inst.reduce((a, s) => a + (s.supPainted || 0), 0);   // 2.47
   // Distinct parts: group instances by mesh key.
   const groups = new Map();
   for (const s of inst) { const gg = groups.get(s.key) || { key: s.key, copies: 0, volume: 0, rootIds: new Set(), size: [0, 0, 0] }; gg.copies++; gg.volume += s.volume; gg.rootIds.add(s.rootId); gg.size = [r1(s.maxx - s.minx), r1(s.maxy - s.miny), r1(s.maxz - s.minz)]; groups.set(s.key, gg); }
@@ -284,6 +288,7 @@ async function facts3mf(z, opts) {
     },
     tallest,
     paint: { colors: paint.size, painted_tris: paintedTris, painted_pct: pct(paintedTris, g.tris) },
+    support_paint: { painted_tris: supTris },   // 2.47: faces with painted support enforcers/blockers
     parts,
     // The few root metadata fields worth carrying (Description is the
     // designer's whole HTML listing; it stays out).

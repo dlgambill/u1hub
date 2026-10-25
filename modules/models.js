@@ -1280,7 +1280,16 @@ function register(ctx) {
   // in memory when it was set up for another printer, and writes the
   // suggested settings in. Never writes anything; resolves
   // { status: 200, buffer, applied, skipped, converted } or { status, error }.
-  async function buildTuned(from, settings) {
+  // 2.47: what the house rules need to know about this file. facts is the
+  // suggester's measurement (null when an answer was loaded by key without
+  // it - then painted supports count as unknown, the safe side).
+  function houseFor(rel, facts, sug) {
+    const fx = ctx.use("advisor.flexiFor");
+    const flexi = fx ? fx(rel, facts) : TUNE.isFlexi({ texts: [rel], designer: TUNE.designerFromRel(rel) });
+    const supportPaint = facts && facts.ok ? ((facts.support_paint || {}).painted_tris || 0) : null;
+    return { flexi, supportPaint, structural: (sug && sug.structural) || { is: false, why: null } };
+  }
+  async function buildTuned(from, settings, house) {
     const c = conf();
     let src;
     try { src = await fs.promises.readFile(from); } catch (e) { return { status: 500, error: "could not read the file: " + e.message }; }
@@ -1296,7 +1305,7 @@ function register(ctx) {
       if (!r.already) { src = r.buffer; converted = { from: r.printer.from, kept: r.kept }; }
     }
     let tuned;
-    try { tuned = TUNE.tuneBuffer(src, settings); }
+    try { tuned = TUNE.tuneBuffer(src, settings, house); }
     catch (e) { return { status: 422, error: "could not load the settings into the project: " + e.message }; }
     return { status: 200, buffer: tuned.buffer, applied: tuned.applied, skipped: tuned.skipped, converted };
   }
@@ -1325,7 +1334,7 @@ function register(ctx) {
     } else sr = await suggest(rel, Number.isInteger(idx) ? idx : null, false);
     if (sr.status !== 200) return res.status(sr.status).json(sr.body);
     const settings = ((sr.body && sr.body.suggestion) || {}).settings || [];
-    const tuned = await buildTuned(from, settings);
+    const tuned = await buildTuned(from, settings, houseFor(rel, sr.body.facts || null, sr.body.suggestion));
     if (tuned.status !== 200) return res.status(tuned.status).json({ error: tuned.error });
     const converted = tuned.converted;
     const dir = path.join(TUNED_DIR, Date.now().toString(36) + "-" + crypto.randomBytes(3).toString("hex"));
@@ -1541,7 +1550,8 @@ function register(ctx) {
     if (sr.status !== 200) { setTune(rel, { status: "failed", note: "not tuned - " + ((sr.body && sr.body.error) || "the suggester answered " + sr.status) }); return; }
     if (!sr.body.cached) { PT_DAY.n++; savePtDay(); }
     const sug = sr.body.suggestion || {};
-    const b = await buildTuned(from, sug.settings || []);
+    const house = houseFor(rel, sr.body.facts || null, sug);
+    const b = await buildTuned(from, sug.settings || [], house);
     if (b.status !== 200) { setTune(rel, { status: "failed", note: "not tuned - " + b.error }); return; }
     const dir = ptDirFor(rel), out = path.join(dir, path.basename(from));
     try {
@@ -1553,6 +1563,8 @@ function register(ctx) {
     setTune(rel, {
       status: "tuned", note: null, copy: out, srcMtime: st.mtimeMs, srcSize: st.size, key: sr.body.key || null,
       summary: sug.summary || null, applied: b.applied, skipped: b.skipped, converted: b.converted,
+      house: { flexi: !!house.flexi.flexi, why: house.flexi.why || null, structural: house.structural || null, supportPaint: house.supportPaint },
+      watch: Array.isArray(sug.watch) ? sug.watch : [],
       cached: !!sr.body.cached, cost: sr.body.cached ? 0 : (sr.body.cost == null ? null : sr.body.cost)
     });
     hublog("info", "models: tuned " + rel + " on Mark for print: " + b.applied.length + " setting(s) applied, " + b.skipped.length + " not applied" +

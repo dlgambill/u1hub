@@ -51,6 +51,7 @@ const crypto = require("crypto");
 const { parseGcodeMap, parseConfig } = require("../parser.js");
 const { facts3mf, platesFromModelSettings } = require("./mesh3mf.js");
 const { stripSlash } = require("../core/util.js");
+const TUNING = require("./tuning.js");                          // 2.47: house rules (flexi detection)
 
 const API_DEFAULT = "https://api.anthropic.com";
 const API_VERSION = "2023-06-01";
@@ -109,8 +110,13 @@ const MODEL_SYSTEM = [
   "You are given: the plate render saved inside the file (an image, when there is one); geometry MEASURED from the meshes (sizes in mm, the tallest part against its narrowest base, what share of the surface faces down steeply enough to need support at Orca's 30 degree default, undersides that float, bed contact, painted faces, solid volume); the designer's own profile from the project (the settings the file already carries, often for a different printer); and what filament is loaded in the printer it would go to.",
   "Recommend the settings a careful operator would set before slicing this specific model for this specific machine and material. Anchor on the designer's profile: keep what is right, change only what the geometry, the material, or the U1 calls for, and say why in a few words. Use Orca's setting keys so a person can find them. Temperatures follow the LOADED material (and the roll's recommended temps when given), not the designer's file.",
   "Do not guess at geometry you were not given; the numbers are the truth, the image is for context (shape, detail, how parts sit). If the file already carries a support or brim choice that the numbers agree with, keep it and say so.",
+  // 2.47: the shop's goal and its house rules. The rules are also enforced in
+  // code (tuning.js houseRules); stating them here keeps the model from
+  // spending its answer on settings that will be refused.
+  "GOAL: this is a print farm selling what it prints. Aim for the best-looking print at the fastest speed that still looks that good: spend time only where a customer will see it, and never slow a whole print down for detail it does not have. Start from the designer's settings and change something only when the model gives you a reason; do not list a setting whose value the file already has.",
+  "HOUSE RULES (the shop's own, enforced after you answer - work inside them): infill is 12% gyroid unless the part is structural (it carries a load, takes a screw, clips or hangs something); if it is, set \"structural\" to {\"is\":true,\"why\":\"...\"} and give the infill density you want (12% or more). Layer height is never below 0.16 mm. On flexi, articulated or print-in-place models, support settings stay exactly as the designer set them - do not suggest support changes for those (supports grow into the joint gaps and fuse them). Supports the designer painted stay on. When an area of a non-flexi model needs support the designer did not give it, say where in \"watch\" (e.g. \"wing tips overhang - paint supports there\").",
   "Answer with ONE JSON object and nothing else, no code fence, this shape:",
-  '{"summary":"one sentence on what this model needs","settings":[{"key":"layer_height","label":"Layer height","value":"0.12 mm","set":"0.12","from":"0.2 mm","why":"small painted details"}],"heads":[{"color":"#FF0000","head":"T2","note":"red PLA loaded there"}],"watch":["short warnings, most important first"],"orientation":"one sentence, or null if the plate is fine as is"}',
+  '{"summary":"one sentence on what this model needs","settings":[{"key":"brim_width","label":"Brim width","value":"8 mm","set":"8","from":"5 mm","why":"tall part on a small base"}],"structural":{"is":false,"why":null},"heads":[{"color":"#FF0000","head":"T2","note":"red PLA loaded there"}],"watch":["short warnings, most important first"],"orientation":"one sentence, or null if the plate is fine as is"}',
   "settings: at most 14 entries, most consequential first; \"from\" is the designer's value when yours differs, else null; \"why\" under 20 words. heads: only when the project's filament colors and the loaded rolls let you map them (else an empty array). watch: at most 5. Keep values in the units Orca shows.",
   "\"set\" is the exact value Orca stores for that key, with no units, so the Hub can load it into the project: plain numbers (0.12, 220, 3), percentages with a % sign (15%), on/off as 1 or 0, and choices as Orca's internal value (tree(auto), normal(auto), auto_brim, outer_only, brim_ears, no_brim, aligned, no ironing). One value per key - never a range or a list. Use null for advice that is not a single Orca setting."
 ].join("\n");
@@ -163,6 +169,8 @@ function modelBriefLines(name, facts, info, project, plate) {
     L.push("OVERHANGS: " + o.steep_pct + "% of the surface faces down steeper than 30 degrees from vertical (needs support at Orca's default threshold); " + o.flat_unsupported_pct + "% is flat underside not on the bed (bridges or floating)" + (o.floating_instances ? "; " + o.floating_instances + " part" + (o.floating_instances === 1 ? " sits" : "s sit") + " above the plate with nothing under it" : "") + "; bed contact " + o.bed_contact_cm2 + " cm2 = " + o.bed_contact_pct_of_footprint + "% of the footprint");
     if (f.tallest) L.push("STABILITY: tallest part is " + f.tallest.height_mm + " mm on a " + f.tallest.base_mm[0] + " x " + f.tallest.base_mm[1] + " mm base (height " + f.tallest.aspect + "x its narrowest base dimension)");
     if (f.paint && f.paint.colors) L.push("PAINT: faces are painted with " + f.paint.colors + " color" + (f.paint.colors === 1 ? "" : "s") + " (" + f.paint.painted_pct + "% of faces) - multi-color by painting, not by separate objects");
+    // 2.47: support enforcers/blockers the designer painted.
+    if (f.support_paint && f.support_paint.painted_tris) L.push("SUPPORT PAINT: " + f.support_paint.painted_tris.toLocaleString("en-US") + " faces carry support enforcers/blockers the designer painted - those supports are intended");
     if (f.parts && f.parts.length) L.push("PARTS (largest first): " + f.parts.map(p => (p.name || "part") + (p.copies > 1 ? " x" + p.copies : "") + " " + p.size_mm.join("x") + " mm " + p.volume_cm3 + " cm3").join("; "));
   } else L.push("GEOMETRY: not measured (" + ((facts && facts.reason) || "no mesh") + ")");
   if (info) {
@@ -188,7 +196,11 @@ function parseSuggestion(text) {
     settings: (Array.isArray(j.settings) ? j.settings : []).slice(0, 14).map(x => ({ key: str(x.key) || "", label: str(x.label) || str(x.key) || "", value: str(x.value) || "", set: str(x.set), from: str(x.from), why: str(x.why) || "" })).filter(x => x.key || x.label),
     heads: (Array.isArray(j.heads) ? j.heads : []).slice(0, 8).map(x => ({ color: str(x.color) || "", head: str(x.head) || "", note: str(x.note) || "" })),
     watch: (Array.isArray(j.watch) ? j.watch : []).slice(0, 5).map(str).filter(Boolean),
-    orientation: str(j.orientation)
+    orientation: str(j.orientation),
+    // 2.47: the one thing that lifts the house 12% infill.
+    structural: j.structural && typeof j.structural === "object"
+      ? { is: j.structural.is === true || j.structural.is === "true", why: str(j.structural.why) }
+      : { is: j.structural === true, why: null }
   };
   return out.settings.length || out.summary ? out : null;
 }
@@ -483,6 +495,17 @@ function register(ctx) {
     return printerBrief(p, idx, ctx.loadout ? (ctx.loadout(idx) || []) : [], null, null).filter(l => !/^COLOR MAPPING/.test(l));
   }
 
+  // 2.47: is this model a flexi in the house's eyes? Title, file name, part
+  // names, or a designer on the list (models.flexiDesigners in config.json).
+  function flexiFor(rel, facts) {
+    const m = (ctx.cfg && typeof ctx.cfg.models === "object" && ctx.cfg.models) || {};
+    const designers = Array.isArray(m.flexiDesigners) ? m.flexiDesigners : TUNING.FLEXI_DESIGNERS;
+    const md = (facts && facts.metadata) || {};
+    const texts = [md.Title || "", String(rel || "").split("/").pop(), String(rel || "")].concat(((facts && facts.parts) || []).map(p => p.name || ""));
+    return TUNING.isFlexi({ texts, designer: TUNING.designerFromRel(rel), designers });
+  }
+  ctx.provide("advisor.flexiFor", flexiFor);
+
   let MBUSY = false;
   // v2.42: the suggester as a function - the route below, and Models' "Open in
   // Orca with these settings", which reuses a cached answer instead of paying
@@ -499,9 +522,15 @@ function register(ctx) {
       catch (e) { return { status: e.status || (e && e.code === "ENOENT" ? 404 : 422), body: { error: e.status ? e.message : "Could not read that 3MF: " + e.message } }; }
       const name = rel.split("/").pop();
       const lines = modelBriefLines(name, g.facts, g.info, g.project, g.plate);
+      // 2.47: tell the model when the house treats this as a flexi, so it does
+      // not spend its answer on support settings that will be refused.
+      const fx = flexiFor(rel, g.facts);
+      if (fx.flexi) lines.push("HOUSE NOTE: this is treated as a flexi / print-in-place model (" + fx.why + "); its support settings stay as the designer set them.");
       const pb = modelLoadoutLines(idx);
       const text = lines.concat([""], pb, ["", "Return the JSON object now."]).join("\n");
-      const keyText = lines.join("\n") + "\n" + pb.filter(l => !/^  bed now|^TARGET PRINTER/.test(l)).join("\n") + "\n" + c.model + (g.thumb ? "\n" + g.thumb.name : "");
+      // "prompt v2.47": answers cached under the old instructions (no house
+      // rules, no goal) are not reused.
+      const keyText = lines.join("\n") + "\n" + pb.filter(l => !/^  bed now|^TARGET PRINTER/.test(l)).join("\n") + "\n" + c.model + (g.thumb ? "\n" + g.thumb.name : "") + "\nprompt v2.47";
       const ckey = crypto.createHash("sha1").update(keyText).digest("hex");
       const hit = !force && MCACHE.find(r => r.key === ckey);
       if (hit) return { status: 200, body: { ...hit, cached: true, facts: g.facts, thumb: !!g.thumb } };
