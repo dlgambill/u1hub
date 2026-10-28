@@ -4562,9 +4562,9 @@ async function stopHub() {
         "a suggestion that matches the file is not a change (no more \"30 -> 30\")", r);
       ok(T.isFlexi({ texts: ["Charizard - Flexi Articulated Pokémon"], designer: "IXPatch", designers: [] }).flexi &&
          T.isFlexi({ texts: ["Meerkat"], designer: "3DGOB", designers: ["3DGOB"] }).flexi &&
-         T.isFlexi({ texts: ["Dragon - Print-in-Place"], designer: "x", designers: [] }).flexi &&
+         !T.isFlexi({ texts: ["Hinged Box - Print-in-Place"], designer: "x", designers: [] }).flexi &&
          !T.isFlexi({ texts: ["Charizard Dice Tower", "Flexible filament guide"], designer: "Vulture Labs", designers: ["3DGOB"] }).flexi,
-        "flexi: Flexi, Articulated or Print-in-Place in the title or a part name, or a designer on the list - and \"Flexible\" is not \"Flexi\"");
+        "flexi: Flexi or Articulated in the title or a part name, or a designer on the list - \"Flexible\" is not \"Flexi\", and Print-in-Place alone is not a flexi (2.47.1)");
       const hps = { layer_height: "0.2", enable_support: "0", sparse_infill_density: "15%", sparse_infill_pattern: "grid", wall_loops: "2" };
       const ai = [{ key: "enable_support", value: "1" }, { key: "support_type", value: "tree(auto)" }, { key: "layer_height", value: "0.12 mm", set: "0.12" }, { key: "sparse_infill_density", value: "20%" }, { key: "brim_width", value: "8" }];
       let h = T.houseRules(hps, ai, { flexi: { flexi: true, why: "the title says Flexi" }, supportPaint: 0, structural: { is: false } });

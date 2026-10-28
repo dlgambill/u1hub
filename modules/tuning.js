@@ -184,7 +184,7 @@ function applyTuning(ps, settings) {
 // without any (and painted none). The rules:
 //   - infill is 12% gyroid, unless the AI calls the part structural and says
 //     why; then its density stands (never under 12%), still as gyroid;
-//   - on a flexi / articulated / print-in-place model, support settings stay
+//   - on a flexi / articulated model, support settings stay
 //     exactly as the designer set them - tree supports grow into the joint
 //     gaps and fuse them;
 //   - supports the designer painted are never switched off (and when the
@@ -195,7 +195,7 @@ function applyTuning(ps, settings) {
 // default. A blank infill turns the infill rule off (the AI's infill stands);
 // a blank minimum layer turns the floor off. The flexi designer list starts
 // EMPTY for everyone - each farm builds its own (models.flexiDesigners);
-// a model named Flexi / Articulated / Print-in-Place is still a flexi.
+// a model named Flexi or Articulated is still a flexi.
 const HOUSE = { infill: "12%", infillPct: 12, pattern: "gyroid", minLayer: 0.16 };
 const FLEXI_DESIGNERS = [];
 const PATTERNS = TUNE.sparse_infill_pattern.vals;
@@ -221,7 +221,9 @@ function flexiList(models) {
   const v = models && typeof models === "object" ? models.flexiDesigners : null;
   return Array.isArray(v) ? v.map(x => String(x || "").trim()).filter(Boolean) : FLEXI_DESIGNERS.slice();
 }
-const FLEXI_RE = /\b(flexi|flexy|articulated|articulating|print[\s_-]*in[\s_-]*place)\b/i;
+// 2.47.1: "print-in-place" alone no longer makes a flexi (Danny, 2026-10-28):
+// a print-in-place hinge or box is not a flexi, and it may need supports.
+const FLEXI_RE = /\b(flexi|flexy|articulated|articulating)\b/i;
 const SUPPORT_KEYS = new Set(["enable_support", "support_type", "support_threshold_angle", "support_on_build_plate_only"]);
 const INFILL_KEYS = new Set(["sparse_infill_density", "sparse_infill_pattern"]);
 
@@ -259,7 +261,7 @@ function houseRules(ps, settings, h) {
   for (const row of Array.isArray(settings) ? settings : []) {
     const key = String((row && row.key) || "").trim();
     if (SUPPORT_KEYS.has(key)) {
-      if (flexi) { note(row, "flexi / print-in-place - supports stay as the designer set them (" + (h.flexi.why || "flexi") + ")"); continue; }
+      if (flexi) { note(row, "flexi - supports stay as the designer set them (" + (h.flexi.why || "flexi") + ")"); continue; }
       if (key === "enable_support" && designerSupports && !ON.test(valOf(row).trim()) && (h.supportPaint == null || h.supportPaint > 0)) {
         note(row, h.supportPaint ? "the designer painted supports on " + h.supportPaint + " faces; they stay on" : "supports stay on - the painted supports could not be counted");
         continue;

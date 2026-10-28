@@ -319,7 +319,7 @@
         '<select class="field" id="mdl-hpattern" style="max-width:150px">' + ((HOUSE && HOUSE.patterns) || ["gyroid"]).map(p => '<option' + ((HOUSE ? HOUSE.pattern : "gyroid") === p ? " selected" : "") + ">" + esc(p) + "</option>").join("") + '</select>' +
         '<span class="hint">unless structural · layers never below</span><input class="field" id="mdl-hminlayer" placeholder="no minimum" style="max-width:90px" value="' + esc(HOUSE && HOUSE.minLayer != null ? HOUSE.minLayer + " mm" : "") + '">' +
       '</div>' +
-      '<label>Flexi designers <span class="hint">one per line: their models keep the designer\'s support settings, because supports fuse print-in-place joints. A model named Flexi, Articulated or Print-in-Place counts without being listed.</span></label>' +
+      '<label>Flexi designers <span class="hint">one per line: their models keep the designer\'s support settings, because supports fuse flexi joints. A model named Flexi or Articulated counts without being listed.</span></label>' +
       '<textarea class="field" id="mdl-flexi" rows="3" spellcheck="false" style="width:100%; font-family:var(--mono); font-size:12px" placeholder="(none yet)">' + esc(((HOUSE && HOUSE.flexiDesigners) || []).join("\n")) + '</textarea>' +
       '<div class="row" style="margin-top:8px; gap:8px"><button class="btn primary" id="mdl-save" style="font-size:12px; padding:5px 12px">Save</button><span class="pstatus" id="mdl-cfgmsg"></span></div>' +
       // H22 (2.44): designer aliases - folder name = display name, one per line.

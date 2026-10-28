@@ -115,7 +115,7 @@ function houseLine(R) {
     : "infill is yours to choose; when the part is structural (it carries a load, takes a screw, clips or hangs something), also set \"structural\" to {\"is\":true,\"why\":\"...\"}.";
   const floor = R.minLayer != null ? " Layer height is never below " + R.minLayer + " mm." : "";
   return "HOUSE RULES (the shop's own, enforced after you answer - work inside them): " + infill + floor +
-    " On flexi, articulated or print-in-place models, support settings stay exactly as the designer set them - do not suggest support changes for those (supports grow into the joint gaps and fuse them). Supports the designer painted stay on. When an area of a non-flexi model needs support the designer did not give it, say where in \"watch\" (e.g. \"wing tips overhang - paint supports there\").";
+    " On flexi or articulated models, support settings stay exactly as the designer set them - do not suggest support changes for those (supports grow into the joint gaps and fuse them). Supports the designer painted stay on. When an area of a non-flexi model needs support the designer did not give it, say where in \"watch\" (e.g. \"wing tips overhang - paint supports there\").";
 }
 function modelSystem(R) { return MODEL_SYSTEM_PARTS.map(p => p === "@HOUSE" ? houseLine(R) : p).join("\n"); }
 const MODEL_SYSTEM_PARTS = [
@@ -539,7 +539,7 @@ function register(ctx) {
       // 2.47: tell the model when the house treats this as a flexi, so it does
       // not spend its answer on support settings that will be refused.
       const fx = flexiFor(rel, g.facts);
-      if (fx.flexi) lines.push("HOUSE NOTE: this is treated as a flexi / print-in-place model (" + fx.why + "); its support settings stay as the designer set them.");
+      if (fx.flexi) lines.push("HOUSE NOTE: this is treated as a flexi model (" + fx.why + "); its support settings stay as the designer set them.");
       const pb = modelLoadoutLines(idx);
       const text = lines.concat([""], pb, ["", "Return the JSON object now."]).join("\n");
       // "prompt v2.47": answers cached under the old instructions (no house

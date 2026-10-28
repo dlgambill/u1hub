@@ -152,10 +152,10 @@ them before anything is written. You set them under ⚙ Folder: an infill
 percentage and pattern (12% gyroid to start; the AI can go higher on a part
 it calls structural) and the lowest layer height (0.16 mm to start). Leave
 either box blank and the AI decides that one. Two rules always hold:
-supports the designer painted stay on, and flexi or print-in-place models
-keep the designer's support settings exactly as they are, because supports
-grow into the joint gaps and fuse them. A model counts as flexi when its
-name says Flexi, Articulated or Print-in-Place, or when its designer is on
+supports the designer painted stay on, and flexi models keep the designer's
+support settings exactly as they are, because supports grow into the joint
+gaps and fuse them. A model counts as flexi when its name says Flexi or
+Articulated, or when its designer is on
 your flexi designer list, which starts empty for you to fill in. Anything a
 rule held back is listed on the card, so you can see what the AI wanted and
 why it did not get it.
