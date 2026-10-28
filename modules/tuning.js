@@ -190,8 +190,37 @@ function applyTuning(ps, settings) {
 //   - supports the designer painted are never switched off (and when the
 //     paint could not be counted, supports are not switched off either);
 //   - layers never below 0.16 mm (Danny prints 95% of his jobs at 0.16).
+// 2.47.1: the numbers are settings now (models.house in config.json, from the
+// Folder panel), because the Hub ships to other farms: HOUSE below is only the
+// default. A blank infill turns the infill rule off (the AI's infill stands);
+// a blank minimum layer turns the floor off. The flexi designer list starts
+// EMPTY for everyone - each farm builds its own (models.flexiDesigners);
+// a model named Flexi / Articulated / Print-in-Place is still a flexi.
 const HOUSE = { infill: "12%", infillPct: 12, pattern: "gyroid", minLayer: 0.16 };
-const FLEXI_DESIGNERS = ["IXPatch", "3DGOB", "Flexi Factory", "Flexi Toys Lab", "FlexiSTL"];
+const FLEXI_DESIGNERS = [];
+const PATTERNS = TUNE.sparse_infill_pattern.vals;
+
+// config.json models -> { infillPct (null = off), infill, pattern, minLayer (null = off) }.
+// Absent keys fall back to HOUSE; an explicit null or "" turns that rule off.
+function houseConf(models) {
+  const h = (models && typeof models === "object" && models.house && typeof models.house === "object") ? models.house : {};
+  const numOrOff = (v, dflt, lo, hi) => {
+    if (v === undefined) return dflt;
+    if (v === null || String(v).trim() === "") return null;
+    const n = Number(String(v).replace(/%$/, ""));
+    return Number.isFinite(n) && n >= lo && n <= hi ? n : dflt;
+  };
+  const infillPct = numOrOff(h.infill, HOUSE.infillPct, 0, 100);
+  const pat = String(h.pattern == null ? "" : h.pattern).trim().toLowerCase();
+  const pattern = PATTERNS.includes(pat) ? pat : HOUSE.pattern;
+  const minLayer = numOrOff(h.minLayer, HOUSE.minLayer, 0.04, 0.32);
+  return { infillPct, infill: infillPct == null ? null : infillPct + "%", pattern, minLayer };
+}
+// The flexi designer list from config.json models (one name per entry).
+function flexiList(models) {
+  const v = models && typeof models === "object" ? models.flexiDesigners : null;
+  return Array.isArray(v) ? v.map(x => String(x || "").trim()).filter(Boolean) : FLEXI_DESIGNERS.slice();
+}
 const FLEXI_RE = /\b(flexi|flexy|articulated|articulating|print[\s_-]*in[\s_-]*place)\b/i;
 const SUPPORT_KEYS = new Set(["enable_support", "support_type", "support_threshold_angle", "support_on_build_plate_only"]);
 const INFILL_KEYS = new Set(["sparse_infill_density", "sparse_infill_pattern"]);
@@ -220,6 +249,7 @@ const valOf = row => String(row.set != null && String(row.set).trim() !== "" ? r
 // Returns { settings (what may be written), notes [{ key, value, reason }] }.
 function houseRules(ps, settings, h) {
   h = h || {};
+  const R = h.rules || HOUSE;                       // 2.47.1: the farm's own numbers
   const flexi = h.flexi && h.flexi.flexi;
   const structural = !!(h.structural && h.structural.is);
   const designerSupports = String((ps || {}).enable_support) === "1";
@@ -235,24 +265,25 @@ function houseRules(ps, settings, h) {
         continue;
       }
     }
-    if (key === "layer_height" && numOf(row) < HOUSE.minLayer) { note(row, "layers never below " + HOUSE.minLayer + " mm"); continue; }
-    if (INFILL_KEYS.has(key)) {
-      if (!structural) { note(row, "infill is 12% gyroid unless the part is structural"); continue; }
+    if (key === "layer_height" && R.minLayer != null && numOf(row) < R.minLayer) { note(row, "layers never below " + R.minLayer + " mm"); continue; }
+    if (INFILL_KEYS.has(key) && R.infillPct != null) {
+      if (!structural) { note(row, "infill is " + R.infill + " " + R.pattern + " unless the part is structural"); continue; }
       if (key === "sparse_infill_density") density = row; else pattern = row;
       continue;
     }
     out.push(row);
   }
+  if (R.infillPct == null) return { settings: out, notes };   // infill rule off: the AI's infill stands
   // Infill last, so it reads as the house setting it is.
-  let d = HOUSE.infill;
+  let d = R.infill;
   if (structural && density) {
     const n = numOf(density);
-    if (n >= HOUSE.infillPct) d = n + "%";
-    else note(density, "structural infill is never under the house 12%");
+    if (n >= R.infillPct) d = n + "%";
+    else note(density, "structural infill is never under the house " + R.infill);
   }
-  if (structural && pattern && valOf(pattern).toLowerCase() !== HOUSE.pattern) note(pattern, "infill pattern is gyroid");
+  if (structural && pattern && valOf(pattern).toLowerCase() !== R.pattern) note(pattern, "infill pattern is " + R.pattern);
   out.push({ key: "sparse_infill_density", label: structural ? "Infill (structural)" : "Infill (house)", value: d, set: d, why: structural ? (h.structural.why || "structural part") : "house default" });
-  out.push({ key: "sparse_infill_pattern", label: "Infill pattern (house)", value: HOUSE.pattern, set: HOUSE.pattern, why: "house default" });
+  out.push({ key: "sparse_infill_pattern", label: "Infill pattern (house)", value: R.pattern, set: R.pattern, why: "house default" });
   return { settings: out, notes };
 }
 
@@ -272,4 +303,4 @@ function tuneBuffer(buf, settings, house) {
   return { buffer: zipWrite(out), applied: r.applied, skipped: hr.notes.concat(r.skipped), printer: String(ps.printer_model || "") };
 }
 
-module.exports = { TUNE, normalize, applyTuning, tuneBuffer, HOUSE, FLEXI_DESIGNERS, isFlexi, designerFromRel, houseRules };
+module.exports = { TUNE, normalize, applyTuning, tuneBuffer, HOUSE, FLEXI_DESIGNERS, isFlexi, designerFromRel, houseRules, houseConf, flexiList };

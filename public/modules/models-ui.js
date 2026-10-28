@@ -297,9 +297,10 @@
   // (It did, and a Save pressed on the blanks wiped the folder - 2026-09-22.)
   function renderCfg() {
     const box = EL.querySelector("#mdl-cfg");
-    if (box.querySelector("#mdl-folder") && [box.querySelector("#mdl-folder"), box.querySelector("#mdl-orca"), box.querySelector("#mdl-u1t"), box.querySelector("#mdl-pretunemax")].includes(document.activeElement)) return;
+    if (box.querySelector("#mdl-folder") && [box.querySelector("#mdl-folder"), box.querySelector("#mdl-orca"), box.querySelector("#mdl-u1t"), box.querySelector("#mdl-pretunemax"), box.querySelector("#mdl-hinfill"), box.querySelector("#mdl-hminlayer"), box.querySelector("#mdl-flexi")].includes(document.activeElement)) return;
     const folder = DATA && DATA.folder ? DATA.folder : "";
     const orca = DATA && DATA.orcaExe ? DATA.orcaExe : (SETTINGS && SETTINGS.orcaExe ? SETTINGS.orcaExe : "");
+    const HOUSE = (DATA && DATA.house) || (SETTINGS && SETTINGS.house) || null;   // 2.47.1
     box.innerHTML =
       '<label>3MF folder <span class="hint">designer folders inside it become the list on the left; up to four levels deep; folders starting with _ are skipped</span></label>' +
       '<input class="field" id="mdl-folder" placeholder="' + (folder ? "" : "loading…") + '" value="' + esc(folder) + '">' +
@@ -308,9 +309,18 @@
       '<label>U1 template <span class="hint">for Convert to U1: a project saved in Snapmaker Orca with the U1 and your usual filaments; blank uses u1_template.3mf at the top of the folder' + (DATA && DATA.u1_template ? " (found: " + esc(DATA.u1_template) + ")" : " (none found yet)") + '</span></label>' +
       '<input class="field" id="mdl-u1t" placeholder="' + esc(folder ? folder.replace(/[\\/]+$/, "") + "\\u1_template.3mf" : "u1_template.3mf") + '" value="' + esc(DATA && DATA.u1_template_set || "") + '">' +
       // 2.46: tune on Mark for print.
-      '<label class="row" style="gap:8px; align-items:center; margin-top:8px"><input type="checkbox" id="mdl-pretune"' + (!DATA || !DATA.pretune || DATA.pretune.on ? " checked" : "") + '> Tune files when they are marked for print <span class="hint">the AI suggests settings for each marked 3MF and saves them into a copy; Open in Orca opens that copy, your file is not changed. Needs the AI pre-flight key.</span></label>' +
+      '<label class="row" style="gap:8px; align-items:center; margin-top:8px"><input type="checkbox" id="mdl-pretune"' + (DATA && DATA.pretune && DATA.pretune.on ? " checked" : "") + '> Tune files when they are marked for print <span class="hint">the AI suggests settings for each marked 3MF and saves them into a copy; Open in Orca opens that copy, your file is not changed. Needs the AI pre-flight key.</span></label>' +
       '<label>New suggestions per day, at most <span class="hint">a few cents each; a file asked about before costs nothing</span></label>' +
       '<input class="field" id="mdl-pretunemax" type="number" min="0" step="1" style="max-width:120px" value="' + esc(DATA && DATA.pretune ? DATA.pretune.max : 25) + '">' +
+      // 2.47.1: the shop rules the AI's settings are held to (blank = rule off).
+      '<label style="margin-top:10px">Shop rules for AI settings <span class="hint">the Hub holds every suggestion to these before anything is written; leave a box blank to let the AI decide that one</span></label>' +
+      '<div class="row" style="gap:8px; flex-wrap:wrap; align-items:center">' +
+        '<span class="hint">infill</span><input class="field" id="mdl-hinfill" placeholder="AI decides" style="max-width:90px" value="' + esc(HOUSE && HOUSE.infill != null ? HOUSE.infill + "%" : "") + '">' +
+        '<select class="field" id="mdl-hpattern" style="max-width:150px">' + ((HOUSE && HOUSE.patterns) || ["gyroid"]).map(p => '<option' + ((HOUSE ? HOUSE.pattern : "gyroid") === p ? " selected" : "") + ">" + esc(p) + "</option>").join("") + '</select>' +
+        '<span class="hint">unless structural · layers never below</span><input class="field" id="mdl-hminlayer" placeholder="no minimum" style="max-width:90px" value="' + esc(HOUSE && HOUSE.minLayer != null ? HOUSE.minLayer + " mm" : "") + '">' +
+      '</div>' +
+      '<label>Flexi designers <span class="hint">one per line: their models keep the designer\'s support settings, because supports fuse print-in-place joints. A model named Flexi, Articulated or Print-in-Place counts without being listed.</span></label>' +
+      '<textarea class="field" id="mdl-flexi" rows="3" spellcheck="false" style="width:100%; font-family:var(--mono); font-size:12px" placeholder="(none yet)">' + esc(((HOUSE && HOUSE.flexiDesigners) || []).join("\n")) + '</textarea>' +
       '<div class="row" style="margin-top:8px; gap:8px"><button class="btn primary" id="mdl-save" style="font-size:12px; padding:5px 12px">Save</button><span class="pstatus" id="mdl-cfgmsg"></span></div>' +
       // H22 (2.44): designer aliases - folder name = display name, one per line.
       '<label>Designer names <span class="hint">the designer list comes from the top folders; rename or merge them here without touching a file: <code>folder name = Display Name</code>, one per line. Folders that cannot be a designer (numbers, temperatures, one or two letters) are grouped as (unsorted).</span></label>' +
@@ -342,8 +352,16 @@
     box.querySelector("#mdl-save").addEventListener("click", async () => {
       const fv = box.querySelector("#mdl-folder").value.trim();
       if (!fv) { const m = box.querySelector("#mdl-cfgmsg"); m.className = "pstatus err"; m.textContent = "Enter the folder path (it was left blank)."; return; }
-      const r = await jpost("/api/models/settings", { folder: fv, orcaExe: box.querySelector("#mdl-orca").value, u1Template: box.querySelector("#mdl-u1t").value,
-        pretune: box.querySelector("#mdl-pretune").checked, pretuneDailyMax: box.querySelector("#mdl-pretunemax").value });
+      const body = { folder: fv, orcaExe: box.querySelector("#mdl-orca").value, u1Template: box.querySelector("#mdl-u1t").value };
+      if ((DATA && DATA.pretune) || (SETTINGS && SETTINGS.pretune))
+        Object.assign(body, { pretune: box.querySelector("#mdl-pretune").checked, pretuneDailyMax: box.querySelector("#mdl-pretunemax").value });
+      // 2.47.1: a blank rule box means "rule off", so the rules are only sent
+      // once the server's values were drawn into the form (the 2.27.1 lesson:
+      // a Save pressed on a half-loaded form must not wipe anything).
+      if ((DATA && DATA.house) || (SETTINGS && SETTINGS.house))
+        Object.assign(body, { houseInfill: box.querySelector("#mdl-hinfill").value, housePattern: box.querySelector("#mdl-hpattern").value,
+          houseMinLayer: box.querySelector("#mdl-hminlayer").value, flexiDesigners: box.querySelector("#mdl-flexi").value });
+      const r = await jpost("/api/models/settings", body);
       const m = box.querySelector("#mdl-cfgmsg");
       if (!r.ok) { m.className = "pstatus err"; m.textContent = r.d.error || "Could not save"; return; }
       SETTINGS = r.d;

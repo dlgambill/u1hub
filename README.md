@@ -12,13 +12,15 @@ can join in too (that part is in beta).
 You run the Hub on a computer that stays on. Your phone, or any browser, opens
 it like a web page. From there you can see every machine at once, send prints,
 watch cameras, plan your printing week, know what filament to buy before you
-run out, and - new in 2.28 - ask what settings a model wants before you slice
-it, and whether a plate is worth printing at all.
+run out, ask what settings a model wants before you slice it, and whether a
+plate is worth printing at all. New in 2.46: a model you mark for print can
+get its settings worked out in the background, so it opens in Orca already
+tuned.
 
 Nothing gets installed on the printers. The Hub talks to the software they
 already run, and nothing leaves your network unless you turn remote access on,
-ask for a phone notification, or press one of the two AI buttons with your
-own key in place.
+ask for a phone notification, or use the AI features with your own key in
+place.
 
 ---
 
@@ -115,7 +117,19 @@ Both apps need to be looking at the same model library, but they don't have
 to reach it the same way - one can use a mapped drive letter and the other the
 network path, or 3MF Explorer can run on a different computer.
 
-![Models, filtered to Requested: what was marked for print in 3MF Explorer, one already queued, and Link gcode open on a card](docs/print-requests.png)
+**Marked files can come back already tuned.** Tick Tune files when they are
+marked for print under ⚙ Folder (it starts off, because each tune is a paid
+AI call), and when a model is marked for print the Hub asks for its settings
+in the background, the same way the Settings button below does, and saves
+the answer into a copy of the file. The card shows ✦ tuned and how many
+settings changed. Open in Orca opens the tuned copy, with every change marked
+so you can put it back, and the original button next to it opens your file as
+it is. Your own file is never touched, and a file that changed since it was
+tuned gets tuned again instead of opening a stale copy. It needs the AI key,
+and it stops after 25 new answers a day (you can change that number). A file
+it has already answered costs nothing the second time.
+
+![Models, filtered to Requested: files marked for print in 3MF Explorer, tuned in the background, with Link gcode open on a card](docs/print-requests.png)
 
 ![3MF Explorer: the whole model library in one searchable table, with the details of the model you pick](docs/3mf-explorer.png)
 
@@ -132,6 +146,19 @@ Under the table, Open in Orca with these settings opens a copy of the file in
 Orca with those suggestions already filled in, marked as changes so you can
 put any of them back. Your own file is never touched; keep the tuned project
 with Save As in Orca, or let the copy clean itself up after three days.
+
+The AI works inside your shop's rules, and the Hub checks its answer against
+them before anything is written. You set them under ⚙ Folder: an infill
+percentage and pattern (12% gyroid to start; the AI can go higher on a part
+it calls structural) and the lowest layer height (0.16 mm to start). Leave
+either box blank and the AI decides that one. Two rules always hold:
+supports the designer painted stay on, and flexi or print-in-place models
+keep the designer's support settings exactly as they are, because supports
+grow into the joint gaps and fuse them. A model counts as flexi when its
+name says Flexi, Articulated or Print-in-Place, or when its designer is on
+your flexi designer list, which starts empty for you to fill in. Anything a
+rule held back is listed on the card, so you can see what the AI wanted and
+why it did not get it.
 
 ![Settings for a 3MF: what to set in Orca, what the file had, and why](docs/models-settings.png)
 
@@ -158,6 +185,10 @@ and keeps that copy on the list with a note on the job. You can reorder your
 printers in Settings without anything moving to the wrong machine. When
 several prints are due to finish overnight, the plan lines the bed clears up
 five minutes apart instead of asking you to clear three at once.
+
+Home early? A printer sitting empty before your hours start says so - idle
+until 4:00 PM, say - and one press starts the next job in line on it right
+now. Replan always works from a fresh plan, never a saved one.
 
 Getting around the timeline is easy from anywhere on it. It fits in the
 window, with the time ruler pinned to the top and its scrollbar always in
@@ -340,11 +371,11 @@ into `./data`, and copy your old container's `spools.json`, `slots.json`,
 **From source:** install Node.js 22 or newer, then run `start-windows.bat` or
 `./start-mac-linux.sh`. First launch installs what it needs and opens the page.
 
-**To turn on the AI buttons:** make a key at
+**To turn on the AI features:** make a key at
 [platform.claude.com](https://platform.claude.com/) (API keys, Create key; it
 starts with `sk-ant-`), add a few dollars of credit there, and paste it into
 Settings under AI pre-flight. The key stays in `config.json` on the Hub
-computer and is never shown again. Both buttons are off until a key is in.
+computer and is never shown again. Every AI feature is off until a key is in.
 
 **It looks after its own files.** Every night the Hub copies everything it
 remembers (printers, schedule, spools, logbook and the rest) into a
@@ -382,7 +413,11 @@ network setup.
 
 ## The honest fine print
 
-**The AI buttons send data out, and only when you press them.** For a gcode:
+**The AI features send data out, and only when you ask.** Pressing an AI
+button asks. So does marking a file for print if you turned tuning on - that
+sends the same brief as the Settings button, once per file, up to the daily
+limit. Tuning starts off, and unticking it under ⚙ Folder stops it
+completely. For a gcode:
 a text brief of a few thousand characters - the file name, the slicer
 settings Orca wrote into it, the filaments it was sliced for, the object
 count, and what the Hub has recorded in that printer's heads. For a 3MF: the

@@ -105,7 +105,20 @@ const SYSTEM = [
 ].join("\n");
 
 // ---- the 3MF settings suggester (v2.28) --------------------------------------
-const MODEL_SYSTEM = [
+// 2.47.1: the HOUSE RULES line is built from the farm's own numbers
+// (tuning.js houseConf), so a rule turned off in the Folder panel is not
+// stated to the model either. MODEL_SYSTEM is the default-rules version.
+function houseLine(R) {
+  R = R || TUNING.HOUSE;
+  const infill = R.infillPct != null
+    ? "infill is " + R.infill + " " + R.pattern + " unless the part is structural (it carries a load, takes a screw, clips or hangs something); if it is, set \"structural\" to {\"is\":true,\"why\":\"...\"} and give the infill density you want (" + R.infill + " or more)."
+    : "infill is yours to choose; when the part is structural (it carries a load, takes a screw, clips or hangs something), also set \"structural\" to {\"is\":true,\"why\":\"...\"}.";
+  const floor = R.minLayer != null ? " Layer height is never below " + R.minLayer + " mm." : "";
+  return "HOUSE RULES (the shop's own, enforced after you answer - work inside them): " + infill + floor +
+    " On flexi, articulated or print-in-place models, support settings stay exactly as the designer set them - do not suggest support changes for those (supports grow into the joint gaps and fuse them). Supports the designer painted stay on. When an area of a non-flexi model needs support the designer did not give it, say where in \"watch\" (e.g. \"wing tips overhang - paint supports there\").";
+}
+function modelSystem(R) { return MODEL_SYSTEM_PARTS.map(p => p === "@HOUSE" ? houseLine(R) : p).join("\n"); }
+const MODEL_SYSTEM_PARTS = [
   "You choose slicer settings for a 3MF that is about to be sliced in Snapmaker Orca (an OrcaSlicer fork) for a Snapmaker U1: four tool heads on one carriage, one filament per head, automatic tool changes, heated bed, 270 x 270 x 270 mm, 0.4 mm nozzle unless told otherwise.",
   "You are given: the plate render saved inside the file (an image, when there is one); geometry MEASURED from the meshes (sizes in mm, the tallest part against its narrowest base, what share of the surface faces down steeply enough to need support at Orca's 30 degree default, undersides that float, bed contact, painted faces, solid volume); the designer's own profile from the project (the settings the file already carries, often for a different printer); and what filament is loaded in the printer it would go to.",
   "Recommend the settings a careful operator would set before slicing this specific model for this specific machine and material. Anchor on the designer's profile: keep what is right, change only what the geometry, the material, or the U1 calls for, and say why in a few words. Use Orca's setting keys so a person can find them. Temperatures follow the LOADED material (and the roll's recommended temps when given), not the designer's file.",
@@ -114,12 +127,13 @@ const MODEL_SYSTEM = [
   // code (tuning.js houseRules); stating them here keeps the model from
   // spending its answer on settings that will be refused.
   "GOAL: this is a print farm selling what it prints. Aim for the best-looking print at the fastest speed that still looks that good: spend time only where a customer will see it, and never slow a whole print down for detail it does not have. Start from the designer's settings and change something only when the model gives you a reason; do not list a setting whose value the file already has.",
-  "HOUSE RULES (the shop's own, enforced after you answer - work inside them): infill is 12% gyroid unless the part is structural (it carries a load, takes a screw, clips or hangs something); if it is, set \"structural\" to {\"is\":true,\"why\":\"...\"} and give the infill density you want (12% or more). Layer height is never below 0.16 mm. On flexi, articulated or print-in-place models, support settings stay exactly as the designer set them - do not suggest support changes for those (supports grow into the joint gaps and fuse them). Supports the designer painted stay on. When an area of a non-flexi model needs support the designer did not give it, say where in \"watch\" (e.g. \"wing tips overhang - paint supports there\").",
+  "@HOUSE",
   "Answer with ONE JSON object and nothing else, no code fence, this shape:",
   '{"summary":"one sentence on what this model needs","settings":[{"key":"brim_width","label":"Brim width","value":"8 mm","set":"8","from":"5 mm","why":"tall part on a small base"}],"structural":{"is":false,"why":null},"heads":[{"color":"#FF0000","head":"T2","note":"red PLA loaded there"}],"watch":["short warnings, most important first"],"orientation":"one sentence, or null if the plate is fine as is"}',
   "settings: at most 14 entries, most consequential first; \"from\" is the designer's value when yours differs, else null; \"why\" under 20 words. heads: only when the project's filament colors and the loaded rolls let you map them (else an empty array). watch: at most 5. Keep values in the units Orca shows.",
   "\"set\" is the exact value Orca stores for that key, with no units, so the Hub can load it into the project: plain numbers (0.12, 220, 3), percentages with a % sign (15%), on/off as 1 or 0, and choices as Orca's internal value (tree(auto), normal(auto), auto_brim, outer_only, brim_ears, no_brim, aligned, no ironing). One value per key - never a range or a list. Use null for advice that is not a single Orca setting."
-].join("\n");
+];
+const MODEL_SYSTEM = modelSystem(TUNING.HOUSE);
 
 // Keys worth carrying from the project's own settings, and their answer.
 const PROJECT_KEYS = [
@@ -499,7 +513,7 @@ function register(ctx) {
   // names, or a designer on the list (models.flexiDesigners in config.json).
   function flexiFor(rel, facts) {
     const m = (ctx.cfg && typeof ctx.cfg.models === "object" && ctx.cfg.models) || {};
-    const designers = Array.isArray(m.flexiDesigners) ? m.flexiDesigners : TUNING.FLEXI_DESIGNERS;
+    const designers = TUNING.flexiList(m);              // 2.47.1: empty unless the farm builds it
     const md = (facts && facts.metadata) || {};
     const texts = [md.Title || "", String(rel || "").split("/").pop(), String(rel || "")].concat(((facts && facts.parts) || []).map(p => p.name || ""));
     return TUNING.isFlexi({ texts, designer: TUNING.designerFromRel(rel), designers });
@@ -530,7 +544,12 @@ function register(ctx) {
       const text = lines.concat([""], pb, ["", "Return the JSON object now."]).join("\n");
       // "prompt v2.47": answers cached under the old instructions (no house
       // rules, no goal) are not reused.
-      const keyText = lines.join("\n") + "\n" + pb.filter(l => !/^  bed now|^TARGET PRINTER/.test(l)).join("\n") + "\n" + c.model + (g.thumb ? "\n" + g.thumb.name : "") + "\nprompt v2.47";
+      // 2.47.1: the farm's own rules. The default rules leave the key as it
+      // was, so answers saved under 2.47 are still reused; changed rules
+      // change the key, because they change what the model is told.
+      const hrules = TUNING.houseConf((ctx.cfg && ctx.cfg.models) || {});
+      const ruleSig = JSON.stringify(hrules) === JSON.stringify(TUNING.houseConf({})) ? "" : "\nhouse " + JSON.stringify(hrules);
+      const keyText = lines.join("\n") + "\n" + pb.filter(l => !/^  bed now|^TARGET PRINTER/.test(l)).join("\n") + "\n" + c.model + (g.thumb ? "\n" + g.thumb.name : "") + "\nprompt v2.47" + ruleSig;
       const ckey = crypto.createHash("sha1").update(keyText).digest("hex");
       const hit = !force && MCACHE.find(r => r.key === ckey);
       if (hit) return { status: 200, body: { ...hit, cached: true, facts: g.facts, thumb: !!g.thumb } };
@@ -541,7 +560,7 @@ function register(ctx) {
       // when the brief is long, and thinking tokens count against max_tokens.
       // At 1600 the first live call came back as one empty thinking block and
       // stop_reason max_tokens (2026-09-22, the donut keyring).
-      const r = await ask(c, content, 8000, MODEL_SYSTEM);
+      const r = await ask(c, content, 8000, modelSystem(hrules));
       const sug = parseSuggestion(r.text);
       if (!sug) return { status: 502, body: { error: "The model did not answer with a settings sheet; try again", raw: r.text.slice(0, 400) } };
       const p = Number.isInteger(idx) ? (ctx.printers || [])[idx] : null;
@@ -582,4 +601,4 @@ function register(ctx) {
 }
 
 module.exports = { register, briefFromText, printerBrief, parseVerdict, estimateCost, MODELS, MODEL_DEFAULT, SETTING_KEYS, SYSTEM,
-                   modelBriefLines, projectLines, parseSuggestion, pickVisionThumb, MODEL_SYSTEM, PROJECT_KEYS };
+                   modelBriefLines, projectLines, parseSuggestion, pickVisionThumb, MODEL_SYSTEM, modelSystem, PROJECT_KEYS };

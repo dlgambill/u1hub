@@ -4589,6 +4589,34 @@ async function stopHub() {
       const thps = JSON.parse(zipEntryContent(zipRead(th.buffer).find(x => x.name === "Metadata/project_settings.config")).toString());
       ok(thps.enable_support === undefined && thps.sparse_infill_density === "12%" && thps.sparse_infill_pattern === "gyroid" && thps.brim_width === "8" && th.skipped.some(x => /flexi/i.test(x.reason)),
         "tuneBuffer with the house rules: house infill written, the AI's flexi supports not, and the reasons ride in the skipped list", { ps: thps, skipped: th.skipped });
+
+      // 2.47.1: the rules are the farm's own settings, and the flexi designer
+      // list starts empty - the Hub ships to farms that are not Danny's.
+      console.log("\n== 2.47.1: shop rules are settings; the flexi list starts empty ==");
+      ok(Array.isArray(T.FLEXI_DESIGNERS) && T.FLEXI_DESIGNERS.length === 0 && T.flexiList({}).length === 0 &&
+         !T.isFlexi({ texts: ["Meerkat"], designer: "3DGOB" }).flexi && T.isFlexi({ texts: ["Dragon - Flexi"], designer: "x" }).flexi,
+        "out of the box no designer is a flexi designer; a model named Flexi still is");
+      ok(T.flexiList({ flexiDesigners: [" 3DGOB ", "", "IXPatch"] }).join() === "3DGOB,IXPatch", "the farm's list is read from config, blanks dropped");
+      let hc = T.houseConf({});
+      ok(hc.infillPct === 12 && hc.infill === "12%" && hc.pattern === "gyroid" && hc.minLayer === 0.16, "no house block in config: the 12% gyroid / 0.16 mm defaults", hc);
+      hc = T.houseConf({ house: { infill: null, pattern: "grid", minLayer: "" } });
+      ok(hc.infillPct === null && hc.infill === null && hc.minLayer === null && hc.pattern === "grid", "blank or null turns a rule off", hc);
+      hc = T.houseConf({ house: { infill: "15%", pattern: "nonsense", minLayer: 0.2 } });
+      ok(hc.infillPct === 15 && hc.pattern === "gyroid" && hc.minLayer === 0.2, "own numbers are used; a pattern Orca does not have falls back to gyroid", hc);
+      const ai2 = [{ key: "layer_height", value: "0.12" }, { key: "sparse_infill_density", value: "20%" }, { key: "sparse_infill_pattern", value: "grid" }];
+      h = T.houseRules(hps, ai2, { flexi: { flexi: false }, supportPaint: 0, structural: { is: false }, rules: T.houseConf({ house: { infill: null, minLayer: null } }) });
+      ok(h.settings.length === 3 && !h.notes.length && h.settings.find(x => x.key === "sparse_infill_density").value === "20%",
+        "infill and layer rules off: the AI's 0.12 mm and 20% grid go through untouched", h);
+      h = T.houseRules(hps, ai2, { flexi: { flexi: false }, supportPaint: 0, structural: { is: false }, rules: T.houseConf({ house: { infill: 15, pattern: "cubic", minLayer: 0.2 } }) });
+      ok(h.settings.find(x => x.key === "sparse_infill_density").set === "15%" && h.settings.find(x => x.key === "sparse_infill_pattern").set === "cubic" &&
+         h.notes.some(n => n.key === "layer_height" && /0\.2 mm/.test(n.reason)) && h.notes.some(n => /15% cubic/.test(n.reason)),
+        "a farm's own rules (15% cubic, 0.2 mm floor) are the ones enforced and named", h.notes);
+      const amod2 = require(path.join(REPO, "modules", "advisor.js"));
+      const sysOff = amod2.modelSystem(T.houseConf({ house: { infill: null, minLayer: null } }));
+      const sysOwn = amod2.modelSystem(T.houseConf({ house: { infill: 15, pattern: "cubic", minLayer: 0.2 } }));
+      ok(amod2.MODEL_SYSTEM === amod2.modelSystem(T.houseConf({})) && !/12% gyroid/.test(sysOff) && !/never below/.test(sysOff) && /infill is yours to choose/.test(sysOff) && /"structural"/.test(sysOff),
+        "the AI is told only the rules that are on (off: no infill or layer rule, still asked to flag structural parts)");
+      ok(/15% cubic/.test(sysOwn) && /0\.2 mm/.test(sysOwn) && !/12%/.test(sysOwn), "…and the farm's own numbers when it set them");
     }
 
     // The route, against a mock Messages endpoint that understands content blocks.
@@ -4695,6 +4723,29 @@ async function stopHub() {
       console.log("\n== 2.46: Mark for print tunes the file before it reaches the slicer ==");
       const tuneOf = async rel => ((await jget("/api/models/print-requests")).body.requests.find(q => q.rel === rel) || {}).tune || null;
       const settle = async rel => { for (let i = 0; i < 60; i++) { const t = await tuneOf(rel); if (t && !/^(queued|running)$/.test(t.status)) return t; await new Promise(r2 => setTimeout(r2, 250)); } return tuneOf(rel); };
+      // 2.47.1: tuning on Mark for print is OFF until someone turns it on.
+      {
+        const lst = await jget("/api/models?limit=1");
+        ok(lst.body && lst.body.pretune && lst.body.pretune.on === false && lst.body.house && lst.body.house.infill === 12 && Array.isArray(lst.body.house.flexiDesigners) && lst.body.house.flexiDesigners.length === 0,
+          "fresh install: tuning on Mark for print is off, the rules are the 12% default and the flexi list is empty", lst.body && { pretune: lst.body.pretune, house: lst.body.house });
+        const rel0 = "Harness/Default Off/default off.3mf";
+        fs.mkdirSync(path.dirname(path.join(mroot, rel0)), { recursive: true });
+        fs.writeFileSync(path.join(mroot, rel0), buildZip(files.concat([{ name: "Metadata/z.txt", data: Buffer.from("z") }])));
+        const c0 = calls.length;
+        const r0 = await jpost("/api/models/print-request", { path: path.join(mroot, rel0) });
+        await new Promise(r2 => setTimeout(r2, 500));
+        ok(r0.status === 200 && !(r0.body.request && r0.body.request.tune) && calls.length === c0, "…so a mark files the request and sends nothing", r0.body && r0.body.request);
+        await jpost("/api/models/print-request/clear", { file: rel0 });
+        let rs = await jpost("/api/models/settings", { pretune: true, houseInfill: "", houseMinLayer: "0.2 mm", housePattern: "cubic", flexiDesigners: "3DGOB\n\n 3dgob \nIXPatch" });
+        ok(rs.status === 200 && rs.body.pretune.on === true && rs.body.house.infill === null && rs.body.house.minLayer === 0.2 && rs.body.house.pattern === "cubic" && rs.body.house.flexiDesigners.join() === "3DGOB,IXPatch",
+          "the Folder panel saves the switch, blank infill as off, its own floor and pattern, and the flexi list (deduplicated)", rs.body);
+        rs = await jpost("/api/models/settings", { houseInfill: "150" });
+        ok(rs.status === 400 && /0 to 100/.test(rs.body.error), "an infill that is not a percentage is refused with the reason", rs.body);
+        rs = await jpost("/api/models/settings", { pretuneDailyMax: 25 });
+        ok(rs.status === 200 && rs.body.house.infill === null && rs.body.house.flexiDesigners.length === 2, "a save without the rule fields leaves the rules alone", rs.body && rs.body.house);
+        rs = await jpost("/api/models/settings", { houseInfill: "12%", houseMinLayer: "0.16", housePattern: "gyroid", flexiDesigners: "" });
+        ok(rs.status === 200 && rs.body.house.infill === 12 && rs.body.house.minLayer === 0.16 && rs.body.house.flexiDesigners.length === 0, "and back to the defaults for the rest of the harness", rs.body && rs.body.house);
+      }
       const relB = "Harness/Tune Me/tune me.3mf";
       const absB = path.join(mroot, relB);
       fs.mkdirSync(path.dirname(absB), { recursive: true });
@@ -4787,6 +4838,9 @@ async function stopHub() {
       const mui2 = fs.readFileSync(path.join(REPO, "public", "modules", "models-ui.js"), "utf8");
       ok(/data-openorig=/.test(mui2) && /original: true/.test(mui2) && /mdl-tune/.test(mui2) && /id="mdl-pretune"/.test(mui2) && /pretuneDailyMax/.test(mui2),
         "the card shows the tune and an Open original button, and the Folder panel has the switch and the daily limit");
+      ok(/id="mdl-hinfill"/.test(mui2) && /id="mdl-hminlayer"/.test(mui2) && /id="mdl-hpattern"/.test(mui2) && /id="mdl-flexi"/.test(mui2) &&
+         /DATA && DATA\.pretune && DATA\.pretune\.on \? " checked"/.test(mui2) && /if \(\(DATA && DATA\.house\) \|\| \(SETTINGS && SETTINGS\.house\)\)/.test(mui2),
+        "2.47.1: the Folder panel has the shop rules and the flexi list, the switch is unticked unless the server says on, and the rules are only sent once they were loaded");
       await jpost("/api/models/settings", { orcaExe: path.join(tmp, "no-such-orca.exe"), u1Template: "", clear: true });
       await jpost("/api/models/settings", { folder: mroot });
     }

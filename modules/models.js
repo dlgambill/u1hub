@@ -864,7 +864,8 @@ function register(ctx) {
       items: list.slice(offset, offset + limit),
       orcaExe: c.orcaExe, orca_found: fs.existsSync(c.orcaExe),
       u1_template: (await u1Template()).path, u1_template_set: c.u1Template,
-      pretune: ptConf()                                       // 2.46: for the Folder panel
+      pretune: ptConf(),                                      // 2.46: for the Folder panel
+      house: houseView()                                      // 2.47.1: the shop rules, for the same panel
     });
   });
 
@@ -1067,12 +1068,43 @@ function register(ctx) {
       if (b.pretuneDailyMax === "" || b.pretuneDailyMax == null || !Number.isFinite(n) || n < 0) return res.status(400).json({ error: "The daily limit should be a whole number, 0 or more" });
       next.pretuneDailyMax = Math.floor(n); ctx.cfg.models = next;
     }
+    // 2.47.1: the shop rules the AI works inside. A blank infill or minimum
+    // layer turns that rule off (stored as null); the pattern must be one of
+    // Orca's. The flexi designer list is one name per line (or an array).
+    if ("houseInfill" in b || "houseMinLayer" in b || "housePattern" in b) {
+      const h = { ...((next.house && typeof next.house === "object") ? next.house : {}) };
+      const cur0 = TUNE.houseConf(next);
+      if ("houseInfill" in b) {
+        const s = String(b.houseInfill == null ? "" : b.houseInfill).trim().replace(/%$/, "");
+        const n = Number(s);
+        if (s && !(Number.isFinite(n) && n >= 0 && n <= 100)) return res.status(400).json({ error: "Infill should be a percentage from 0 to 100, or blank to let the AI choose" });
+        h.infill = s ? n : null;
+      } else if (h.infill === undefined) h.infill = cur0.infillPct;
+      if ("houseMinLayer" in b) {
+        const s = String(b.houseMinLayer == null ? "" : b.houseMinLayer).trim().replace(/\s*mm$/i, "");
+        const n = Number(s);
+        if (s && !(Number.isFinite(n) && n >= 0.04 && n <= 0.32)) return res.status(400).json({ error: "The minimum layer height should be from 0.04 to 0.32 mm, or blank for no minimum" });
+        h.minLayer = s ? n : null;
+      } else if (h.minLayer === undefined) h.minLayer = cur0.minLayer;
+      if ("housePattern" in b) {
+        const p = String(b.housePattern || "").trim().toLowerCase();
+        if (!TUNE.TUNE.sparse_infill_pattern.vals.includes(p)) return res.status(400).json({ error: "The infill pattern should be one of Orca's (gyroid, grid, cubic, …)" });
+        h.pattern = p;
+      }
+      next.house = h; ctx.cfg.models = next;
+    }
+    if ("flexiDesigners" in b) {
+      const raw = Array.isArray(b.flexiDesigners) ? b.flexiDesigners : String(b.flexiDesigners || "").split(/\r?\n/);
+      const seen = new Set();
+      next.flexiDesigners = raw.map(x => String(x || "").trim()).filter(x => x && !seen.has(x.toLowerCase()) && seen.add(x.toLowerCase()));
+      ctx.cfg.models = next;
+    }
     if (!ctx.saveConfig()) return res.status(500).json({ error: ctx.saveConfigError() });
     refresh();
     TPL.at = 0;
     const c = conf();
     const t = await u1Template(true);
-    res.json({ ok: true, folder: c.folder, folder_found: fs.existsSync(c.folder), orcaExe: c.orcaExe, orca_found: fs.existsSync(c.orcaExe), u1_template: t.path, u1_template_set: c.u1Template, pretune: ptConf() });
+    res.json({ ok: true, folder: c.folder, folder_found: fs.existsSync(c.folder), orcaExe: c.orcaExe, orca_found: fs.existsSync(c.orcaExe), u1_template: t.path, u1_template_set: c.u1Template, pretune: ptConf(), house: houseView() });
   });
 
   // Thumbnail: the plate PNG the designer saved inside the file, cached on
@@ -1285,9 +1317,11 @@ function register(ctx) {
   // it - then painted supports count as unknown, the safe side).
   function houseFor(rel, facts, sug) {
     const fx = ctx.use("advisor.flexiFor");
-    const flexi = fx ? fx(rel, facts) : TUNE.isFlexi({ texts: [rel], designer: TUNE.designerFromRel(rel) });
+    const m = (ctx.cfg && typeof ctx.cfg.models === "object" && ctx.cfg.models) || {};
+    const flexi = fx ? fx(rel, facts) : TUNE.isFlexi({ texts: [rel], designer: TUNE.designerFromRel(rel), designers: TUNE.flexiList(m) });
     const supportPaint = facts && facts.ok ? ((facts.support_paint || {}).painted_tris || 0) : null;
-    return { flexi, supportPaint, structural: (sug && sug.structural) || { is: false, why: null } };
+    // 2.47.1: the farm's own rules (Folder panel), not the built-in numbers.
+    return { flexi, supportPaint, structural: (sug && sug.structural) || { is: false, why: null }, rules: TUNE.houseConf(m) };
   }
   async function buildTuned(from, settings, house) {
     const c = conf();
@@ -1485,7 +1519,7 @@ function register(ctx) {
   // since its tune opens as it is and is tuned again - never a stale copy.
   // Files with no Orca settings (PrusaSlicer projects) are skipped before
   // anything is sent, and a daily limit counts only answers that cost money,
-  // so a burst of marks cannot run up a bill. models.pretune (default on) and
+  // so a burst of marks cannot run up a bill. models.pretune (default OFF since 2.47.1) and
   // models.pretuneDailyMax (default 25) in config.json, both set from the
   // Folder panel.
   const PRETUNE_DIR = path.join(ctx.baseDir, "pretuned");
@@ -1496,7 +1530,15 @@ function register(ctx) {
   function ptConf() {
     const m = (ctx.cfg && typeof ctx.cfg.models === "object" && ctx.cfg.models) || {};
     const n = Number(m.pretuneDailyMax);
-    return { on: m.pretune !== false, max: m.pretuneDailyMax != null && m.pretuneDailyMax !== "" && Number.isFinite(n) && n >= 0 ? Math.floor(n) : 25 };
+    // 2.47.1: OFF unless turned on. Each tune is a paid call with the file's
+    // data in it, so it is something a person chooses, not an upgrade side effect.
+    return { on: m.pretune === true, max: m.pretuneDailyMax != null && m.pretuneDailyMax !== "" && Number.isFinite(n) && n >= 0 ? Math.floor(n) : 25 };
+  }
+  // 2.47.1: the shop rules as the Folder panel shows them.
+  function houseView() {
+    const m = (ctx.cfg && typeof ctx.cfg.models === "object" && ctx.cfg.models) || {};
+    const r = TUNE.houseConf(m);
+    return { infill: r.infillPct, pattern: r.pattern, minLayer: r.minLayer, flexiDesigners: TUNE.flexiList(m), patterns: TUNE.TUNE.sparse_infill_pattern.vals };
   }
   const today = () => new Date().toLocaleDateString("en-CA");
   const ptDirFor = rel => path.join(PRETUNE_DIR, crypto.createHash("sha1").update(String(rel)).digest("hex").slice(0, 16));
