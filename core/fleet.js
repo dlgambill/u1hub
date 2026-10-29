@@ -2,7 +2,7 @@
 // Split out of server.js (v2.23). Loads in the original order through the
 // shared `hub`; see server.js for the sequence. Behavior-preserving move.
 const http = require("http");
-const { printerUrl, printerWsUrl } = require("./util.js");
+const { printerUrl, printerWsUrl, klippyText } = require("./util.js");
 
 module.exports = function (hub) {
 const { app, detectCaps } = hub;
@@ -157,9 +157,19 @@ async function shapeStatus(p, st, base) {
     const info = ps.info || {};
     const layer = (typeof info.current_layer === "number" && typeof info.total_layer === "number" && info.total_layer > 0)
       ? { cur: info.current_layer, total: info.total_layer } : null;
+    // 2.47.2: Klipper itself can be down while print_stats still reads
+    // "paused" - U7, 2026-10-28, lost its e1 toolhead board mid-print and the
+    // card offered Resume, which can never work then. webhooks.state is
+    // Klipper's own: ready / startup / shutdown / error. Shutdown and error
+    // make the card an error with the firmware's reason, so the existing
+    // error paths (pill, reason line, phone notice, logbook) all see it.
+    const wh = st.webhooks || {};
+    const klippy = (wh.state === "shutdown" || wh.state === "error")
+      ? { state: wh.state, message: klippyText(wh.state_message) || "Klipper " + wh.state } : null;
     return {
       name: p.name, online: true,
-      state: ps.state || "unknown",
+      state: klippy ? "error" : (ps.state || "unknown"),
+      klippy,
       // Firmware error text so failures say WHY on the card. Two sources:
       //   * print_stats.message  - stock Klipper, set on state "error"
       //   * print_stats.exception - Snapmaker's fork; set on the PAUSES its
@@ -167,7 +177,7 @@ async function shapeStatus(p, st, base) {
       //     2026-09-08 on U2: { id:523, index:0, code:38,
       //     message:"detect filament tangled!", level:2 } with state "paused".
       //     `index` is the extruder the firmware's own log names (extruder[0]).
-      message: pauseOrErrorText(ps),
+      message: klippy ? klippy.message : pauseOrErrorText(ps),
       filename: ps.filename || "",
       progress,
       etaSec,
@@ -182,7 +192,7 @@ async function shapeStatus(p, st, base) {
 
 async function probe(p) {
   const base = printerUrl(p);
-  const url = base + "/printer/objects/query?print_task_config&print_stats&display_status&virtual_sdcard&heater_bed&exclude_object";
+  const url = base + "/printer/objects/query?print_task_config&print_stats&display_status&virtual_sdcard&heater_bed&exclude_object&webhooks";
   try {
     const ctrl = new AbortController();
     const to = setTimeout(() => ctrl.abort(), 3500);
@@ -212,7 +222,7 @@ async function probe(p) {
 // to the same HTTP probe the Hub has always used — worst case is v2.3.0
 // behavior, never worse.
 const FARM_SUB = { print_task_config: null, print_stats: null, display_status: null,
-                   virtual_sdcard: null, heater_bed: null, exclude_object: null };
+                   virtual_sdcard: null, heater_bed: null, exclude_object: null, webhooks: null };
 
 const FARMWS = new Map();   // idx -> { ws, status, raw, seenAt, backoff, timer, epoch }
 
@@ -246,6 +256,18 @@ function farmWsConnect(idx) {
     // Subscribe response carries a full snapshot of every requested object.
     if (j.id === 1 && j.result && j.result.status) {
       rec.raw = j.result.status; rec.seenAt = Date.now(); farmMarkDirty(); return;
+    }
+    // 2.47.2: Klipper going down or coming back. Moonraker says so with its
+    // own notices rather than a status update, so mark the cache at once and
+    // re-subscribe when Klipper is ready again (a restart drops the
+    // subscription's objects). The 20 s reconcile below re-reads webhooks too.
+    if (j.method === "notify_klippy_shutdown" || j.method === "notify_klippy_disconnected") {
+      rec.raw.webhooks = Object.assign({}, rec.raw.webhooks, { state: j.method === "notify_klippy_shutdown" ? "shutdown" : "startup" });
+      rec.seenAt = Date.now(); farmMarkDirty(); return;
+    }
+    if (j.method === "notify_klippy_ready") {
+      try { ws.send(JSON.stringify({ jsonrpc: "2.0", method: "printer.objects.subscribe", params: { objects: FARM_SUB }, id: 1 })); } catch {}
+      return;
     }
     // Incremental updates: params[0] holds per-object partial field sets.
     if (j.method === "notify_status_update" && Array.isArray(j.params) && j.params[0]) {
@@ -298,7 +320,7 @@ setInterval(() => {
     // has gone quiet used to hold this fetch (and its socket) open forever.
     const ctrl = new AbortController();
     const to = setTimeout(() => ctrl.abort(), RECONCILE_TIMEOUT_MS);
-    fetch(base + "/printer/objects/query?print_task_config", { signal: ctrl.signal })
+    fetch(base + "/printer/objects/query?print_task_config&webhooks", { signal: ctrl.signal })
       .then(r => r.ok ? r.json() : null)
       .then(j => {
         const ptc = j && j.result && j.result.status && j.result.status.print_task_config;
@@ -306,6 +328,13 @@ setInterval(() => {
           const before = JSON.stringify(rec.raw.print_task_config || {});
           rec.raw.print_task_config = ptc;
           if (JSON.stringify(ptc) !== before) farmMarkDirty();
+        }
+        // 2.47.2: Klipper's own state, in case a shutdown notice was missed.
+        const wh = j && j.result && j.result.status && j.result.status.webhooks;
+        if (wh) {
+          const before = JSON.stringify(rec.raw.webhooks || {});
+          rec.raw.webhooks = wh;
+          if (JSON.stringify(wh) !== before) farmMarkDirty();
         }
       }).catch(() => {}).finally(() => clearTimeout(to));
   }

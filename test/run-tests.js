@@ -5555,8 +5555,47 @@ async function stopHub() {
       .then(async x => ({ status: x.status, body: await x.json().catch(() => null) }), e => ({ status: 0, body: { error: "harness gave up: " + e.message } }));
     ok(r.status === 502 && /timed out/i.test(r.body && r.body.error), "H3: a printer that never answers a command gives a 502 'timed out', not a hung request", r.body);
     ok(Date.now() - t0 < 10000, "H3: …within the harness limit (production: 10 s)", Date.now() - t0);
+    // 2.47.2: the same failure arriving through Cloudflare (cf-ray header) is
+    // sent as 424 with the real code in X-Hub-Status - Cloudflare replaces a
+    // 502 body with its own HTML page, which the card showed as
+    // "Unexpected token '<'" (U7, 2026-10-28).
+    r = await fetch(HUB + "/api/printctl", { method: "POST", headers: { "Content-Type": "application/json", "cf-ray": "harness-1" },
+      body: JSON.stringify({ printer: UID, action: "pause" }), signal: AbortSignal.timeout(12000) })
+      .then(async x => ({ status: x.status, hub: x.headers.get("x-hub-status"), body: await x.json().catch(() => null) }), e => ({ status: 0, body: { error: "harness gave up: " + e.message } }));
+    ok(r.status === 424 && r.hub === "502" && /timed out/i.test(r.body && r.body.error), "2.47.2: through the tunnel a 502 goes out as 424 (X-Hub-Status 502), JSON body intact", r);
     mockU1.state.stallScripts = false;
     mockU1.state.releaseHeld && mockU1.state.releaseHeld();
+    {
+      // 2.47.2: Klipper itself shut down while print_stats still says
+      // "paused" (U7 lost its e1 toolhead board). The card must say so with
+      // the firmware's reason, Resume must come back as that reason, and
+      // Restart firmware must bring the printer back.
+      console.log("\n== 2.47.2: a printer whose firmware has stopped ==");
+      const fleetMe = async () => { const f = (await jget("/api/fleet")).body; return (f.printers || f).find(x => x.id === UID); };
+      mockU1.state.printState = "paused"; mockU1.state.filename = "jolteon.gcode";
+      mockU1.state.klippy = "shutdown";
+      mockU1.state.klippyMessage = JSON.stringify({ coded: "0003-0522-0003-0008", oneshot: 0, msg: "Lost communication with MCU 'e1'" });
+      let me = null;
+      for (let i = 0; i < 40; i++) { me = await fleetMe(); if (me && me.klippy) break; await sleep(250); }
+      ok(me && me.klippy && me.klippy.state === "shutdown" && me.state === "error" && me.message === "Lost communication with MCU 'e1'",
+        "the card reads Klipper's own state: shutdown shows as an error with the firmware's reason, not as paused", me && { state: me.state, klippy: me.klippy, message: me.message });
+      r = await jpost("/api/printctl", { printer: UID, action: "resume" });
+      ok(r.status === 409 && /refused resume/.test(r.body.error) && /Lost communication with MCU 'e1'/.test(r.body.error),
+        "Resume on a stopped printer comes back as the firmware's reason (409), not a gateway error", r.body);
+      const n0 = mockU1.state.restarts;
+      r = await jpost("/api/printctl", { printer: UID, action: "restart" });
+      ok(r.status === 200 && mockU1.state.restarts === n0 + 1 && mockU1.state.klippy === "ready", "Restart firmware calls Moonraker's firmware_restart", r.body);
+      mockU1.state.printState = "standby"; mockU1.state.filename = "";
+      for (let i = 0; i < 40; i++) { me = await fleetMe(); if (me && !me.klippy) break; await sleep(250); }
+      ok(me && !me.klippy && me.state !== "error", "…and once Klipper is ready the card is a normal printer again", me && { state: me.state, klippy: me.klippy });
+      const appSrc = fs.readFileSync(path.join(REPO, "public", "app.js"), "utf8");
+      ok(/p\.online && p\.klippy[\s\S]{0,120}ctlBtn\(p\.id,"restart","Restart firmware"/.test(appSrc) && /const raw=await r\.text\(\); let d;\s*try\{ d=JSON\.parse\(raw\); \}catch/.test(appSrc),
+        "the card offers Restart firmware instead of Resume/Print, and a non-JSON answer shows the HTTP status instead of a parse error");
+      const u = require(path.join(REPO, "core", "util.js"));
+      ok(u.klippyText('{"coded":"x","msg":"Lost communication with MCU \'e1\'"}') === "Lost communication with MCU 'e1'" &&
+         u.klippyText("!! MCU 'mcu' shutdown: Timer too close\nThis often indicates the host computer is overloaded.") === "MCU 'mcu' shutdown: Timer too close",
+        "klippyText: Snapmaker's JSON and stock Klipper's multi-line text both come down to the first real sentence");
+    }
     {
       const src = fs.readFileSync(path.join(REPO, "core", "print.js"), "utf8").split(/\r?\n/).map(l => l.replace(/^\s*\/\/.*$/, "")).join("\n");
       const bare = src.replace(/function fetchWithTimeout[\s\S]*?\n\}\n/, "").match(/(^|[^\w.])fetch\(/g) || [];

@@ -77,6 +77,10 @@ printers, and nothing leaves your network unless you turn remote access on.
 
 ---
 
+### 2.47.2 - a printer whose firmware has stopped says so
+
+- **Resume on U7 said "Unexpected token '<'".** U7 lost contact with one of its toolhead boards mid-print ("Lost communication with MCU 'e1'") and Klipper shut down, but the print still read as paused, so the card offered Resume. Every press was refused by the firmware, the Hub passed that on as a 502, and Cloudflare - which replaces a 502 from the Hub with its own error page - handed the phone a page of HTML instead of the reason. Three fixes: the Hub now reads Klipper's own state, so a shut-down printer shows **Firmware stopped** with the firmware's reason and a **Restart firmware** button (it asks first, because the stopped print is lost); a pause, resume or cancel the printer refuses comes back as the printer's reason, not a gateway error; and through the tunnel the Hub sends 502 and 504 as 424, with the real code in an X-Hub-Status header, so Cloudflare passes the answer through. The card also shows the HTTP status if an error page ever does come back, instead of a JSON parse error. (Best practice: never let an error's wording depend on what sits between the server and the browser - read the response as text first, and pick status codes the proxy in front of you passes through.)
+
 ### 2.47.1 - tuning is your choice, and the shop rules are yours
 
 - **Tuning on Mark for print is off until you turn it on.** In 2.46 it came on by default, so anyone who already had an AI key would have started paying for a tune on every Mark for print the moment they updated. Each tune is a paid call that sends the file's measurements and plate picture out, so it is now something you switch on under Models, ⚙ Folder. If you had saved the Folder panel with the box ticked, it stays on; if you never touched it, tick it once after updating.

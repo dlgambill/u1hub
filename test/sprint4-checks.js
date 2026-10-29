@@ -24,7 +24,7 @@ module.exports = async function sprint4Checks(ok) {
     "H10: the dispatch executor acts on the loop's snapshot every ~10 s instead of taking its own");
   ok(/events: new \(require\("events"\)\)\(\)/.test(read("server.js")), "H10: the event bus is created with the hub so core files loaded before the fleet can subscribe");
   const rec = fleet.slice(fleet.indexOf("RECONCILE_TIMEOUT_MS = "), fleet.indexOf("}, 20000);"));
-  ok(/ctrl\.abort\(\), RECONCILE_TIMEOUT_MS/.test(rec) && /print_task_config", \{ signal: ctrl\.signal \}/.test(rec),
+  ok(/ctrl\.abort\(\), RECONCILE_TIMEOUT_MS/.test(rec) && /print_task_config(&webhooks)?", \{ signal: ctrl\.signal \}/.test(rec),   // 2.47.2: also re-reads Klipper's state
     "H10: the 20 s color reconcile fetch carries an AbortController, so a printer that stops answering cannot hold it open");
 
   // ---- H18 ----

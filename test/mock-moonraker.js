@@ -40,12 +40,18 @@ function createMock(profile) {
     metaFetches: 0,                // 2.45 (H17): /server/files/metadata hits - proves thumbnails do not evict the fleet's cache
     held: []                       // requests parked by the two knobs above
   };
+  // 2.47.2: Klipper's own state (webhooks). "shutdown" refuses every gcode
+  // script with the reason, the way U7 did on 2026-10-28, until
+  // /printer/firmware_restart brings it back.
+  state.klippy = "ready";
+  state.klippyMessage = "Printer is ready";
+  state.restarts = 0;
   // Let go of every parked request (the harness calls this after a stall test).
   state.releaseHeld = () => { for (const r of state.held.splice(0)) { try { r.socket && r.socket.destroy(); } catch {} } };
 
   const objectsList = profile === "u1"
-    ? ["print_stats", "display_status", "virtual_sdcard", "heater_bed", "exclude_object", "print_task_config", "extruder", "extruder1", "extruder2", "extruder3"]
-    : ["print_stats", "display_status", "virtual_sdcard", "heater_bed", "exclude_object", "extruder"];
+    ? ["webhooks", "print_stats", "display_status", "virtual_sdcard", "heater_bed", "exclude_object", "print_task_config", "extruder", "extruder1", "extruder2", "extruder3"]
+    : ["webhooks", "print_stats", "display_status", "virtual_sdcard", "heater_bed", "exclude_object", "extruder"];
 
   const ptc = { // U1-only object
     filament_exist: [true, true, false, false],
@@ -87,6 +93,7 @@ function createMock(profile) {
         ? { progress: 0, file_size: 123456, file_position: 0, file_path: state.filename } : { progress: 0 };
       if (want.some(k => k.startsWith("heater_bed"))) status.heater_bed = { temperature: 25, target: 0 };
       if (want.some(k => k.startsWith("exclude_object"))) status.exclude_object = {};
+      if (want.some(k => k.startsWith("webhooks"))) status.webhooks = { state: state.klippy, state_message: state.klippyMessage };
       return send(200, { result: { status } });
     }
 
@@ -128,6 +135,16 @@ function createMock(profile) {
       return;
     }
 
+    if (u.pathname === "/printer/firmware_restart" && req.method === "POST") {
+      state.restarts++; state.klippy = "ready"; state.klippyMessage = "Printer is ready";
+      return send(200, { result: "ok" });
+    }
+    if (u.pathname === "/printer/gcode/script" && req.method === "POST" && state.klippy !== "ready") {
+      state.gcodeScripts.push(u.searchParams.get("script") || "");
+      let why = state.klippyMessage;
+      try { why = JSON.parse(why).msg || why; } catch {}
+      return send(400, { error: { code: 400, message: why, traceback: "" } });
+    }
     if (u.pathname === "/printer/gcode/script" && req.method === "POST") {
       const script = u.searchParams.get("script") || "";
       state.gcodeScripts.push(script);

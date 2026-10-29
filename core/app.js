@@ -55,6 +55,24 @@ const jsonBody = express.json({ limit: "1mb" });
 app.use((req, res, next) =>
   req.path.startsWith(PRINTER_PROXY_PREFIX) ? next() : jsonBody(req, res, next));
 
+// 2.47.2: through the Cloudflare tunnel, a 502 or 504 from the Hub never
+// reaches the browser - Cloudflare swaps in its own HTML error page, so the
+// page saw "Unexpected token '<'" instead of the firmware's reason (U7,
+// 2026-10-28: "Lost communication with MCU 'e1'"). Requests that came through
+// Cloudflare (cf-ray header) get those two codes sent as 424 instead, with the
+// real code in X-Hub-Status and the JSON body untouched. Local requests keep
+// the true codes. The printer proxy relays printer pages and is left alone.
+const CF_SWAPPED = new Set([502, 504]);
+app.use((req, res, next) => {
+  if (!req.headers["cf-ray"] || req.path.startsWith(PRINTER_PROXY_PREFIX)) return next();
+  const status = res.status.bind(res);
+  res.status = code => {
+    if (CF_SWAPPED.has(code)) { res.set("X-Hub-Status", String(code)); return status(424); }
+    return status(code);
+  };
+  next();
+});
+
 // Access gate — fronts everything below (static included). Modes and the
 // off-switch live in auth.json; see auth.js for the design notes.
 // The returned isAuthed() is handed to modules that must gate a WebSocket

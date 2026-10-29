@@ -5,7 +5,7 @@ const fs = require("fs");
 const http = require("http");
 const path = require("path");
 const { Transform } = require("stream");
-const { printerUrl } = require("./util.js");
+const { printerUrl, klippyText } = require("./util.js");
 const { readSpools } = require("./spools.js");
 
 module.exports = function (hub) {
@@ -379,12 +379,24 @@ app.post("/api/printctl", async (req, res) => {
   const { printer, action } = req.body || {};
   const p = hub.PRINTERS[printer];
   if (!p) return res.status(400).json({ error: "Unknown printer" });
-  const cmd = { pause: "PAUSE", resume: "RESUME", cancel: "CANCEL_PRINT" }[action];
+  const cmd = { pause: "PAUSE", resume: "RESUME", cancel: "CANCEL_PRINT", restart: "FIRMWARE_RESTART" }[action];
   if (!cmd) return res.status(400).json({ error: "Bad action" });
   const base = printerUrl(p);
   try {
-    const r = await fetchWithTimeout(base + "/printer/gcode/script?script=" + encodeURIComponent(cmd), { method: "POST" });
-    if (!r.ok) return res.status(502).json({ error: "Moonraker " + r.status + ": " + (await r.text()).slice(0, 160) });
+    // 2.47.2: restart is Moonraker's own firmware_restart endpoint, which works
+    // while Klipper is shut down (a gcode script cannot run then).
+    const url = action === "restart" ? base + "/printer/firmware_restart" : base + "/printer/gcode/script?script=" + encodeURIComponent(cmd);
+    const r = await fetchWithTimeout(url, { method: "POST" });
+    if (!r.ok) {
+      // The printer answered and said no: that is the firmware's reason, so
+      // say it plainly (409), not as a gateway failure. Moonraker wraps it as
+      // { error: { message } }; Snapmaker's fork may put JSON in the message.
+      const text = await r.text();
+      let msg = text;
+      try { const j = JSON.parse(text); msg = (j && j.error && (j.error.message || j.error)) || text; } catch {}
+      msg = klippyText(String(msg).replace(/^!!\s*/, ""));
+      return res.status(409).json({ error: p.name + " refused " + action + ": " + msg.slice(0, 200), firmware: msg.slice(0, 400) });
+    }
     res.json({ ok: true, action });
   } catch (e) {
     res.status(502).json({ error: "Could not reach " + p.name + ": " + e.message });

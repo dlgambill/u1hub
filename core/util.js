@@ -83,4 +83,15 @@ async function grabFrame(base, timeoutMs) {
   } catch { clearTimeout(to); return null; }
 }
 
-module.exports = { stripSlash, printerUrl, printerWsUrl, atomicWrite, isoWeekKey, nameMatcher, grabFrame };
+// 2.47.2: Klipper's shutdown/error text in plain words. Stock Klipper gives
+// several lines of advice after the reason; Snapmaker's fork gives JSON
+// ({"coded":"0003-0522-0003-0008","msg":"Lost communication with MCU 'e1'"},
+// U7 2026-10-28). Either way the first real sentence is what a person needs.
+function klippyText(raw) {
+  let s = String(raw == null ? "" : raw).trim();
+  if (/^\{/.test(s)) { try { const j = JSON.parse(s); if (j && j.msg) s = String(j.msg); } catch {} }
+  s = s.replace(/^!!\s*/, "").split(/\r?\n/).map(x => x.trim()).find(Boolean) || "";
+  return s.slice(0, 200);
+}
+
+module.exports = { stripSlash, printerUrl, printerWsUrl, atomicWrite, isoWeekKey, nameMatcher, grabFrame, klippyText };

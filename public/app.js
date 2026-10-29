@@ -2059,7 +2059,7 @@ function renderFleet(){
         pillTxt="Printing "+Math.round((p.progress||0)*100)+"%"+rem;
       }
       else if(p.state==="paused"){ pillCls="busy"; pillTxt="Paused"; }
-      else if(p.state==="error"){ pillCls="err"; pillTxt="Error"; }
+      else if(p.state==="error"){ pillCls="err"; pillTxt=p.klippy?"Firmware stopped":"Error"; }
       else { pillCls="idle"; pillTxt="Idle"; }
     }
     // v2.20: a machine you took out of service must say so HERE, not only on
@@ -2182,7 +2182,10 @@ function renderFleet(){
       ${mapHtml}
       ${matchHtml?`<div class="matchrow">${matchHtml}</div>`:""}
       <div class="foot">
-        ${busy
+        ${p.online && p.klippy
+          // 2.47.2: Klipper is down - Resume/Print cannot work, Restart can.
+          ? ctlBtn(p.id,"restart","Restart firmware","ghost")
+          : busy
           ? (p.state==="paused"
                 ? ctlBtn(p.id,"resume","Resume","ghost")
                 : ctlBtn(p.id,"pause","Pause","ghost"))
@@ -2490,15 +2493,25 @@ function ctlSetBusy(printer, act){
 }
 async function ctl(printer, act){
   if(act==="cancel" && !confirm("Cancel this print? This can't be undone.")) return;
+  // 2.47.2: a firmware restart clears whatever print was stopped on the bed.
+  if(act==="restart"){
+    const pp=(FLEET||[]).find(x=>x.id===printer);
+    if(!confirm("Restart "+(pp?pp.name:"this printer")+"'s firmware? The print that stopped can't be resumed after this. Fix the cause first (the reason is on the card)." )) return;
+  }
   if(CTLBUSY.has(printer)) return;
   const st=$("pst-"+printer);
-  if(st){ st.className="pstatus work"; st.textContent={pause:"Pausing…",resume:"Resuming…",cancel:"Cancelling…"}[act]; }
+  if(st){ st.className="pstatus work"; st.textContent={pause:"Pausing…",resume:"Resuming…",cancel:"Cancelling…",restart:"Restarting firmware…"}[act]; }
   CTLBUSY.set(printer, act); ctlSetBusy(printer, act);
   try{
     const r=await fetch("/api/printctl",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({printer,action:act})});
-    const d=await r.json(); if(!r.ok||d.error) throw new Error(d.error||("HTTP "+r.status));
+    // 2.47.2: never assume the answer is JSON. Through a tunnel or proxy an
+    // error can come back as an HTML page, and "Unexpected token '<'" told
+    // nobody anything (U7, 2026-10-28).
+    const raw=await r.text(); let d;
+    try{ d=JSON.parse(raw); }catch{ d={ error:"HTTP "+r.status+(/^\s*</.test(raw)?" - an error page came back instead of the Hub's answer; the printer may still have done it, check the card":"") }; }
+    if(!r.ok||d.error) throw new Error(d.error||("HTTP "+r.status));
     CTLBUSY.delete(printer);
-    if(st){ st.className="pstatus ok"; st.textContent={pause:"Paused",resume:"Resumed",cancel:"Cancelled"}[act]; }
+    if(st){ st.className="pstatus ok"; st.textContent={pause:"Paused",resume:"Resumed",cancel:"Cancelled",restart:"Firmware restarted"}[act]; }
     loadFleet();
   }catch(e){
     // Re-enable on error and say why on the card's own status line.
