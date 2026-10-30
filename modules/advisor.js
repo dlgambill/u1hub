@@ -63,12 +63,15 @@ const CACHE_MAX = 60;
 // Model menu. Prices are USD per million tokens (input, output), for the cost
 // line under each review; they are shown as an estimate and nothing here
 // depends on them being exact.
+// 2.47.3: Sonnet 5.5 is the default (same price as Sonnet 5). Sonnet 5 stays
+// on the menu so a saved choice keeps working.
 const MODELS = Object.freeze({
-  "claude-sonnet-5":   { label: "Claude Sonnet 5 (recommended)", in: 2, out: 10 },
+  "claude-sonnet-5-5": { label: "Claude Sonnet 5.5 (recommended)", in: 2, out: 10 },
+  "claude-sonnet-5":   { label: "Claude Sonnet 5",               in: 2, out: 10 },
   "claude-haiku-4-5":  { label: "Claude Haiku 4.5 (cheapest)",   in: 1, out: 5 },
   "claude-opus-5":     { label: "Claude Opus 5 (most thorough)", in: 5, out: 25 }
 });
-const MODEL_DEFAULT = "claude-sonnet-5";
+const MODEL_DEFAULT = "claude-sonnet-5-5";
 
 // The settings worth a reviewer's attention. Everything Orca writes is several
 // hundred keys; these are the ones that decide whether a print works.
@@ -386,7 +389,7 @@ function register(ctx) {
     }
     if ("model" in b) {
       const m = String(b.model || "").trim();
-      if (m && !/^[a-z0-9.-]{3,60}$/i.test(m)) return res.status(400).json({ error: "model must be a plain model id like claude-sonnet-5" });
+      if (m && !/^[a-z0-9.-]{3,60}$/i.test(m)) return res.status(400).json({ error: "model must be a plain model id like claude-sonnet-5-5" });
       if (m) next.model = m; else delete next.model;
     }
     if ("url" in b) {   // not in the UI; for tests and for a proxy someone runs themselves

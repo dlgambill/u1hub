@@ -3701,11 +3701,15 @@ async function stopHub() {
       ok(b.lines.join("\n").length < 4000, "the brief is a few thousand characters, not the file", s.length);
       ok(amod.parseVerdict("**CHECK**: x") === "CHECK" && amod.parseVerdict("GO: fine") === "GO" && amod.parseVerdict("Stop. really") === "STOP" && amod.parseVerdict("hello") === null, "verdict parsing tolerates markdown and case");
       ok(amod.estimateCost("claude-sonnet-5", { input_tokens: 1200, output_tokens: 150 }) === 0.0039, "cost estimate: 1200 in + 150 out on Sonnet 5 = $0.0039");
+      // 2.47.3: Sonnet 5.5 is the default (Danny, 2026-10-30: every title on Sonnet moves to 5.5).
+      // Sonnet 5 stays on the menu so a saved choice keeps working.
+      ok(amod.MODEL_DEFAULT === "claude-sonnet-5-5" && amod.MODELS["claude-sonnet-5-5"] && /recommended/.test(amod.MODELS["claude-sonnet-5-5"].label) && amod.MODELS["claude-sonnet-5"] && !/recommended/.test(amod.MODELS["claude-sonnet-5"].label), "Sonnet 5.5 is the recommended default; Sonnet 5 is still on the menu");
+      ok(amod.estimateCost("claude-sonnet-5-5", { input_tokens: 1200, output_tokens: 150 }) === 0.0039, "cost estimate on Sonnet 5.5 uses its own price ($2/$10)");
       ok(amod.SYSTEM.length < 2500 && /GO, CHECK, or STOP/.test(amod.SYSTEM), "system prompt asks for a one-word verdict first");
     }
 
     let r = await jget("/api/advisor");
-    ok(r.status === 200 && r.body.key_set === false && r.body.model === "claude-sonnet-5" && Array.isArray(r.body.models), "GET /api/advisor: no key, Sonnet 5 default, model menu", r.body);
+    ok(r.status === 200 && r.body.key_set === false && r.body.model === "claude-sonnet-5-5" && Array.isArray(r.body.models) && r.body.models.some(m => m.id === "claude-sonnet-5-5"), "GET /api/advisor: no key, Sonnet 5.5 default, model menu", r.body);
     fs.writeFileSync(path.join(gcodeDir, "advisor.gcode"), GCODE_MULTI + "\n; layer_height = 0.2\n; nozzle_temperature = 220;220;220;220\n; hot_plate_temp = 60\n");
     await jget("/api/files?type=u1");
     const U1ID = byPort((await jget("/api/fleet")).body || []).id;

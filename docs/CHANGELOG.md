@@ -77,6 +77,10 @@ printers, and nothing leaves your network unless you turn remote access on.
 
 ---
 
+### 2.47.3 - the AI buttons default to Claude Sonnet 5.5
+
+- **Sonnet 5.5 is the new default.** The pre-flight and the settings suggestions now use Claude Sonnet 5.5 unless you picked something else in Settings. It costs the same as Sonnet 5. Sonnet 5 is still on the menu, so a saved choice keeps working; pick Sonnet 5.5 in Settings to move to it. (Best practice: change a default, never a choice the owner already made.)
+
 ### 2.47.2 - a printer whose firmware has stopped says so
 
 - **Resume on U7 said "Unexpected token '<'".** U7 lost contact with one of its toolhead boards mid-print ("Lost communication with MCU 'e1'") and Klipper shut down, but the print still read as paused, so the card offered Resume. Every press was refused by the firmware, the Hub passed that on as a 502, and Cloudflare - which replaces a 502 from the Hub with its own error page - handed the phone a page of HTML instead of the reason. Three fixes: the Hub now reads Klipper's own state, so a shut-down printer shows **Firmware stopped** with the firmware's reason and a **Restart firmware** button (it asks first, because the stopped print is lost); a pause, resume or cancel the printer refuses comes back as the printer's reason, not a gateway error; and through the tunnel the Hub sends 502 and 504 as 424, with the real code in an X-Hub-Status header, so Cloudflare passes the answer through. The card also shows the HTTP status if an error page ever does come back, instead of a JSON parse error. (Best practice: never let an error's wording depend on what sits between the server and the browser - read the response as text first, and pick status codes the proxy in front of you passes through.)
