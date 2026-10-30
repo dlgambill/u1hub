@@ -77,6 +77,10 @@ printers, and nothing leaves your network unless you turn remote access on.
 
 ---
 
+### 2.47.4 - the AI Test button works on Sonnet 5.5
+
+- **Test said "no text" on Sonnet 5.5.** The Test button sends the cheapest possible call ("Reply with the single word OK") and capped it at 5 tokens. Sonnet 5.5 always thinks before it answers, and thinking counts against that cap, so the call ended with one empty thinking block and the button showed an error - while the real pre-flight and settings suggestions (4,000 and 8,000 tokens) worked fine. The test now allows 1,024 tokens; the reply is still one word, so it costs about the same. (Best practice: size a model's token budget for its thinking as well as its answer, and test a model switch with a real call, not just the harness's stand-in.)
+
 ### 2.47.3 - the AI buttons default to Claude Sonnet 5.5
 
 - **Sonnet 5.5 is the new default.** The pre-flight and the settings suggestions now use Claude Sonnet 5.5 unless you picked something else in Settings. It costs the same as Sonnet 5. Sonnet 5 is still on the menu, so a saved choice keeps working; pick Sonnet 5.5 in Settings to move to it. (Best practice: change a default, never a choice the owner already made.)

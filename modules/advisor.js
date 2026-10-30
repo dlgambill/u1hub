@@ -403,13 +403,17 @@ function register(ctx) {
   });
 
   // Cheapest possible call, to prove the key works before anyone relies on it.
+  const TEST_MAX_TOKENS = 1024;
   ctx.app.post("/api/advisor/test", async (req, res) => {
     const c = conf();
     if (req.body && req.body.key) { if (!keyOk(req.body.key)) return res.status(400).json({ error: "That does not look like an Anthropic API key (they start with sk-ant-)" }); c.key = String(req.body.key); }
     if (req.body && req.body.model) c.model = String(req.body.model);
     if (!c.key) return res.status(409).json({ error: "No API key set" });
     try {
-      const r = await ask(c, "Reply with the single word OK.", 5);
+      // 2.47.4: Sonnet 5.5 always thinks before it answers, and thinking counts
+      // against max_tokens - at 5 the Test button got one empty thinking block
+      // and "no text" (2026-10-30). 1024 leaves room; the reply is still one word.
+      const r = await ask(c, "Reply with the single word OK.", TEST_MAX_TOKENS);
       res.json({ ok: true, model: r.model, reply: r.text.slice(0, 40) });
     } catch (e) { res.status(502).json({ ok: false, error: String((e && e.message) || e) }); }
   });

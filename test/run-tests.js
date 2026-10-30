@@ -3725,7 +3725,8 @@ async function stopHub() {
 
     r = await jpost("/api/advisor/test", {});
     ok(r.status === 200 && r.body.ok && calls.length === 1 && calls[0].key === KEY && calls[0].ver === "2023-06-01", "Test key makes one tiny call with the key and API version headers", { status: r.status, body: r.body, call: calls[0] && { key: calls[0].key, ver: calls[0].ver } });
-    ok(calls[0].body && calls[0].body.max_tokens <= 10, "…and caps it at a handful of tokens", calls[0].body && calls[0].body.max_tokens);
+    // 2.47.4: a model that thinks first (Sonnet 5.5) needs room before its one-word reply
+    ok(calls[0].body && calls[0].body.max_tokens >= 512 && calls[0].body.max_tokens <= 2048, "…with room for a model that thinks before it answers (Sonnet 5.5), still a small cap", calls[0].body && calls[0].body.max_tokens);
 
     // A real review: rolls in T1/T2, the file needs three colors.
     await jpost("/api/slots/assign", { printer: U1ID, slot: 0, spool_id: "spoolman_1" });
