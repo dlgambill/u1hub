@@ -77,6 +77,10 @@ printers, and nothing leaves your network unless you turn remote access on.
 
 ---
 
+### 2.47.5 - a smaller prime tower, as a shop rule
+
+- **Prime towers were about 50 mm across.** Every recent file carried a prime volume of 45 mm3 per color change, rib walls reaching 8 mm out and a 5 mm brim. The U1 has a nozzle per color, so a change only has to clear what the parked nozzle oozed, not flush a shared one. Three new shop rules under **Models, Folder**: prime volume, rib length and tower brim. When the AI tunes a file (Mark for print, or Open in Orca with these settings) and the file has a prime tower, the Hub writes the shop's numbers; rib length only applies to rib walls. The AI is told the shop sets the tower so it does not suggest its own. They start blank (each file keeps its own tower), so an update changes nothing until a farm fills them in. (Best practice: test a smaller prime on one multicolor plate and check the first lines after a color change for a faint smear before trusting it everywhere.)
+
 ### 2.47.4 - the AI Test button works on Sonnet 5.5
 
 - **Test said "no text" on Sonnet 5.5.** The Test button sends the cheapest possible call ("Reply with the single word OK") and capped it at 5 tokens. Sonnet 5.5 always thinks before it answers, and thinking counts against that cap, so the call ended with one empty thinking block and the button showed an error - while the real pre-flight and settings suggestions (4,000 and 8,000 tokens) worked fine. The test now allows 1,024 tokens; the reply is still one word, so it costs about the same. (Best practice: size a model's token budget for its thinking as well as its answer, and test a model switch with a real call, not just the harness's stand-in.)

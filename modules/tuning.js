@@ -51,6 +51,9 @@ const TUNE = {
   brim_width:                 num(0, 20),
   skirt_loops:                num(0, 10, { int: true }),
   enable_prime_tower:         bool(),
+  prime_volume:               num(0, 150),                 // 2.47.5: shop rule (mm3 per tool change)
+  wipe_tower_extra_rib_length: num(0, 50),                 // 2.47.5: shop rule (rib walls)
+  prime_tower_brim_width:     num(0, 20),                  // 2.47.5: shop rule
   seam_position:              oneOf("nearest", "aligned", "back", "random"),
   ironing_type:               oneOf("no ironing", "top", "topmost", "solid"),
   only_one_wall_top:          bool(),
@@ -196,7 +199,9 @@ function applyTuning(ps, settings) {
 // a blank minimum layer turns the floor off. The flexi designer list starts
 // EMPTY for everyone - each farm builds its own (models.flexiDesigners);
 // a model named Flexi or Articulated is still a flexi.
-const HOUSE = { infill: "12%", infillPct: 12, pattern: "gyroid", minLayer: 0.16 };
+// 2.47.5: the prime tower rules (prime volume mm3, rib length mm, tower brim
+// mm) are OFF by default - a farm turns them on with its own numbers.
+const HOUSE = { infill: "12%", infillPct: 12, pattern: "gyroid", minLayer: 0.16, primeVolume: null, ribLength: null, towerBrim: null };
 const FLEXI_DESIGNERS = [];
 const PATTERNS = TUNE.sparse_infill_pattern.vals;
 
@@ -214,7 +219,10 @@ function houseConf(models) {
   const pat = String(h.pattern == null ? "" : h.pattern).trim().toLowerCase();
   const pattern = PATTERNS.includes(pat) ? pat : HOUSE.pattern;
   const minLayer = numOrOff(h.minLayer, HOUSE.minLayer, 0.04, 0.32);
-  return { infillPct, infill: infillPct == null ? null : infillPct + "%", pattern, minLayer };
+  // 2.47.5: out of range means off here (the default is off), not a fallback
+  const offOr = (v, lo, hi) => { const n = numOrOff(v, null, lo, hi); return n; };
+  const primeVolume = offOr(h.primeVolume, 1, 150), ribLength = offOr(h.ribLength, 0, 50), towerBrim = offOr(h.towerBrim, 0, 20);
+  return { infillPct, infill: infillPct == null ? null : infillPct + "%", pattern, minLayer, primeVolume, ribLength, towerBrim };
 }
 // The flexi designer list from config.json models (one name per entry).
 function flexiList(models) {
@@ -249,7 +257,36 @@ const valOf = row => String(row.set != null && String(row.set).trim() !== "" ? r
 // ps: the project's settings; settings: the AI's rows; h: { flexi: { flexi, why },
 // supportPaint: faces (null = unknown), structural: { is, why } }.
 // Returns { settings (what may be written), notes [{ key, value, reason }] }.
+// 2.47.5: the prime tower's size, when the farm set it (Danny, 2026-10-31:
+// every file carried 45 mm3 per change, ribs 8 mm out and a 5 mm brim -
+// about 50 mm across, on a printer whose parked nozzles only need their ooze
+// cleared). Only for a file that has a tower; rib length only for rib walls.
+const PRIME_KEYS = { prime_volume: ["primeVolume", "Prime volume (house)", "prime tower: "], wipe_tower_extra_rib_length: ["ribLength", "Prime tower rib length (house)", "prime tower: "], prime_tower_brim_width: ["towerBrim", "Prime tower brim (house)", "prime tower: "] };
+function primeRules(ps, R, res) {
+  const on = Object.keys(PRIME_KEYS).filter(k => R[PRIME_KEYS[k][0]] != null);
+  if (!on.length) return res;
+  const settings = [];
+  for (const row of res.settings) {
+    if (on.includes(row.key)) { res.notes.push({ key: row.key, value: row.value != null ? String(row.value) : "", reason: "house rule: the prime tower is the shop's (" + R[PRIME_KEYS[row.key][0]] + ")" }); continue; }
+    settings.push(row);
+  }
+  const aiTower = settings.find(x => x.key === "enable_prime_tower");
+  const tower = aiTower ? ON.test(valOf(aiTower).trim()) : String((ps || {}).enable_prime_tower) === "1";
+  if (tower) {
+    const rib = (ps || {}).wipe_tower_wall_type == null || String(ps.wipe_tower_wall_type) === "rib";
+    for (const k of on) {
+      if (k === "wipe_tower_extra_rib_length" && !rib) continue;
+      const v = String(R[PRIME_KEYS[k][0]]);
+      settings.push({ key: k, label: PRIME_KEYS[k][1], value: v, set: v, why: "house prime tower" });
+    }
+  }
+  return { settings, notes: res.notes };
+}
 function houseRules(ps, settings, h) {
+  const R = (h && h.rules) || HOUSE;
+  return primeRules(ps, R, houseRulesCore(ps, settings, h));
+}
+function houseRulesCore(ps, settings, h) {
   h = h || {};
   const R = h.rules || HOUSE;                       // 2.47.1: the farm's own numbers
   const flexi = h.flexi && h.flexi.flexi;

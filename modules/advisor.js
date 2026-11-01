@@ -117,7 +117,10 @@ function houseLine(R) {
     ? "infill is " + R.infill + " " + R.pattern + " unless the part is structural (it carries a load, takes a screw, clips or hangs something); if it is, set \"structural\" to {\"is\":true,\"why\":\"...\"} and give the infill density you want (" + R.infill + " or more)."
     : "infill is yours to choose; when the part is structural (it carries a load, takes a screw, clips or hangs something), also set \"structural\" to {\"is\":true,\"why\":\"...\"}.";
   const floor = R.minLayer != null ? " Layer height is never below " + R.minLayer + " mm." : "";
-  return "HOUSE RULES (the shop's own, enforced after you answer - work inside them): " + infill + floor +
+  // 2.47.5: the prime tower's size is the shop's when it set one
+  const pt = [R.primeVolume != null ? "prime volume " + R.primeVolume + " mm3" : null, R.ribLength != null ? "rib length " + R.ribLength + " mm" : null, R.towerBrim != null ? "tower brim " + R.towerBrim + " mm" : null].filter(Boolean);
+  const tower = pt.length ? " The prime tower's size is set by the shop (" + pt.join(", ") + ") - do not suggest prime tower size changes." : "";
+  return "HOUSE RULES (the shop's own, enforced after you answer - work inside them): " + infill + floor + tower +
     " On flexi or articulated models, support settings stay exactly as the designer set them - do not suggest support changes for those (supports grow into the joint gaps and fuse them). Supports the designer painted stay on. When an area of a non-flexi model needs support the designer did not give it, say where in \"watch\" (e.g. \"wing tips overhang - paint supports there\").";
 }
 function modelSystem(R) { return MODEL_SYSTEM_PARTS.map(p => p === "@HOUSE" ? houseLine(R) : p).join("\n"); }

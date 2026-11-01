@@ -4622,6 +4622,32 @@ async function stopHub() {
       ok(amod2.MODEL_SYSTEM === amod2.modelSystem(T.houseConf({})) && !/12% gyroid/.test(sysOff) && !/never below/.test(sysOff) && /infill is yours to choose/.test(sysOff) && /"structural"/.test(sysOff),
         "the AI is told only the rules that are on (off: no infill or layer rule, still asked to flag structural parts)");
       ok(/15% cubic/.test(sysOwn) && /0\.2 mm/.test(sysOwn) && !/12%/.test(sysOwn), "…and the farm's own numbers when it set them");
+
+      // 2.47.5: prime tower size is a shop rule (Danny, 2026-10-31: "they seem
+      // to be really big" - every file carried prime volume 45 mm3, ribs 8 mm
+      // out and a 5 mm brim, about 50 mm across on a printer whose idle nozzles
+      // only need ooze cleared). Off out of the box; a farm sets its own numbers.
+      console.log("\n== 2.47.5: prime tower size as a shop rule ==");
+      hc = T.houseConf({});
+      ok(hc.primeVolume === null && hc.ribLength === null && hc.towerBrim === null, "out of the box the prime tower rules are off - other farms keep their towers", hc);
+      const pR = T.houseConf({ house: { primeVolume: 20, ribLength: "4", towerBrim: 3 } });
+      ok(pR.primeVolume === 20 && pR.ribLength === 4 && pR.towerBrim === 3 && T.houseConf({ house: { primeVolume: 999 } }).primeVolume === null, "own numbers are read; one out of range stays off", pR);
+      const tps = { ...hps, enable_prime_tower: "1", prime_volume: "45", wipe_tower_extra_rib_length: "8", prime_tower_brim_width: "5", wipe_tower_wall_type: "rib" };
+      h = T.houseRules(tps, [{ key: "prime_volume", value: "60" }, { key: "brim_width", value: "5" }], { flexi: { flexi: false }, supportPaint: 0, structural: { is: false }, rules: pR });
+      const sv = k => (h.settings.find(x => x.key === k) || {}).set;
+      ok(sv("prime_volume") === "20" && sv("wipe_tower_extra_rib_length") === "4" && sv("prime_tower_brim_width") === "3" && h.notes.some(n => n.key === "prime_volume" && /prime tower/.test(n.reason)) && (h.settings.find(x => x.key === "brim_width") || {}).value === "5",
+        "a file with a prime tower gets the shop's 20 mm3 / 4 mm ribs / 3 mm brim; the AI's own prime volume is replaced, with the reason; its part brim still goes through", h);
+      ok(sv("prime_volume") === "20" && sv("wipe_tower_extra_rib_length") === "4" && sv("prime_tower_brim_width") === "3" && h.notes.some(n => n.key === "prime_volume"), "…all three written", h.settings);
+      h = T.houseRules({ ...tps, enable_prime_tower: "0" }, [], { flexi: { flexi: false }, supportPaint: 0, structural: { is: false }, rules: pR });
+      ok(!h.settings.some(x => /prime|wipe_tower/.test(x.key)), "no prime tower in the file: nothing about the tower is written", h.settings);
+      h = T.houseRules({ ...tps, wipe_tower_wall_type: "rectangle" }, [], { flexi: { flexi: false }, supportPaint: 0, structural: { is: false }, rules: pR });
+      ok(!h.settings.some(x => x.key === "wipe_tower_extra_rib_length") && h.settings.some(x => x.key === "prime_volume"), "a plain (non-rib) tower: rib length is left alone, the rest still applies", h.settings);
+      const pz = buildZip(files.map(x => x.name === "Metadata/project_settings.config" ? { name: x.name, data: Buffer.from(JSON.stringify({ ...JSON.parse(u1ps), ...tps })) } : x));
+      const pt = T.tuneBuffer(pz, [], { flexi: { flexi: false }, supportPaint: 0, structural: { is: false }, rules: pR });
+      const ptps = JSON.parse(zipEntryContent(zipRead(pt.buffer).find(x => x.name === "Metadata/project_settings.config")).toString());
+      ok(ptps.prime_volume === "20" && ptps.wipe_tower_extra_rib_length === "4" && ptps.prime_tower_brim_width === "3", "tuneBuffer writes the shop's tower into the project", ptps);
+      const sysP = amod2.modelSystem(pR);
+      ok(/prime tower/i.test(sysP) && /20 mm/.test(sysP) && !/prime tower/i.test(amod2.modelSystem(T.houseConf({}))), "the AI is told the shop sets the prime tower, only when the rule is on");
     }
 
     // The route, against a mock Messages endpoint that understands content blocks.
@@ -4748,6 +4774,13 @@ async function stopHub() {
         ok(rs.status === 400 && /0 to 100/.test(rs.body.error), "an infill that is not a percentage is refused with the reason", rs.body);
         rs = await jpost("/api/models/settings", { pretuneDailyMax: 25 });
         ok(rs.status === 200 && rs.body.house.infill === null && rs.body.house.flexiDesigners.length === 2, "a save without the rule fields leaves the rules alone", rs.body && rs.body.house);
+        rs = await jpost("/api/models/settings", { housePrimeVolume: "20", houseRibLength: "4 mm", houseTowerBrim: "3" });
+        ok(rs.status === 200 && rs.body.house.primeVolume === 20 && rs.body.house.ribLength === 4 && rs.body.house.towerBrim === 3 && rs.body.house.infill === null,
+          "2.47.5: the Folder panel saves the prime tower rules and leaves the others alone", rs.body && rs.body.house);
+        rs = await jpost("/api/models/settings", { housePrimeVolume: "500" });
+        ok(rs.status === 400 && /prime volume/i.test(rs.body.error), "…and refuses a prime volume out of range with the reason", rs.body);
+        rs = await jpost("/api/models/settings", { housePrimeVolume: "", houseRibLength: "", houseTowerBrim: "" });
+        ok(rs.status === 200 && rs.body.house.primeVolume === null && rs.body.house.towerBrim === null, "…and blank turns them off again", rs.body && rs.body.house);
         rs = await jpost("/api/models/settings", { houseInfill: "12%", houseMinLayer: "0.16", housePattern: "gyroid", flexiDesigners: "" });
         ok(rs.status === 200 && rs.body.house.infill === 12 && rs.body.house.minLayer === 0.16 && rs.body.house.flexiDesigners.length === 0, "and back to the defaults for the rest of the harness", rs.body && rs.body.house);
       }
