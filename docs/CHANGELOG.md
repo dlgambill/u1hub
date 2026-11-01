@@ -77,6 +77,10 @@ printers, and nothing leaves your network unless you turn remote access on.
 
 ---
 
+### 2.47.6 - the dashboard stops bouncing
+
+- **The dashboard bounced up and down every few seconds.** The printer cards redraw every five seconds. When a printer ran a file with no preview picture inside it (plain OrcaSlicer gcode, for one), its card put the 44 px picture back on each redraw, the picture failed, and the card shrank again - so every card below it jumped. A picture that fails is now remembered and left out until the page reloads. (Best practice: a layout should never depend on whether an image loads - reserve its space or leave it out, but never toggle it.)
+
 ### 2.47.5 - a smaller prime tower, as a shop rule
 
 - **Prime towers were about 50 mm across.** Every recent file carried a prime volume of 45 mm3 per color change, rib walls reaching 8 mm out and a 5 mm brim. The U1 has a nozzle per color, so a change only has to clear what the parked nozzle oozed, not flush a shared one. Three new shop rules under **Models, Folder**: prime volume, rib length and tower brim. When the AI tunes a file (Mark for print, or Open in Orca with these settings) and the file has a prime tower, the Hub writes the shop's numbers; rib length only applies to rib walls. The AI is told the shop sets the tower so it does not suggest its own. They start blank (each file keeps its own tower), so an update changes nothing until a farm fills them in. (Best practice: test a smaller prime on one multicolor plate and check the first lines after a color change for a faint smear before trusting it everywhere.)

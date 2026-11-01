@@ -6016,6 +6016,17 @@ async function stopHub() {
     ok(/raw\.split\("\?"\)\[0\]/.test(appSrc), "H22: a deep link with view state after ? still opens the right view");
   }
 
+  console.log("\n== 2.47.6: a printer card with no thumbnail does not bounce ==");
+  {
+    // Danny, 2026-11-01: "Why has the dashboard started bouncing up and down?" -
+    // U4 ran plain-Orca gcode with no thumbnail; the 5 s card rebuild re-added it each pass.
+    const a = APP_JS();
+    ok(/const PTHUMB_BAD = window\.PTHUMB_BAD = new Set\(\);/.test(a), "2.47.6: failed printer thumbnails are remembered in PTHUMB_BAD");
+    ok(/PTHUMB_BAD\.has\(p\.id\+"\|"\+p\.filename\)\?"":`<img class="cthumb"/.test(a) && /onerror="PTHUMB_BAD\.add\(this\.dataset\.k\);this\.remove\(\)"/.test(a),
+      "2.47.6: a card leaves out a thumbnail that failed instead of retrying it on every rebuild");
+    ok(!/class="cthumb"[^>]*onerror="this\.style\.display='none'"/.test(a), "2.47.6: the old hide-on-error thumbnail is gone");
+  }
+
   console.log("\n== 2.44.1: the phone tools button shows, the scan line moves (hand test on 2.44.0) ==");
   {
     const ui = fs.readFileSync(path.join(REPO, "public", "modules", "models-ui.js"), "utf8");

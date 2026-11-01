@@ -39,6 +39,12 @@ const $ = id => document.getElementById(id);
 // render with src directly (the browser cache has them) so re-renders of the
 // list never flicker.
 const THUMB_SEEN = new Set();
+// 2.47.6: printer-card thumbnails that failed to load. The cards rebuild every
+// 5 s, so a file with no preview (plain OrcaSlicer gcode, say) used to put its
+// 44 px picture back, fail, and hide it again on every pass - the card grew and
+// shrank and the whole page bounced. A failed picture is now left out until
+// the page reloads.
+const PTHUMB_BAD = window.PTHUMB_BAD = new Set();
 const THUMB_IO = ("IntersectionObserver" in window) ? new IntersectionObserver(es => {
   for (const e of es) { if (!e.isIntersecting) continue; const img = e.target; THUMB_IO.unobserve(img);
     const u = img.dataset.src; if (u) { THUMB_SEEN.add(u); img.src = u; delete img.dataset.src; } }
@@ -2172,7 +2178,7 @@ function renderFleet(){
         ? `<div class="camtile" data-cam="${p.id}">${CAMMODE==="demand"?`<button class="camclose" data-camclose="${p.id}" title="Hide camera">✕</button>`:""}</div>`
         : `<button class="camopen" data-camopen="${p.id}">📷 Live view</button>`) : ""}
       ${p.state==="printing"?`<div class="progress"><i style="width:${Math.round((p.progress||0)*100)}%"></i></div>`:""}
-      ${(p.state==="printing"||p.state==="paused")&&p.filename?`<div class="fnamerow"><img class="cthumb" loading="lazy" src="/api/pthumb?id=${p.id}&file=${encodeURIComponent(p.filename)}" onerror="this.style.display='none'"><div class="fname" title="${esc(p.filename)}">${esc(p.filename.replace(/\.gcode$/i,""))}${p.layer?` · L${p.layer.cur}/${p.layer.total}`:""}</div></div>`:""}
+      ${(p.state==="printing"||p.state==="paused")&&p.filename?`<div class="fnamerow">${PTHUMB_BAD.has(p.id+"|"+p.filename)?"":`<img class="cthumb" loading="lazy" data-k="${esc(p.id+"|"+p.filename)}" src="/api/pthumb?id=${p.id}&file=${encodeURIComponent(p.filename)}" onerror="PTHUMB_BAD.add(this.dataset.k);this.remove()">`}<div class="fname" title="${esc(p.filename)}">${esc(p.filename.replace(/\.gcode$/i,""))}${p.layer?` · L${p.layer.cur}/${p.layer.total}`:""}</div></div>`:""}
       ${(p.state==="error"||p.state==="paused")&&p.message?`<div class="errline" title="${esc(p.message)}">${p.state==="paused"?"⏸ Paused: ":""}${esc(p.message)}</div>`:""}
       ${heads.length?`<div class="heads">${headsHtml}</div>`:""}
       ${PICKOPEN && PICKOPEN.id===p.id && !busy && heads.length ? colorPopHtml(p) : ""}
