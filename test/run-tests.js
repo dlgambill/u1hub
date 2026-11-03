@@ -6016,6 +6016,26 @@ async function stopHub() {
     ok(/raw\.split\("\?"\)\[0\]/.test(appSrc), "H22: a deep link with view state after ? still opens the right view");
   }
 
+  console.log("\n== 2.47.7: Dispatch counts a near-match roll as loaded ==");
+  {
+    // Danny, 2026-11-02: Dispatch put Dino Clickers on U6 (3 roll changes) while U7 sat idle
+    // with all four colors - #F55A7C / #FEE5A5 against the file's #F5547C / #F8E1C2.
+    const { missingColors, SWAP_MATCH_MAX } = require(path.join(REPO, "modules", "dispatch.js"));
+    const dino = ["#000000", "#F5547C", "#F8E1C2", "#FFFFFF"];
+    const u7 = ["FFFFFF", "000000", "FEE5A5", "F55A7C"], u6 = ["F8F81C", "6F4C2F", "000000", "004080"];
+    ok(missingColors(dino, u7).length === 0, "2.47.7: U7 (near-match pink and cream) needs no roll change for the Dino Clickers", missingColors(dino, u7));
+    ok(JSON.stringify(missingColors(dino, u6)) === JSON.stringify(["F5547C", "F8E1C2", "FFFFFF"]), "2.47.7: U6 still needs pink, cream and white", missingColors(dino, u6));
+    ok(missingColors(["#F8E1C2"], ["F8F81C"]).length === 1 && missingColors(["#000080"], ["FF0000"]).length === 1,
+      "2.47.7: cream is not yellow and navy is not red - distinct colors still count as a swap");
+    ok(missingColors(["#FFFFFF", "#FAFAFA"], ["FFFFFF"]).length === 1, "2.47.7: one head answers one color - two near-whites need two heads");
+    ok(missingColors(["#FFFFFF", "#ffffff"], ["FFFFFF"]).length === 0, "2.47.7: the same color twice needs one head");
+    const app = APP_JS();
+    ok(new RegExp("const MATCH_THRESHOLD = " + SWAP_MATCH_MAX + ";").test(app), "2.47.7: Dispatch and the printer card use the same match threshold");
+    const src = fs.readFileSync(path.join(REPO, "modules", "dispatch.js"), "utf8");
+    ok(/stay && stay\.swaps\.length <= best\.swaps\.length && stay\.cost - best\.cost <= STICKY_TOLERANCE_MIN/.test(src),
+      "2.47.7: a copy does not stay on its old printer when that costs more roll changes");
+  }
+
   console.log("\n== 2.47.6: a printer card with no thumbnail does not bounce ==");
   {
     // Danny, 2026-11-01: "Why has the dashboard started bouncing up and down?" -

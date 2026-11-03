@@ -804,9 +804,8 @@ function register(ctx) {
     const loaded = loadedHexes(fp);
     const shelf = shelfIn || shelfByHex();
     const swaps = [];
-    for (const c of jobColors || []) {
-      const h = norm(c);
-      if (!h || loaded.has(h)) continue;
+    // 2.47.7: near colors count as loaded, the way the printer card maps them.
+    for (const h of missingColors(jobColors, [...loaded])) {
       const roll = shelf[h] || null;
       swaps.push({ color: "#" + h, spool_id: roll && roll.spool_id, spool: roll && roll.name, brand: roll && roll.brand });
     }
@@ -838,8 +837,8 @@ function register(ctx) {
   // a plan wondering why nothing starts.
   function colorNeedsOf(job, fp) {
     // Colors this job needs that aren't already loaded on that printer.
-    const loaded = loadedHexes(fp);
-    return (job.colors || []).map(norm).filter(h => h && !loaded.has(h));
+    // 2.47.7: near colors count as loaded (see missingColors).
+    return missingColors(job.colors, [...loadedHexes(fp)]);
   }
   // Which colors does a planned slot OCCUPY while it runs? Everything the job
   // prints with — loaded or freshly mounted — is tied up for the duration.
@@ -1115,7 +1114,11 @@ function register(ctx) {
         // the plan churns on every refresh; with a hard pin it can never move.
         if (best && lastLane !== undefined && best.lane.idx !== lastLane) {
           const stay = cands.find(x => x.lane.idx === lastLane);
-          if (stay && stay.cost - best.cost <= STICKY_TOLERANCE_MIN * 60000) best = stay;
+          // 2.47.7: never stay put at the price of extra roll changes - the
+          // 30-minute tolerance outweighed one 20-minute swap, so a copy planned
+          // on a busy-then printer kept its roll changes after a printer holding
+          // every color went idle.
+          if (stay && stay.swaps.length <= best.swaps.length && stay.cost - best.cost <= STICKY_TOLERANCE_MIN * 60000) best = stay;
         }
         if (!best) { slots.push({ job_id: job.id, file: job.file, unplannable: "no attended window found within 14 days" }); continue; }
         const est = best.est;
@@ -2136,7 +2139,8 @@ function register(ctx) {
     const nextColors = new Set(((job && job.colors) || []).map(norm).filter(Boolean));
     const unload = [0, 1, 2, 3].map(h => {
       const hx = headHex && headHex[h];
-      return hx && !nextColors.has(norm(hx)) ? 1 : 0;
+      // 2.47.7: a head holding a near match of a next color stays loaded.
+      return hx && missingColors([...nextColors], [hx]).length === nextColors.size ? 1 : 0;
     });
     return { unload, mode, next: { file: next.file, colors: [...nextColors].map(h => "#" + h) } };
   }
@@ -2170,4 +2174,34 @@ function register(ctx) {
   ctx.provide("dispatch.maintenance", () => { ensureMapped(); return D.maintenance; });
 }
 
-module.exports = { register, pickStart, queueBedClears, BED_CLEAR_BUFFER_MIN };
+// 2.47.7: which of a job's colors a printer is MISSING, judged the way the
+// printer card's head mapping judges them (public/app.js colorDist + MATCH_THRESHOLD),
+// not by exact hex. Until now a swap was counted for every color whose hex
+// differed by a hair: the Dino Clickers asked for #F5547C pink and #F8E1C2
+// cream, U7 held #F55A7C and #FEE5A5 - the same rolls to the eye and to the
+// card's own mapping - so Dispatch counted 2 swaps on U7 and sent the job to
+// U6, which needed 3 real roll changes (Danny, 2026-11-02).
+// Each loaded head answers one color (nearest pairs first); a color identical
+// to an already-used head may share it (two tools recolored the same).
+const SWAP_MATCH_MAX = 165;                       // = MATCH_THRESHOLD in public/app.js
+function redmean(a, b) {
+  const p = h => { const m = /^#?([0-9a-f]{6})$/i.exec(String(h || "").trim()); if (!m) return null;
+    const n = parseInt(m[1], 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; };
+  const pa = p(a), pb = p(b); if (!pa || !pb) return 1e9;
+  const rm = (pa[0] + pb[0]) / 2, dr = pa[0] - pb[0], dg = pa[1] - pb[1], db = pa[2] - pb[2];
+  return Math.sqrt((2 + rm / 256) * dr * dr + 4 * dg * dg + (2 + (255 - rm) / 256) * db * db);
+}
+function missingColors(jobColors, loadedHexes) {
+  const N = h => String(h || "").trim().replace(/^#/, "").slice(0, 6).toUpperCase();
+  const need = [...new Set((jobColors || []).map(N).filter(Boolean))];
+  const heads = (loadedHexes || []).map(N).filter(Boolean);
+  const pairs = [];
+  need.forEach((c, ci) => heads.forEach((h, hi) => { const d = redmean(c, h); if (d <= SWAP_MATCH_MAX) pairs.push({ ci, hi, d }); }));
+  pairs.sort((a, b) => a.d - b.d);
+  const gotC = new Set(), usedH = new Set();
+  for (const x of pairs) if (!gotC.has(x.ci) && !usedH.has(x.hi)) { gotC.add(x.ci); usedH.add(x.hi); }
+  need.forEach((c, ci) => { if (!gotC.has(ci) && heads.includes(c)) gotC.add(ci); });
+  return need.filter((c, ci) => !gotC.has(ci));
+}
+
+module.exports = { register, pickStart, queueBedClears, BED_CLEAR_BUFFER_MIN, missingColors, SWAP_MATCH_MAX };

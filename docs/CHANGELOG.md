@@ -77,6 +77,10 @@ printers, and nothing leaves your network unless you turn remote access on.
 
 ---
 
+### 2.47.7 - Dispatch sends a job to the printer that already has its colors
+
+- **Dispatch planned roll changes that were not needed.** It had the Dino Clickers on U6, which meant changing three rolls, while U7 sat idle with all four colors loaded. Dispatch compared colors by their exact code: the file asked for pink #F5547C and cream #F8E1C2, U7 held #F55A7C and #FEE5A5 - the same rolls to the eye and to the printer card's own head mapping - so it counted two swaps on U7 and sent the job elsewhere. It now judges a color loaded the same way the printer card does (a near match counts, each head holding one color). Separately, a planned copy kept its printer from the previous plan as long as moving it saved less than 30 minutes, which outweighed one roll change (20 minutes); a copy now never stays put when that means more roll changes than the best printer. (Best practice: every part of the Hub that decides whether a color is loaded should use one rule, so the plan and the printer card cannot disagree.)
+
 ### 2.47.6 - the dashboard stops bouncing
 
 - **The dashboard bounced up and down every few seconds.** The printer cards redraw every five seconds. When a printer ran a file with no preview picture inside it (plain OrcaSlicer gcode, for one), its card put the 44 px picture back on each redraw, the picture failed, and the card shrank again - so every card below it jumped. A picture that fails is now remembered and left out until the page reloads. (Best practice: a layout should never depend on whether an image loads - reserve its space or leave it out, but never toggle it.)
