@@ -49,6 +49,7 @@ const TUNE = {
   support_on_build_plate_only: bool(),
   brim_type:                  oneOf("auto_brim", "brim_ears", "outer_only", "inner_only", "outer_and_inner", "no_brim"),
   brim_width:                 num(0, 20),
+  brim_object_gap:            num(0, 2),                   // 2.47.8: shop rule (brim gap)
   skirt_loops:                num(0, 10, { int: true }),
   enable_prime_tower:         bool(),
   prime_volume:               num(0, 150),                 // 2.47.5: shop rule (mm3 per tool change)
@@ -201,7 +202,10 @@ function applyTuning(ps, settings) {
 // a model named Flexi or Articulated is still a flexi.
 // 2.47.5: the prime tower rules (prime volume mm3, rib length mm, tower brim
 // mm) are OFF by default - a farm turns them on with its own numbers.
-const HOUSE = { infill: "12%", infillPct: 12, pattern: "gyroid", minLayer: 0.16, primeVolume: null, ribLength: null, towerBrim: null };
+// 2.47.8: brimGap - when a part has a brim it is outer only, this far from the
+// part (Danny, 2026-11-09: "when a brim is used, it is outside only and always
+// a 0.2mm gap"). OFF by default like the prime tower rules.
+const HOUSE = { infill: "12%", infillPct: 12, pattern: "gyroid", minLayer: 0.16, primeVolume: null, ribLength: null, towerBrim: null, brimGap: null };
 const FLEXI_DESIGNERS = [];
 const PATTERNS = TUNE.sparse_infill_pattern.vals;
 
@@ -222,7 +226,8 @@ function houseConf(models) {
   // 2.47.5: out of range means off here (the default is off), not a fallback
   const offOr = (v, lo, hi) => { const n = numOrOff(v, null, lo, hi); return n; };
   const primeVolume = offOr(h.primeVolume, 1, 150), ribLength = offOr(h.ribLength, 0, 50), towerBrim = offOr(h.towerBrim, 0, 20);
-  return { infillPct, infill: infillPct == null ? null : infillPct + "%", pattern, minLayer, primeVolume, ribLength, towerBrim };
+  const brimGap = offOr(h.brimGap, 0, 2);   // 2.47.8
+  return { infillPct, infill: infillPct == null ? null : infillPct + "%", pattern, minLayer, primeVolume, ribLength, towerBrim, brimGap };
 }
 // The flexi designer list from config.json models (one name per entry).
 function flexiList(models) {
@@ -284,7 +289,33 @@ function primeRules(ps, R, res) {
 }
 function houseRules(ps, settings, h) {
   const R = (h && h.rules) || HOUSE;
-  return primeRules(ps, R, houseRulesCore(ps, settings, h));
+  return brimRules(ps, R, primeRules(ps, R, houseRulesCore(ps, settings, h)));
+}
+// 2.47.8: a part brim, when there is one, is outer only with the shop's gap.
+// "Is there one" is the AI's brim_type when it set one, else the file's; no
+// brim stays no brim (the AI still decides whether a part needs a brim and
+// how wide). Any other type - auto, mouse ears, inner, both - becomes outer
+// only, with the reason when the AI asked for something else. The AI's own
+// gap is replaced by the shop's.
+function brimRules(ps, R, res) {
+  if (R.brimGap == null) return res;
+  const settings = [];
+  let aiType = null;
+  for (const row of res.settings) {
+    if (row.key === "brim_object_gap") { res.notes.push({ key: row.key, value: row.value != null ? String(row.value) : "", reason: "house rule: the brim gap is the shop's (" + R.brimGap + " mm)" }); continue; }
+    if (row.key === "brim_type") { if (!aiType) aiType = row; continue; }
+    settings.push(row);
+  }
+  const aiNorm = aiType ? (normalize("brim_type", valOf(aiType)).value || valOf(aiType).trim()) : null;
+  const type = aiType ? aiNorm : String((ps || {}).brim_type == null ? "auto_brim" : ps.brim_type);   // Orca's own default is auto
+  if (type === "no_brim") {
+    if (aiType) settings.push(aiType);
+    return { settings, notes: res.notes };
+  }
+  if (aiType && aiNorm !== "outer_only") res.notes.push({ key: "brim_type", value: aiType.value != null ? String(aiType.value) : "", reason: "house rule: a brim is outer only" });
+  settings.push({ key: "brim_type", label: "Brim type (house)", value: "outer_only", set: "outer_only", why: aiType && aiNorm === "outer_only" && aiType.why ? aiType.why : "house brim: outer only" });
+  settings.push({ key: "brim_object_gap", label: "Brim gap (house)", value: R.brimGap + " mm", set: String(R.brimGap), why: "house brim gap" });
+  return { settings, notes: res.notes };
 }
 function houseRulesCore(ps, settings, h) {
   h = h || {};

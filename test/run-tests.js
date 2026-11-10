@@ -4648,6 +4648,35 @@ async function stopHub() {
       ok(ptps.prime_volume === "20" && ptps.wipe_tower_extra_rib_length === "4" && ptps.prime_tower_brim_width === "3", "tuneBuffer writes the shop's tower into the project", ptps);
       const sysP = amod2.modelSystem(pR);
       ok(/prime tower/i.test(sysP) && /20 mm/.test(sysP) && !/prime tower/i.test(amod2.modelSystem(T.houseConf({}))), "the AI is told the shop sets the prime tower, only when the rule is on");
+
+      // 2.47.8: a part brim is outer only with the shop's gap (Danny, 2026-11-09:
+      // "when a brim is used, it is outside only and always a 0.2mm gap").
+      // Off out of the box, like the prime tower.
+      console.log("\n== 2.47.8: brim outer only with the shop's gap ==");
+      ok(T.houseConf({}).brimGap === null, "out of the box the brim rule is off - other farms keep their files' brims", T.houseConf({}));
+      const bR = T.houseConf({ house: { brimGap: 0.2 } });
+      ok(bR.brimGap === 0.2 && T.houseConf({ house: { brimGap: 5 } }).brimGap === null, "the shop's gap is read; one out of range stays off", bR);
+      const nf = { flexi: { flexi: false }, supportPaint: 0, structural: { is: false }, rules: bR };
+      const bv = (hh, k) => (hh.settings.find(x => x.key === k) || {}).set;
+      h = T.houseRules({ ...hps, brim_type: "no_brim" }, [{ key: "brim_type", value: "Mouse ears", set: "brim_ears" }, { key: "brim_width", value: "6", set: "6" }, { key: "brim_object_gap", value: "0.1", set: "0.1" }], nf);
+      ok(bv(h, "brim_type") === "outer_only" && bv(h, "brim_object_gap") === "0.2" && bv(h, "brim_width") === "6" && h.notes.some(n => n.key === "brim_type" && /outer only/.test(n.reason)) && h.notes.some(n => n.key === "brim_object_gap" && /0\.2 mm/.test(n.reason)),
+        "the AI's mouse ears become an outer-only brim with the shop's 0.2 mm gap; its width stands; its own gap is replaced, both with the reason", h);
+      h = T.houseRules({ ...hps, brim_type: "auto_brim" }, [], nf);
+      ok(bv(h, "brim_type") === "outer_only" && bv(h, "brim_object_gap") === "0.2", "a file's own auto brim is made outer only with the gap", h.settings);
+      h = T.houseRules({ ...hps, brim_type: "auto_brim" }, [{ key: "brim_type", value: "no brim", set: "no_brim" }], nf);
+      ok(bv(h, "brim_type") === "no_brim" && bv(h, "brim_object_gap") === undefined, "no brim stays no brim - the AI still decides whether a part needs one", h.settings);
+      h = T.houseRules({ ...hps, brim_type: "no_brim" }, [], nf);
+      ok(!h.settings.some(x => /brim/.test(x.key)), "a file with no brim and no AI brim gets nothing written", h.settings);
+      h = T.houseRules({ ...hps, brim_type: "auto_brim" }, [{ key: "brim_type", value: "outer_only" }], { ...nf, rules: T.houseConf({}) });
+      ok(bv(h, "brim_object_gap") === undefined && h.settings.filter(x => x.key === "brim_type").length === 1, "rule off: the brim rows go through untouched", h.settings);
+      const bz = buildZip(files.map(x => x.name === "Metadata/project_settings.config" ? { name: x.name, data: Buffer.from(JSON.stringify({ ...JSON.parse(u1ps), brim_type: "auto_brim", brim_object_gap: "0" })) } : x));
+      const bt = T.tuneBuffer(bz, [], nf);
+      const btps = JSON.parse(zipEntryContent(zipRead(bt.buffer).find(x => x.name === "Metadata/project_settings.config")).toString());
+      ok(btps.brim_type === "outer_only" && btps.brim_object_gap === "0.2", "tuneBuffer writes the outer-only brim and the gap into the project", { brim_type: btps.brim_type, brim_object_gap: btps.brim_object_gap });
+      const sysB = amod2.modelSystem(bR);
+      ok(/outer only/.test(sysB) && /0\.2 mm gap/.test(sysB) && !/brim_object_gap/.test(amod2.modelSystem(T.houseConf({}))), "the AI is told the brim shape and gap are the shop's, only when the rule is on");
+      const muiB = fs.readFileSync(path.join(REPO, "public", "modules", "models-ui.js"), "utf8");
+      ok(/id="mdl-hbrimgap"/.test(muiB) && /houseBrimGap: box\.querySelector\("#mdl-hbrimgap"\)\.value/.test(muiB), "the Folder panel draws the brim gap box and sends it on Save");
     }
 
     // The route, against a mock Messages endpoint that understands content blocks.
@@ -4781,6 +4810,12 @@ async function stopHub() {
         ok(rs.status === 400 && /prime volume/i.test(rs.body.error), "…and refuses a prime volume out of range with the reason", rs.body);
         rs = await jpost("/api/models/settings", { housePrimeVolume: "", houseRibLength: "", houseTowerBrim: "" });
         ok(rs.status === 200 && rs.body.house.primeVolume === null && rs.body.house.towerBrim === null, "…and blank turns them off again", rs.body && rs.body.house);
+        rs = await jpost("/api/models/settings", { houseBrimGap: "0.2 mm" });
+        ok(rs.status === 200 && rs.body.house.brimGap === 0.2 && rs.body.house.primeVolume === null, "2.47.8: the Folder panel saves the brim gap and leaves the other rules alone", rs.body && rs.body.house);
+        rs = await jpost("/api/models/settings", { houseBrimGap: "3" });
+        ok(rs.status === 400 && /brim gap/i.test(rs.body.error), "…refuses a gap out of range with the reason", rs.body);
+        rs = await jpost("/api/models/settings", { houseBrimGap: "" });
+        ok(rs.status === 200 && rs.body.house.brimGap === null, "…and blank turns it off again", rs.body && rs.body.house);
         rs = await jpost("/api/models/settings", { houseInfill: "12%", houseMinLayer: "0.16", housePattern: "gyroid", flexiDesigners: "" });
         ok(rs.status === 200 && rs.body.house.infill === 12 && rs.body.house.minLayer === 0.16 && rs.body.house.flexiDesigners.length === 0, "and back to the defaults for the rest of the harness", rs.body && rs.body.house);
       }

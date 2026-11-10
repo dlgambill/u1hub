@@ -325,6 +325,10 @@
         '<span class="hint">rib length</span><input class="field" id="mdl-hrib" placeholder="file\'s own" style="max-width:80px" value="' + esc(HOUSE && HOUSE.ribLength != null ? HOUSE.ribLength + " mm" : "") + '">' +
         '<span class="hint">brim</span><input class="field" id="mdl-htbrim" placeholder="file\'s own" style="max-width:80px" value="' + esc(HOUSE && HOUSE.towerBrim != null ? HOUSE.towerBrim + " mm" : "") + '">' +
       '</div>' +
+      // 2.47.8: a part brim is outer only with the shop's gap (blank keeps each file's brim)
+      '<div class="row" style="gap:8px; flex-wrap:wrap; align-items:center; margin-top:6px">' +
+        '<span class="hint">part brim: outer only, gap</span><input class="field" id="mdl-hbrimgap" placeholder="file\'s own" style="max-width:80px" value="' + esc(HOUSE && HOUSE.brimGap != null ? HOUSE.brimGap + " mm" : "") + '">' +
+      '</div>' +
       '<label>Flexi designers <span class="hint">one per line: their models keep the designer\'s support settings, because supports fuse flexi joints. A model named Flexi or Articulated counts without being listed.</span></label>' +
       '<textarea class="field" id="mdl-flexi" rows="3" spellcheck="false" style="width:100%; font-family:var(--mono); font-size:12px" placeholder="(none yet)">' + esc(((HOUSE && HOUSE.flexiDesigners) || []).join("\n")) + '</textarea>' +
       '<div class="row" style="margin-top:8px; gap:8px"><button class="btn primary" id="mdl-save" style="font-size:12px; padding:5px 12px">Save</button><span class="pstatus" id="mdl-cfgmsg"></span></div>' +
@@ -367,7 +371,8 @@
       if ((DATA && DATA.house) || (SETTINGS && SETTINGS.house))
         Object.assign(body, { houseInfill: box.querySelector("#mdl-hinfill").value, housePattern: box.querySelector("#mdl-hpattern").value,
           houseMinLayer: box.querySelector("#mdl-hminlayer").value, flexiDesigners: box.querySelector("#mdl-flexi").value,
-          housePrimeVolume: box.querySelector("#mdl-hprime").value, houseRibLength: box.querySelector("#mdl-hrib").value, houseTowerBrim: box.querySelector("#mdl-htbrim").value });
+          housePrimeVolume: box.querySelector("#mdl-hprime").value, houseRibLength: box.querySelector("#mdl-hrib").value, houseTowerBrim: box.querySelector("#mdl-htbrim").value,
+          houseBrimGap: box.querySelector("#mdl-hbrimgap").value });
       const r = await jpost("/api/models/settings", body);
       const m = box.querySelector("#mdl-cfgmsg");
       if (!r.ok) { m.className = "pstatus err"; m.textContent = r.d.error || "Could not save"; return; }

@@ -1071,7 +1071,7 @@ function register(ctx) {
     // 2.47.1: the shop rules the AI works inside. A blank infill or minimum
     // layer turns that rule off (stored as null); the pattern must be one of
     // Orca's. The flexi designer list is one name per line (or an array).
-    if ("houseInfill" in b || "houseMinLayer" in b || "housePattern" in b || "housePrimeVolume" in b || "houseRibLength" in b || "houseTowerBrim" in b) {
+    if ("houseInfill" in b || "houseMinLayer" in b || "housePattern" in b || "housePrimeVolume" in b || "houseRibLength" in b || "houseTowerBrim" in b || "houseBrimGap" in b) {
       const h = { ...((next.house && typeof next.house === "object") ? next.house : {}) };
       const cur0 = TUNE.houseConf(next);
       if ("houseInfill" in b) {
@@ -1094,7 +1094,9 @@ function register(ctx) {
       // 2.47.5: the prime tower's size (blank = off, the file's own stands)
       const tw = [["housePrimeVolume", "primeVolume", 1, 150, "The prime volume should be from 1 to 150 mm3, or blank to keep each file's"],
                   ["houseRibLength", "ribLength", 0, 50, "The prime tower rib length should be from 0 to 50 mm, or blank to keep each file's"],
-                  ["houseTowerBrim", "towerBrim", 0, 20, "The prime tower brim should be from 0 to 20 mm, or blank to keep each file's"]];
+                  ["houseTowerBrim", "towerBrim", 0, 20, "The prime tower brim should be from 0 to 20 mm, or blank to keep each file's"],
+                  // 2.47.8: a part brim is outer only with this gap (blank = each file's brim)
+                  ["houseBrimGap", "brimGap", 0, 2, "The brim gap should be from 0 to 2 mm, or blank to keep each file's brim"]];
       for (const [field, key, lo, hi, msg] of tw) {
         if (!(field in b)) continue;
         const s = String(b[field] == null ? "" : b[field]).trim().replace(/\s*(mm3|mm³|mm)$/i, "");
@@ -1549,7 +1551,7 @@ function register(ctx) {
   function houseView() {
     const m = (ctx.cfg && typeof ctx.cfg.models === "object" && ctx.cfg.models) || {};
     const r = TUNE.houseConf(m);
-    return { infill: r.infillPct, pattern: r.pattern, minLayer: r.minLayer, primeVolume: r.primeVolume, ribLength: r.ribLength, towerBrim: r.towerBrim, flexiDesigners: TUNE.flexiList(m), patterns: TUNE.TUNE.sparse_infill_pattern.vals };
+    return { infill: r.infillPct, pattern: r.pattern, minLayer: r.minLayer, primeVolume: r.primeVolume, ribLength: r.ribLength, towerBrim: r.towerBrim, brimGap: r.brimGap, flexiDesigners: TUNE.flexiList(m), patterns: TUNE.TUNE.sparse_infill_pattern.vals };
   }
   const today = () => new Date().toLocaleDateString("en-CA");
   const ptDirFor = rel => path.join(PRETUNE_DIR, crypto.createHash("sha1").update(String(rel)).digest("hex").slice(0, 16));

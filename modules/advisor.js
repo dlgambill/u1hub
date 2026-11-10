@@ -120,7 +120,9 @@ function houseLine(R) {
   // 2.47.5: the prime tower's size is the shop's when it set one
   const pt = [R.primeVolume != null ? "prime volume " + R.primeVolume + " mm3" : null, R.ribLength != null ? "rib length " + R.ribLength + " mm" : null, R.towerBrim != null ? "tower brim " + R.towerBrim + " mm" : null].filter(Boolean);
   const tower = pt.length ? " The prime tower's size is set by the shop (" + pt.join(", ") + ") - do not suggest prime tower size changes." : "";
-  return "HOUSE RULES (the shop's own, enforced after you answer - work inside them): " + infill + floor + tower +
+  // 2.47.8: the brim's shape and gap are the shop's; the AI decides whether and how wide
+  const brim = R.brimGap != null ? " A brim, when a part needs one, is always outer only (brim_type outer_only) with a " + R.brimGap + " mm gap (brim_object_gap) - decide only whether a brim is needed and its width." : "";
+  return "HOUSE RULES (the shop's own, enforced after you answer - work inside them): " + infill + floor + tower + brim +
     " On flexi or articulated models, support settings stay exactly as the designer set them - do not suggest support changes for those (supports grow into the joint gaps and fuse them). Supports the designer painted stay on. When an area of a non-flexi model needs support the designer did not give it, say where in \"watch\" (e.g. \"wing tips overhang - paint supports there\").";
 }
 function modelSystem(R) { return MODEL_SYSTEM_PARTS.map(p => p === "@HOUSE" ? houseLine(R) : p).join("\n"); }

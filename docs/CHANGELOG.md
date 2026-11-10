@@ -77,6 +77,10 @@ printers, and nothing leaves your network unless you turn remote access on.
 
 ---
 
+### 2.47.8 - brims are outer only, with the shop's gap
+
+- **A brim is outer only, with the shop's gap from the part.** A new box under Models, Folder (part brim: outer only, gap) sets it. When it is filled in, every brim the AI keeps or adds becomes an outer-only brim that far from the part (0.2 mm on the author's farm) - mouse ears, inner and auto brims included - and the AI is told the rule, so it only decides whether a part needs a brim and how wide. A file with no brim keeps none. It starts blank, so other farms keep their files' brims until they choose a gap. (Best practice: a shop rule is enforced in code after the AI answers, not only asked for in the prompt, so a model that ignores it cannot change the print.)
+
 ### 2.47.7 - Dispatch sends a job to the printer that already has its colors
 
 - **Dispatch planned roll changes that were not needed.** It had the Dino Clickers on U6, which meant changing three rolls, while U7 sat idle with all four colors loaded. Dispatch compared colors by their exact code: the file asked for pink #F5547C and cream #F8E1C2, U7 held #F55A7C and #FEE5A5 - the same rolls to the eye and to the printer card's own head mapping - so it counted two swaps on U7 and sent the job elsewhere. It now judges a color loaded the same way the printer card does (a near match counts, each head holding one color). Separately, a planned copy kept its printer from the previous plan as long as moving it saved less than 30 minutes, which outweighed one roll change (20 minutes); a copy now never stays put when that means more roll changes than the best printer. (Best practice: every part of the Hub that decides whether a color is loaded should use one rule, so the plan and the printer card cannot disagree.)
