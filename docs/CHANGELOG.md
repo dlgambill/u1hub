@@ -77,6 +77,13 @@ printers, and nothing leaves your network unless you turn remote access on.
 
 ---
 
+### 2.47.9 - drag a planned print around the Dispatch timeline
+
+- **Drag a print to where you want it.** With a mouse, grab any planned print on the Dispatch timeline and drop it. Drop it on another printer's row and it moves to that printer. Drop it between two prints and it takes that spot in line - after the one on its left, before the one on its right - so you can pull a print ahead of others that were going to run first. While you drag, a marker shows the printer, the spot and roughly when it would start. Dragging empty space still scrolls the timeline, and on a phone nothing changes.
+- **A print you place stays put.** The planner won't move it to save a few minutes or a roll change. It keeps its printer and its place until you undo it (the undo button on its row, or in the box that opens when you click it) or press Replan. Placed prints wear a small hand mark on the timeline and in the job list.
+- **Replan means start over.** It now clears every hand placement - dragged prints, printers picked from the Move menu, and push-backs - and builds the plan fresh. A note says how many it cleared.
+- **Drops that can't work say why.** A print that is already running can't be moved, and a drop on a printer that is down for maintenance, offline, of another type, or can't print that many colors snaps back with the reason. (Best practice: the server checks every drop and the page only shows what it answered, so the timeline can never promise a spot the planner won't keep.)
+
 ### 2.47.8 - brims are outer only, with the shop's gap
 
 - **A brim is outer only, with the shop's gap from the part.** A new box under Models, Folder (part brim: outer only, gap) sets it. When it is filled in, every brim the AI keeps or adds becomes an outer-only brim that far from the part (0.2 mm on the author's farm) - mouse ears, inner and auto brims included - and the AI is told the rule, so it only decides whether a part needs a brim and how wide. A file with no brim keeps none. It starts blank, so other farms keep their files' brims until they choose a gap. (Best practice: a shop rule is enforced in code after the AI answers, not only asked for in the prompt, so a model that ignores it cannot change the print.)

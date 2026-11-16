@@ -1242,7 +1242,10 @@ async function stopHub() {
           nx && { file: nx.file, printer: nx.printer, start_now: nx.start_now, planned_on: nx.planned_on });
         await jpost("/api/dispatch/jobs/remove", { id: SJ });
         const ui = fs.readFileSync(path.join(REPO, "public", "modules", "dispatch-ui.js"), "utf8");
-        ok(/jget\("\/api\/dispatch\/plan\?fresh=1"\)/.test(ui), "2.45.5: the replan button asks for a fresh plan, not the cached one");
+        // 2.47.9: the button now posts /api/dispatch/replan, which clears the
+        // hand placements and computes the plan itself (never the cache).
+        ok(/jpost\("\/api\/dispatch\/replan", \{\}\)/.test(ui) && /try \{ p = await plan\(\); \}/.test(fs.readFileSync(path.join(REPO, "modules", "dispatch.js"), "utf8")),
+          "2.45.5: the replan button asks for a fresh plan, not the cached one");
         ok(/idle until \$\{esc\(fmtClock\(pinfo\.window_opens\)\)\}/.test(ui) && /next\.start_now/.test(ui), "2.45.5: the lane says idle until the window opens, and the confirm explains a hand-start");
       }
       r = await jpost("/api/dispatch/settings", { clearOverride: iso(Date.now()) });
@@ -6005,6 +6008,160 @@ async function stopHub() {
     await jpost("/api/dispatch/maintenance", { printer: 1 - u1, down: false });
     await jpost("/api/dispatch/jobs/remove", { id: J4 });
     try { fs.unlinkSync(estFile); } catch {}
+  }
+
+  console.log("\n== 2.47.9: drag a planned print on the Dispatch timeline ==");
+  {
+    // Danny, 2026-11-16: drag a scheduled print to another printer or another
+    // spot in line; it stays where he put it until Replan, which clears every
+    // hand placement (drags, pins, push-backs) and plans from scratch.
+    const cfg0 = JSON.parse(fs.readFileSync(path.join(hubDir, "config.json"), "utf8"));
+    const cfgP = cfg0.printers;
+    const U = cfgP.findIndex(p => p.url.endsWith(":" + portU1));
+    const S = cfgP.findIndex(p => p.url.endsWith(":" + portSv));
+    const svType = cfgP[S] && cfgP[S].type;
+    const setSvType = async t => jpost("/api/config", { gcodeFolder: cfg0.gcodeFolder, printers: JSON.parse(fs.readFileSync(path.join(hubDir, "config.json"), "utf8")).printers.map((p, i) => i === S ? { ...p, type: t } : p) });
+    // the SV mock is on its own printer type here (S8): a U1 print dropped on
+    // it is the wrong kind of printer
+    const W = (await jpost("/api/dispatch/jobs", { again: true, file: "single.gcode", type: "u1", qty: 1 })).body.job.id;
+    let r0 = await jpost("/api/dispatch/jobs/place", { id: W, printer: S, before: null, after: null });
+    ok(svType !== "u1" && r0.status === 409 && /different kind of printer/.test(r0.body.error || ""), "2.47.9: a drop on a printer of another type is refused with the reason", { svType, body: r0.body });
+    await jpost("/api/dispatch/jobs/remove", { id: W });
+    r0 = await setSvType("u1");                 // two U1-type lanes for the rest of this block
+    ok(r0.status === 200, "2.47.9: precondition - the SV mock takes U1 prints for this block", r0.body && r0.body.error);
+    const clearJobs = async () => { for (const j of ((await jget("/api/dispatch")).body.jobs || [])) await jpost("/api/dispatch/jobs/remove", { id: j.id }); };
+    await clearJobs();
+    mockU1.state.printState = "standby"; mockU1.state.filename = "";
+    mockSv.state.printState = "standby"; mockSv.state.filename = "";
+    await jpost("/api/dispatch/lock", { lock: false });
+    await jpost("/api/dispatch/maintenance", { printer: S, down: false });
+    await jpost("/api/dispatch/maintenance", { printer: U, down: false });
+    const add = async file => (await jpost("/api/dispatch/jobs", { again: true, file: file || "single.gcode", type: "u1", qty: 1 })).body.job.id;
+    const fresh = async () => (await jget("/api/dispatch/plan?fresh=1")).body;
+    const slotOf = (p, id) => (p.slots || []).find(s => s.job_id === id && !s.unplannable);
+    const seqOn = (p, lane) => (p.slots || []).filter(s => !s.unplannable && s.printer === lane).sort((a, b) => a.est_start - b.est_start).map(s => s.job_id);
+    const jobOf = async id => ((await jget("/api/dispatch")).body.jobs || []).find(j => j.id === id);
+    ok(U >= 0 && S >= 0 && U !== S, "2.47.9: precondition - the harness has the U1 mock and the generic mock", { U, S });
+
+    // ---- a running print can't be moved ----
+    const X = await add();
+    mockU1.state.printState = "printing"; mockU1.state.filename = "single.gcode";
+    await sleep(4500);
+    await jpost("/api/dispatch/adopt", {});
+    let jx = await jobOf(X);
+    ok(jx && jx.printing_on === U, "2.47.9: precondition - the print on the U1 mock is claimed as running", jx && jx.printing_on);
+    let r = await jpost("/api/dispatch/jobs/place", { id: X, printer: S, before: null, after: null });
+    ok(r.status === 409 && /running print can't be moved/.test(r.body.error || ""), "2.47.9: a running print can't be dragged - the drop is refused with the reason", r.body);
+    jx = await jobOf(X);
+    ok(jx && !jx.placed, "2.47.9: ...and nothing about it was changed", jx && jx.placed);
+    await jpost("/api/dispatch/jobs/remove", { id: X });
+    mockU1.state.printState = "standby"; mockU1.state.filename = "";
+    await sleep(4500); await jpost("/api/dispatch/tick", {});
+
+    // ---- one lane: dropping ahead puts it ahead ----
+    await jpost("/api/dispatch/maintenance", { printer: S, down: true, note: "harness: one lane" });
+    const A = await add(), B = await add(), C = await add();
+    let p = await fresh();
+    ok(JSON.stringify(seqOn(p, U)) === JSON.stringify([A, B, C]), "2.47.9: precondition - one lane plans A, B, C in order", seqOn(p, U));
+    r = await jpost("/api/dispatch/jobs/place", { id: C, printer: U, before: A, after: null });
+    ok(r.status === 200 && r.body.pinned === U && r.body.job.placed && r.body.job.placed.before === A && r.body.job.placed.after === null,
+      "2.47.9: dropping C at the front of the lane stores its printer and its place (in front of A)", r.body.job && r.body.job.placed);
+    ok(r.body.plan && JSON.stringify(seqOn(r.body.plan, U)) === JSON.stringify([C, A, B]), "2.47.9: dropped ahead of A, C now runs first - earlier really works", r.body.plan && seqOn(r.body.plan, U));
+    const sc = slotOf(r.body.plan, C);
+    ok(sc && sc.placed === true && sc.hand === true && sc.pinned === true, "2.47.9: its block carries the placed-by-hand mark", sc && { placed: sc.placed, hand: sc.hand, pinned: sc.pinned });
+    r = await jpost("/api/dispatch/jobs/place", { id: B, printer: U, before: A, after: C });
+    p = await fresh();
+    ok(JSON.stringify(seqOn(p, U)) === JSON.stringify([C, B, A]), "2.47.9: dropping B between C and A runs it after C and before A", seqOn(p, U));
+    r = await jpost("/api/dispatch/jobs/place", { id: A, printer: S, before: null, after: null });
+    ok(r.status === 409 && /down for maintenance/.test(r.body.error || ""), "2.47.9: a drop on a printer that is down is refused with the reason", r.body);
+    ok(!(await jobOf(A)).placed, "2.47.9: ...and the refused print is not marked as placed");
+    // survives replans and a restart
+    p = await fresh(); p = await fresh();
+    ok(JSON.stringify(seqOn(p, U)) === JSON.stringify([C, B, A]), "2.47.9: the hand order holds across replans", seqOn(p, U));
+    await stopHub(); await startHub(hubDir);
+    p = await fresh();
+    ok(JSON.stringify(seqOn(p, U)) === JSON.stringify([C, B, A]) && slotOf(p, C).placed && slotOf(p, B).placed,
+      "2.47.9: the hand order and its marks survive a restart (stored in dispatch.json)", seqOn(p, U));
+    // per-print undo frees just that print
+    r = await jpost("/api/dispatch/jobs/place", { id: C, clear: true });
+    ok(r.status === 200 && r.body.freed === true, "2.47.9: the per-print undo answers that it freed the print", r.body.freed);
+    const jc = await jobOf(C), jb = await jobOf(B);
+    ok(jc && !jc.placed && jc.pinned === undefined, "2.47.9: undo drops that print's order and its printer pin", jc && { placed: jc.placed, pinned: jc.pinned });
+    ok(jb && jb.placed && jb.pinned === U, "2.47.9: ...and leaves the other hand placement alone", jb && { placed: jb.placed, pinned: jb.pinned });
+    p = r.body.plan;
+    ok(p && !slotOf(p, C).hand && slotOf(p, B).hand && JSON.stringify(seqOn(p, U)) === JSON.stringify([B, A, C]),
+      "2.47.9: freed, C goes back to its natural turn while B keeps its place ahead of A", p && seqOn(p, U));
+    // a reference to a job that has left the queue is ignored
+    await jpost("/api/dispatch/jobs/remove", { id: A });
+    p = await fresh();
+    ok(p && JSON.stringify(seqOn(p, U)) === JSON.stringify([C, B]) && slotOf(p, B).hand,
+      "2.47.9: the job B was dropped in front of is gone - that reference is ignored and B stays behind C, as dropped", p && seqOn(p, U));
+    await stopHub();
+    {
+      const dpath = path.join(hubDir, "dispatch.json");
+      const dj = JSON.parse(fs.readFileSync(dpath, "utf8"));
+      for (const j of dj.jobs) if (j.id === B) j.placed = { before: "job_gone_1", after: "job_gone_2", at: Date.now() };
+      fs.writeFileSync(dpath, JSON.stringify(dj, null, 2));
+    }
+    await startHub(hubDir);
+    p = await fresh();
+    ok(p && JSON.stringify(seqOn(p, U)) === JSON.stringify([B, C]), "2.47.9: with both neighbors gone, the hand-placed print simply goes first on its lane", p && seqOn(p, U));
+    await clearJobs();
+    await jpost("/api/dispatch/maintenance", { printer: S, down: false });
+
+    // ---- two lanes: drop on the other printer pins it, and it stays ----
+    const P = await add(), Q = await add();
+    p = await fresh();
+    const lp = slotOf(p, P).printer, lq = slotOf(p, Q).printer;
+    ok(lp !== lq, "2.47.9: precondition - two free printers take one print each", { lp, lq });
+    // Q is held on its printer from the Move menu, so the lane P is dropped
+    // on keeps the neighbor it was dropped behind.
+    await jpost("/api/dispatch/jobs/assign", { id: Q, printer: lq });
+    r = await jpost("/api/dispatch/jobs/place", { id: P, printer: lq, before: null, after: Q });
+    let sp = slotOf(r.body.plan, P), sq = slotOf(r.body.plan, Q);
+    ok(r.status === 200 && sp && sp.printer === lq && sp.pinned, "2.47.9: dropping P on the other printer's lane moves it there and pins it", sp && { printer: sp.printer, pinned: sp.pinned });
+    ok(sp && sq && sq.printer === lq && sp.est_start >= sq.est_end, "2.47.9: ...behind Q, where it was dropped", sp && sq && { p: sp.est_start, qEnd: sq.est_end });
+    // its old printer now sits idle and would start it at once - a gain far
+    // past the sticky tolerance - and still nothing may take it back
+    p = await fresh(); p = await fresh();
+    sp = slotOf(p, P); sq = slotOf(p, Q);
+    ok(sp && sp.printer === lq && sp.est_start >= sq.est_end && seqOn(p, lp).length === 0 && sp.why.reason === "pinned",
+      "2.47.9: across replans the hand-placed print stays on its printer behind Q, though its old printer is idle", sp && { printer: sp.printer, idleLane: seqOn(p, lp), why: sp.why.reason });
+    const R = await add();
+    p = await fresh();
+    sp = slotOf(p, P);
+    ok(sp && sp.printer === lq && sp.est_start >= slotOf(p, Q).est_end, "2.47.9: ...and a new job arriving does not move it either", sp && sp.printer);
+    // ---- Replan clears every kind of hand placement ----
+    await jpost("/api/dispatch/jobs/assign", { id: R, printer: lp });
+    r = await jpost("/api/dispatch/jobs/push-back", { id: Q });
+    ok(r.status === 200, "2.47.9: precondition - a push-back is in place", r.body && r.body.error);
+    let st = (await jget("/api/dispatch")).body.jobs;
+    ok(st.find(j => j.id === P).placed && st.find(j => j.id === R).pinned === lp && st.find(j => j.id === Q).after,
+      "2.47.9: precondition - one drag, one menu pin and one push-back are held", st.map(j => ({ placed: !!j.placed, pinned: j.pinned, after: !!j.after })));
+    r = await jpost("/api/dispatch/replan", {});
+    ok(r.status === 200 && r.body.cleared === 3, "2.47.9: Replan clears all three hand placements and says how many", r.body.cleared);
+    st = (await jget("/api/dispatch")).body.jobs;
+    ok(st.every(j => !j.placed && j.pinned === undefined && !j.after), "2.47.9: after Replan no job keeps a drag order, a pin or a push-back", st.map(j => ({ placed: j.placed, pinned: j.pinned, after: j.after })));
+    ok(r.body.plan && (r.body.plan.slots || []).filter(s => !s.unplannable).length === 3 && !(r.body.plan.slots || []).some(s => s.hand),
+      "2.47.9: ...and the fresh plan it returns has no hand marks", r.body.plan && (r.body.plan.slots || []).map(s => s.hand));
+    // ---- a print that needs several colors can't go on a one-color printer ----
+    const M = await add("multi.gcode");
+    r = await jpost("/api/dispatch/jobs/place", { id: M, printer: S, before: null, after: null });
+    ok(r.status === 409 && /more than one color/.test(r.body.error || ""), "2.47.9: a drop on a printer that can't take the print is refused with the reason", r.body);
+    await clearJobs();
+    if (svType) await setSvType(svType);
+
+    // ---- the page ----
+    const ui = fs.readFileSync(path.join(REPO, "public", "modules", "dispatch-ui.js"), "utf8").replace(/\r\n/g, "\n");
+    ok(/g\.addEventListener\("pointerdown", e => \{\n\s*if \(e\.pointerType !== "mouse" \|\| e\.button !== 0 \|\| bdrag\) return;/.test(ui),
+      "2.47.9: only a mouse drags a block - touch keeps panning and tapping");
+    ok(/if \(runb\) \{ bdrag = \{ run: true/.test(ui) && /A print that is already running can't be moved/.test(ui), "2.47.9: grabbing a running print says it can't be moved");
+    ok(/jpost\("\/api\/dispatch\/jobs\/place", \{ id: d\.s\.job_id, printer: tg\.idx,/.test(ui) && /data-lane="\$\{idx\}"/.test(ui), "2.47.9: a drop posts the lane and the neighbors it landed between");
+    ok(/className = "dsp-gdrop"/.test(ui) && /starts about/.test(ui), "2.47.9: while dragging, a marker shows the lane, the spot and the estimated start");
+    ok(/toast\(\(r\.body && r\.body\.error\) \|\| "That print can't go there", true\)/.test(ui), "2.47.9: a refused drop snaps back with a toast giving the reason");
+    ok(/class="dsp-hand"/.test(ui) && /data-dsp-unplace=/.test(ui) && /class="dsp-movego dsp-unplace"/.test(ui), "2.47.9: hand-placed prints wear a mark, with an undo on the row and in the block's sheet");
+    ok(/if \(DRAGGING\) \{ RENDER_PENDING = true; return; \}/.test(ui), "2.47.9: a plan update mid-drag waits for the drop instead of rebuilding the lanes");
+    ok(!(ui.match(/toast\("[^"]*"/g) || []).join("").includes(String.fromCharCode(8212)), "2.47.9: the new toasts use a spaced hyphen, not an em dash");
   }
 
   console.log("\n== SPRINT 3: H21/H22 Models tab - aliases, unsorted, batched info, phone layout (2.44.0) ==");

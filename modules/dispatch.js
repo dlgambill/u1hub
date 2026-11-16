@@ -1012,6 +1012,30 @@ function register(ctx) {
         if (!moved) break;
       }
     }
+    // ---- placed by hand (2.47.9) ----------------------------------------------
+    // A print dragged on the timeline carries job.placed = { before, after, at }:
+    // the job it was dropped in front of and the one it was dropped behind, on
+    // the lane it was dropped on (that lane is a pin in PINS). Lane order is
+    // plan order - a lane's cursor only moves forward - so taking the job out
+    // of `ordered` and putting it straight in front of `before` (or straight
+    // behind `after`, or first when neither is in the queue any more) is all it
+    // takes to hold it there. Oldest drop first, so a later drag that names an
+    // earlier one lands relative to where that one now sits. A reference to a
+    // job that has finished or been removed is simply ignored.
+    {
+      const hand = ordered.filter(j => j.placed && typeof j.placed === "object")
+        .sort((a, b) => ((a.placed.at || 0) - (b.placed.at || 0)));
+      for (const j of hand) {
+        const at = ordered.indexOf(j);
+        if (at < 0) continue;
+        ordered.splice(at, 1);
+        const bi = j.placed.before && j.placed.before !== j.id ? ordered.findIndex(x => x.id === j.placed.before) : -1;
+        const ai = j.placed.after && j.placed.after !== j.id ? ordered.findIndex(x => x.id === j.placed.after) : -1;
+        if (bi >= 0) ordered.splice(bi, 0, j);
+        else if (ai >= 0) ordered.splice(ai + 1, 0, j);
+        else ordered.unshift(j);
+      }
+    }
     // When each job's last copy is expected to finish, filled in as we place.
     // A pushed-back job cannot start before its target has finished.
     const jobEnds = new Map();
@@ -1168,6 +1192,11 @@ function register(ctx) {
           why: { reason: whyReason, alternatives },
           swaps: best.swaps, deadline: dl, deadline_source: dlInfo.src || undefined,
           pinned: pinned !== undefined || undefined,
+          // 2.47.9: dragged here on the timeline, and the umbrella for every
+          // hand decision (drag, printer pin, push-back) - each one stays until
+          // its own undo or Replan, and the block wears a mark that says so.
+          placed: job.placed ? true : undefined,
+          hand: (pinned !== undefined || !!job.placed || !!job.after) || undefined,
           // Pushed back behind another job, and behind which one — so the
           // timeline can say "waiting on X" rather than leaving a gap the user
           // has to explain to themselves.
@@ -1536,7 +1565,9 @@ function register(ctx) {
     // against the share: this endpoint is polled every second by an open
     // Dispatch tab, and twenty synchronous stats on a network folder per poll
     // is precisely the class of stall v2.23 removed.
-    const jobs = D.jobs.map(j => {
+    // 2.47.9: and which printer a hand pin holds it to, so the list can mark it.
+    const jobs = D.jobs.map(j0 => {
+      const j = PINS.has(j0.id) ? { ...j0, pinned: PINS.get(j0.id) } : j0;
       if (j.state === "done" || !ctx.fileStat) return j;
       // null = the library has been read and the file is not there. undefined
       // = no snapshot yet (boot); say nothing rather than cry wolf.
@@ -1598,6 +1629,7 @@ function register(ctx) {
     });
 
     job.after = nextId;
+    delete job.placed;            // 2.47.9: a push is a new order; the dragged one gives way
     save();
     const target = D.jobs.find(j => j.id === nextId);
     ctx.hublog("info", "dispatch: '" + job.file + "' pushed back behind '" + ((target && target.file) || nextId) + "'");
@@ -1903,14 +1935,106 @@ function register(ctx) {
     // "auto" is a request for a fresh decision, so drop the soft placement too
     // — otherwise the copy sits where the last plan put it.
     // H4: a pin is state the user set by hand - saved the moment it changes.
-    if (b.printer === null || b.printer === "auto") { forget(j.id); save(); return res.json({ ok: true, pinned: null }); }
+    // 2.47.9: either way the menu is a fresh decision about this job, so a
+    // dragged order goes with it (the pin, if any, is the new hand placement).
+    if (b.printer === null || b.printer === "auto") { forget(j.id); delete j.placed; save(); return res.json({ ok: true, pinned: null }); }
     const idx = parseInt(b.printer, 10);
     const fleetSize = (ctx.printers || []).length;
     if (!Number.isInteger(idx) || idx < 0 || (fleetSize && idx >= fleetSize))
       return res.status(400).json({ error: "No such printer" });
+    delete j.placed;
     PINS.set(j.id, idx);
     save();
     res.json({ ok: true, pinned: idx });
+  });
+  // ---- placed by hand on the timeline (2.47.9) --------------------------------
+  // POST /api/dispatch/jobs/place { id, printer, before, after }
+  //   Danny dragged a planned print onto a printer's lane, in front of the job
+  //   `before` and behind the job `after` (either may be null: the front or the
+  //   end of the lane). The printer becomes a pin - the same hard pin the Move
+  //   menu writes - and the order is stored on the job as job.placed, which
+  //   plan() honors before anything else gets a say. No sticky tolerance and no
+  //   swap scoring can move it: a pinned job's pool is one lane, and its place
+  //   in that lane is fixed by the order. It stays until its own undo or Replan.
+  // POST /api/dispatch/jobs/place { id, clear: true }
+  //   Undo for one print: drops its drag order, its printer pin and its
+  //   push-back, and lets the scheduler place it again.
+  // A drop that cannot work is refused with the reason, and the page snaps the
+  // block back and says why.
+  app.post("/api/dispatch/jobs/place", async (req, res) => {
+    ensureMapped();
+    const b = req.body || {};
+    const id = String(b.id || "");
+    const job = D.jobs.find(j => j.id === id);
+    if (!job) return res.status(404).json({ error: "That print is not in the queue any more" });
+    if (b.clear) {
+      const was = !!(job.placed || job.after || PINS.has(id));
+      delete job.placed; delete job.after; forget(id);
+      save();
+      if (was) ctx.hublog("info", "dispatch: '" + job.file + "' freed - the scheduler places it again");
+      let p = null; try { p = await plan(); } catch {}
+      return res.json({ ok: true, freed: was, job, plan: p });
+    }
+    if (D.settings.schedule_mode === "locked")
+      return res.status(409).json({ error: "The schedule is locked - unlock it to move prints around" });
+    if (job.state === "paused")
+      return res.status(409).json({ error: "That job is paused - resume it before placing it" });
+    const now = Date.now();
+    const starting = job.printing_on == null && job.starting_on && (now - (job.starting_on.at || 0) < STARTING_TTL_MS);
+    const inFlight = (job.printing_on != null || starting) ? 1 : 0;
+    if (Math.max(0, (job.remaining ?? job.qty ?? 1) - inFlight) <= 0)
+      return res.status(409).json({ error: "That print is already on the bed - a running print can't be moved" });
+    const idx = parseInt(b.printer, 10);
+    let fleet = [];
+    try { fleet = (await ctx.fleet()) || []; } catch {}
+    const fp = fleet[idx];
+    if (!Number.isInteger(idx) || idx < 0 || idx >= Math.max(fleet.length, (ctx.printers || []).length))
+      return res.status(400).json({ error: "There is no printer there" });
+    const pname = (fp && fp.name) || ((ctx.printers || [])[idx] || {}).name || ("printer " + (idx + 1));
+    if (maintOf(idx)) return res.status(409).json({ error: pname + " is down for maintenance - bring it back into service first" });
+    if (!fp || fp.online === false) return res.status(409).json({ error: pname + " is offline, so nothing can be planned on it" });
+    if (String(job.type || "u1") !== typeAt(idx))
+      return res.status(409).json({ error: "That print was sliced for a different kind of printer than " + pname });
+    if (job.multi && !(fp.caps && fp.caps.multiColor))
+      return res.status(409).json({ error: pname + " can't print more than one color, and this print needs several" });
+    // Only jobs still in the queue make sense as neighbors; anything else is
+    // stored as "no neighbor" rather than as a reference that is already dead.
+    const ref = v => { const s = v == null ? "" : String(v); return (s && s !== id && D.jobs.some(j => j.id === s)) ? s : null; };
+    delete job.after;                       // the drop IS its order now; a push-back would fight it
+    job.placed = { before: ref(b.before), after: ref(b.after), at: now };
+    forget(id);                             // drop the soft per-copy placements...
+    PINS.set(id, idx);                      // ...and hold it on the lane it was dropped on
+    save();
+    const nb = job.placed.before && D.jobs.find(j => j.id === job.placed.before);
+    ctx.hublog("info", "dispatch: '" + job.file + "' placed by hand on " + pname +
+      (nb ? " ahead of '" + nb.file + "'" : " at the end of its lane"));
+    let p = null;
+    try { p = await plan(); } catch (e) { p = { error: "Placed, but replanning failed: " + e.message }; }
+    res.json({ ok: true, job, pinned: idx, plan: p });
+  });
+  // ---- Replan (2.47.9) ----------------------------------------------------------
+  // The Replan button means "start over": every hand placement goes - drags,
+  // printer pins from the Move menu and push-backs alike (Danny's call) - along
+  // with the soft per-copy memory the sticky tolerance reads, and the plan is
+  // built from scratch. GET /api/dispatch/plan?fresh=1 still recomputes without
+  // clearing anything, for callers that only want a current picture.
+  app.post("/api/dispatch/replan", async (req, res) => {
+    ensureMapped();
+    let cleared = 0;
+    const hand = new Set(PINS.keys());
+    for (const j of D.jobs) {
+      if (j.placed || j.after) hand.add(j.id);
+      delete j.placed; delete j.after;
+    }
+    cleared = hand.size;
+    PINS.clear();
+    PLACEMENT.clear();
+    save();
+    ctx.hublog("info", "dispatch: replanned from scratch" + (cleared ? " - " + cleared + " hand placement" + (cleared === 1 ? "" : "s") + " cleared" : ""));
+    let p;
+    try { p = await plan(); }
+    catch (e) { return res.status(500).json({ error: "Cleared, but planning failed: " + e.message, cleared }); }
+    res.json({ ok: true, cleared, plan: p });
   });
   // "The farm is already busy - claim what's running." Probes every printer and
   // matches live prints to queued jobs, so Dispatch stops scheduling copies of
@@ -1976,7 +2100,7 @@ function register(ctx) {
   function planSig(p) {
     const m = ms => ms ? Math.round(ms / 60000) : ms;
     return JSON.stringify({
-      s: (p.slots || []).map(x => [x.job_id, x.copy, x.printer, m(x.est_start), m(x.est_end), x.unplannable || 0, x.misses_deadline ? 1 : 0, x.pinned ? 1 : 0]),
+      s: (p.slots || []).map(x => [x.job_id, x.copy, x.printer, m(x.est_start), m(x.est_end), x.unplannable || 0, x.misses_deadline ? 1 : 0, x.pinned ? 1 : 0, x.hand ? 1 : 0]),
       r: (p.running || []).map(x => [x.printer, x.file, m(x.est_end), x.starting ? 1 : 0]),
       p: (p.printers || []).map(x => [x.idx, x.busy ? 1 : 0, x.maintenance ? 1 : 0]),
       l: p.locked ? 1 : 0

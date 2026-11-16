@@ -90,6 +90,16 @@
     else await load();          // something disagreed — re-read rather than guess
   }
 
+  // 2.47.9: per-print undo of a hand placement (drag, pin or push-back). The
+  // scheduler gets this one print back; every other hand placement stays.
+  async function unplace(id, btn) {
+    if (btn) btn.disabled = true;
+    const r = await jpost("/api/dispatch/jobs/place", { id, clear: true });
+    if (!r.ok) { if (btn) btn.disabled = false; toast((r.body && r.body.error) || "Could not undo that", true); return; }
+    await showPlanFrom(r.body && r.body.plan);
+    toast("Freed - the scheduler places it again");
+  }
+
   async function load() {
     const [d, p] = await Promise.all([jget("/api/dispatch"), jget("/api/dispatch/plan")]);
     STATE = d.body || { jobs: [], bundles: [], settings: {} };
@@ -302,8 +312,16 @@
         ? ` <span class="dsp-jmissing dsp-jattn" title="${esc(j.attention)}. The copy is still counted as remaining.">${esc(j.attention)}</span>` +
           ` <button data-dsp-ack="${esc(j.id)}" title="Clear this notice">OK</button>`
         : "";
+      // 2.47.9: placed by hand (dragged on the timeline, pinned from the Move
+      // menu, or pushed back). It stays until this undo or Replan.
+      const handed = j.pinned != null || !!j.placed || !!j.after;
+      const pinName = j.pinned != null ? (((PLAN && PLAN.printers) || []).find(p => p.idx === j.pinned) || {}).name : null;
+      const handTag = handed
+        ? ` <span class="dsp-jhand" title="${esc((j.placed ? "Dragged into place on the timeline" : j.after ? "Pushed back behind another job" : "Pinned to a printer") + (pinName ? " - held on " + pinName : "") + ". It stays until you undo it or press Replan.")}">✋ by hand</span>` +
+          ` <button data-dsp-unplace="${esc(j.id)}" title="Undo: let the scheduler place this print again">undo</button>`
+        : "";
       return `<div class="dsp-job dsp-${esc(j.state)}${j.bundle_id ? " dsp-inbundle" : ""}${j.file_missing ? " dsp-filemissing" : ""}">
-        <span class="dsp-jfile">${esc(j.file)}${gone}${attn}</span><span>${j.remaining}/${j.qty}</span>
+        <span class="dsp-jfile">${esc(j.file)}${gone}${attn}${handTag}</span><span>${j.remaining}/${j.qty}</span>
         <span title="deadline">${esc(dl)}</span>
         ${prioSel}
         <span class="dsp-jest" data-dsp-est="${esc(j.id)}" title="${j.est_user ? "your runtime - click to change or clear" : j.est_minutes ? "the slicer's estimate - click to type your own" : "no estimate in the file - click to type one"}">${j.est_minutes ? fmtMin(j.est_minutes) + "/ea" + (j.est_user ? " \u270e" : "") : "est ? \u270e"}</span>
@@ -354,6 +372,7 @@
       inp.onkeydown = e => { if (e.key === "Enter") { e.preventDefault(); done(true); } if (e.key === "Escape") done(false); };
       inp.onclick = e => e.stopPropagation();
     });
+    box.querySelectorAll("[data-dsp-unplace]").forEach(b => b.onclick = () => unplace(b.dataset.dspUnplace, b));
     box.querySelectorAll("[data-dsp-ack]").forEach(b => b.onclick = async () => {
       await jpost("/api/dispatch/jobs/update", { id: b.dataset.dspAck, clear_attention: true }); load();
     });
@@ -385,7 +404,37 @@
   // viewport and its lanes scroll inside it, so the plan reload rebuilt it at
   // the top every few seconds - on a phone you could never reach U9.
   let GSCROLLY = 0;
+  // 2.47.9: a block drag in progress holds the guide still. A plan push or a
+  // poll arriving mid-drag would rebuild the lanes out from under the pointer,
+  // so the redraw waits for the drop and happens once, after it.
+  let DRAGGING = false, RENDER_PENDING = false;
+  function finishDrag() {
+    DRAGGING = false;
+    if (RENDER_PENDING) { RENDER_PENDING = false; renderPlan(); }
+  }
+  // Show the plan a route answered with (it was computed after the change),
+  // and re-read the job list beside it so the rows agree with the blocks.
+  async function showPlanFrom(p) {
+    const d = await jget("/api/dispatch");
+    if (d.ok && d.body) STATE = d.body;
+    if (p && Array.isArray(p.slots)) { PLAN = p; render(); } else await load();
+  }
+  // A short note at the bottom of the screen: what a drop did, or why it
+  // could not. role=status so a screen reader hears it too.
+  function toast(msg, bad) {
+    let t = document.getElementById("dsp-toast");
+    if (!t) {
+      t = document.createElement("div");
+      t.id = "dsp-toast"; t.setAttribute("role", "status"); t.setAttribute("aria-live", "polite");
+      document.body.appendChild(t);
+    }
+    t.textContent = msg;
+    t.className = "dsp-toast dsp-toaston" + (bad ? " dsp-toastbad" : "");
+    clearTimeout(toast.timer);
+    toast.timer = setTimeout(() => t.classList.remove("dsp-toaston"), bad ? 5000 : 3500);
+  }
   function renderPlan() {
+    if (DRAGGING) { RENDER_PENDING = true; return; }
     const box = $$("#dsp-plan");
     const slots = (PLAN && PLAN.slots) || [];
     const bad = slots.filter(s => s.unplannable);
@@ -498,10 +547,14 @@
         const body = w >= 120
           ? `<b>${esc(name)}</b><span>${esc(fmtClock(s.est_start))}–${esc(fmtClock(s.est_end))}</span>`
           : w >= 62 ? `<b>${esc(name)}</b>` : "";
-        return `<div class="dsp-gblk${s.misses_deadline ? " dsp-gmiss" : ""}" data-slot="${good.indexOf(s)}" ` +
+        // 2.47.9: placed by hand (dragged, pinned or pushed back) - it stays
+        // put until its own undo or Replan, and the block says so.
+        const handMark = s.hand ? `<b class="dsp-hand" title="Placed by hand - stays here until you undo it or press Replan">✋</b>` : "";
+        return `<div class="dsp-gblk${s.misses_deadline ? " dsp-gmiss" : ""}${s.hand ? " dsp-ghand" : ""}" data-slot="${good.indexOf(s)}" ` +
           `style="left:${l}px;width:${w}px" title="${esc(name)} #${s.copy}/${s.of}\n${esc(fmtT(s.est_start))} → ${esc(fmtT(s.est_end))} (${esc(fmtMin(s.est_minutes))})` +
-          `${s.est_assumed ? "\n(no estimate in file — 1 h assumed)" : ""}${s.misses_deadline ? "\n⚠ MISSES ITS DEADLINE" : ""}">` +
-          `<span class="dsp-gtext">${body}</span>${swapBadge}${clash}${idle}</div>`;
+          `${s.est_assumed ? "\n(no estimate in file — 1 h assumed)" : ""}${s.misses_deadline ? "\n⚠ MISSES ITS DEADLINE" : ""}` +
+          `${s.hand ? "\nPlaced by hand - stays here until you undo it or press Replan" : ""}">` +
+          `<span class="dsp-gtext">${body}</span>${handMark}${swapBadge}${clash}${idle}</div>`;
       }).join("");
       // v2.19 maintenance. Deliberately its own word and its own color: an
       // offline machine is a fact the Hub discovered, a machine down for
@@ -535,7 +588,7 @@
             : `<span class="dsp-gsub dsp-lidle">idle — nothing planned</span>`;
       return `<div class="dsp-grow${maint ? " dsp-rowmaint" : (busyNow ? " dsp-rowrun" : "")}">
         <div class="dsp-gcell"><span class="dsp-gpname">${esc(lane.name)}</span>${first}${clearBtn}${wrench}</div>
-        <div class="dsp-gtime" style="width:${W}px">${closed}${nowLine}${runBlocks(+idx)}${blocks}</div>
+        <div class="dsp-gtime" data-lane="${idx}" style="width:${W}px">${closed}${nowLine}${runBlocks(+idx)}${blocks}</div>
       </div>`;
     }).join("");
 
@@ -573,6 +626,7 @@
             <span class="dsp-kit" title="How many spools you mount before this print starts"><b class="dsp-swapn">2⇄</b>spool swaps first</span>
             <span class="dsp-kit" title="Another printer needs the same color at the same time"><b class="dsp-clash">⚠</b>color also needed elsewhere</span>
             <span class="dsp-kit" title="The printer then sits idle until you clear the bed"><b class="dsp-idle">\u{1F4A4}</b>waits for bed clear</span>
+            <span class="dsp-kit" title="You placed it (dragged it, picked its printer or pushed it back). It stays until you undo it or press Replan. With a mouse, drag a planned print to another printer or another spot in line."><b class="dsp-hand">✋</b>placed by hand</span>
           </span>
         </span>
       </div>
@@ -640,6 +694,140 @@
         else if (e.key === "PageDown") { e.preventDefault(); page(1); }
         else if (e.key === "Home") { e.preventDefault(); toNow(); }
       };
+      // 2.47.9: DRAG A PLANNED PRINT (mouse only - touch still pans, and a
+      // tap still opens the block). Grab a planned block and drop it on any
+      // printer's lane: the lane is its printer, and where it lands among that
+      // lane's blocks is its place in line - after the block it was dropped
+      // behind, before the block it was dropped in front of. The server
+      // decides whether the drop can work; a refusal snaps it back and says
+      // why. Running prints don't move. Empty space still pans (below).
+      let bdrag = null, bswallow = false;
+      const laneAt = (cx, cy) => {
+        const el = document.elementFromPoint(cx, cy);
+        const row = el && el.closest && el.closest(".dsp-grow");
+        if (!row || row.classList.contains("dsp-gruler") || !g.contains(row)) return null;
+        const tl = row.querySelector(".dsp-gtime[data-lane]");
+        return tl ? { el: tl, idx: +tl.dataset.lane } : null;
+      };
+      // Where on `lane` a drop at clientX lands: the neighbors it goes between,
+      // and roughly when it would start (the server's plan has the real time).
+      const dropAt = (lane, cx, s) => {
+        const r = lane.el.getBoundingClientRect();
+        const t = t0 + ((cx - r.left) / PPH) * HOUR;
+        const others = good.filter(o => o.printer === lane.idx && o.job_id !== s.job_id).sort((a, b) => a.est_start - b.est_start);
+        let k = others.findIndex(o => (o.est_start + o.est_end) / 2 > t);
+        if (k < 0) k = others.length;
+        const before = others[k] || null, after = others[k - 1] || null;
+        const run = RUN.find(r2 => r2.printer === lane.idx);
+        const free = Math.max(now, run ? run.est_end : 0);
+        const start = before ? before.est_start : Math.max(free, after ? after.est_end : 0);
+        return { idx: lane.idx, before, after, start, px: before ? x(before.est_start) : x(start) };
+      };
+      // The block's own neighbors now, to tell a real move from a wiggle.
+      const nbrsOf = s => {
+        const own = good.filter(o => o.printer === s.printer && o.job_id !== s.job_id).sort((a, b) => a.est_start - b.est_start);
+        const k = own.findIndex(o => o.est_start > s.est_start);
+        return { before: k < 0 ? null : own[k], after: k < 0 ? own[own.length - 1] || null : own[k - 1] || null };
+      };
+      const laneName = i => ((PLAN.printers || []).find(p => p.idx === i) || {}).name || ("printer " + (i + 1));
+      const bclean = d => {
+        if (d.ghost) d.ghost.remove();
+        if (d.marker) d.marker.remove();
+        if (d.blk) d.blk.classList.remove("dsp-gsrc");
+        g.classList.remove("dsp-bdragging");
+        try { g.releasePointerCapture(d.id); } catch {}
+        if (d.onKey) document.removeEventListener("keydown", d.onKey, true);
+        DRAGGING = false;
+      };
+      const bmove = e => {
+        const d = bdrag;
+        d.ghost.style.left = (e.clientX - d.ox) + "px";
+        d.ghost.style.top = (e.clientY - d.oy) + "px";
+        // nudge the view when the pointer reaches an edge, so a drop can go
+        // further along the day than the guide shows at once
+        const gr = g.getBoundingClientRect();
+        if (e.clientX > gr.right - 36) g.scrollLeft += 14;
+        else if (e.clientX < gr.left + LANE_W + 24) g.scrollLeft -= 14;
+        if (e.clientY > gr.bottom - 24) g.scrollTop += 10;
+        else if (e.clientY < gr.top + 44) g.scrollTop -= 10;
+        const lane = laneAt(e.clientX, e.clientY);
+        if (!lane) { d.target = null; if (d.marker) d.marker.style.display = "none"; return; }
+        const tg = dropAt(lane, e.clientX, d.s);
+        const pinfo = (PLAN.printers || []).find(p => p.idx === lane.idx) || {};
+        tg.bad = pinfo.maintenance ? laneName(lane.idx) + " is down for maintenance - bring it back into service first" : null;
+        const cur = nbrsOf(d.s);
+        tg.same = lane.idx === d.s.printer && (tg.before && tg.before.job_id) === (cur.before && cur.before.job_id) &&
+                  (tg.after && tg.after.job_id) === (cur.after && cur.after.job_id);
+        d.target = tg;
+        if (!d.marker) { d.marker = document.createElement("div"); }
+        d.marker.className = "dsp-gdrop" + (tg.bad ? " dsp-gdropbad" : "");
+        d.marker.style.display = "";
+        d.marker.style.left = Math.max(0, tg.px) + "px";
+        d.marker.innerHTML = `<span>${tg.bad ? esc(tg.bad) : tg.same ? "where it is now" : esc(laneName(lane.idx)) + " · starts about " + esc(sameDay(tg.start, now) ? fmtClock(tg.start) : fmtT(tg.start))}</span>`;
+        if (d.marker.parentNode !== lane.el) lane.el.appendChild(d.marker);
+      };
+      g.addEventListener("pointerdown", e => {
+        if (e.pointerType !== "mouse" || e.button !== 0 || bdrag) return;
+        const runb = e.target.closest("[data-run]");
+        const blk = e.target.closest("[data-slot]");
+        if (runb) { bdrag = { run: true, x: e.clientX, y: e.clientY, id: e.pointerId, on: false }; return; }
+        if (!blk) return;
+        const s = good[+blk.dataset.slot];
+        if (!s) return;
+        const br = blk.getBoundingClientRect();
+        bdrag = { s, blk, x: e.clientX, y: e.clientY, id: e.pointerId, on: false, ox: e.clientX - br.left, oy: e.clientY - br.top };
+      });
+      g.addEventListener("pointermove", e => {
+        const d = bdrag;
+        if (!d || e.pointerId !== d.id) return;
+        if (d.dead) return;
+        if (!d.on) {
+          if (Math.abs(e.clientX - d.x) < 6 && Math.abs(e.clientY - d.y) < 6) return;
+          if (d.run || locked) {
+            // say why nothing moves, and keep the release from opening the block
+            toast(d.run ? "A print that is already running can't be moved" : "The schedule is locked - unlock it to move prints around", true);
+            d.dead = true;
+            return;
+          }
+          d.on = true; DRAGGING = true;
+          const br = d.blk.getBoundingClientRect();
+          d.ghost = d.blk.cloneNode(true);
+          d.ghost.removeAttribute("data-slot");
+          d.ghost.classList.add("dsp-gghost");
+          d.ghost.style.width = br.width + "px"; d.ghost.style.height = br.height + "px";
+          document.body.appendChild(d.ghost);
+          d.blk.classList.add("dsp-gsrc");
+          g.classList.add("dsp-bdragging");
+          try { g.setPointerCapture(e.pointerId); } catch {}
+          // Escape puts it back; the release that follows opens nothing
+          d.onKey = ev => { if (ev.key === "Escape") { ev.preventDefault(); bclean(d); bdrag = { dead: true, id: d.id }; finishDrag(); } };
+          document.addEventListener("keydown", d.onKey, true);
+        }
+        bmove(e);
+      });
+      const bend = async e => {
+        const d = bdrag;
+        if (!d || e.pointerId !== d.id) return;
+        bdrag = null;
+        if (d.dead) { bswallow = true; setTimeout(() => { bswallow = false; }, 0); return; }
+        if (!d.on) return;                         // a click: the block opens as always
+        bclean(d);
+        bswallow = true; setTimeout(() => { bswallow = false; }, 0);
+        const tg = d.target;
+        if (e.type === "pointercancel" || !tg || tg.same) { finishDrag(); return; }
+        if (tg.bad) { toast(tg.bad, true); finishDrag(); return; }
+        d.blk.classList.add("dsp-gsrc");
+        const r = await jpost("/api/dispatch/jobs/place", { id: d.s.job_id, printer: tg.idx,
+          before: tg.before ? tg.before.job_id : null, after: tg.after ? tg.after.job_id : null });
+        d.blk.classList.remove("dsp-gsrc");
+        if (!r.ok) { toast((r.body && r.body.error) || "That print can't go there", true); finishDrag(); return; }
+        finishDrag();
+        await showPlanFrom(r.body && r.body.plan);
+        toast("Placed by hand on " + laneName(tg.idx) + " - it stays there until you undo it or press Replan");
+      };
+      g.addEventListener("pointerup", bend);
+      g.addEventListener("pointercancel", bend);
+      g.addEventListener("click", e => { if (bswallow) { e.stopPropagation(); e.preventDefault(); } }, true);
       let drag = null;
       g.onpointerdown = e => {
         if (e.pointerType !== "mouse" || e.button !== 0) return;     // touch pans natively
@@ -730,6 +918,7 @@
         " on " + s.contention.printer + " until " + fmtT(s.contention.until) + " \u2014 one roll can only be in one machine"] : null,
       s.pinned ? ["Assigned", "pinned to this printer"] : null,
       s.after ? ["Pushed back", "waiting for " + (s.after_file || "another job") + " to finish"] : null,
+      s.placed ? ["By hand", "dragged into this spot on the timeline - it stays until you undo it or press Replan"] : null,
       ["Colors", (job.colors || []).map(x => "#" + String(x).replace(/^#/, "")).join(" ") || "\u2014"]
     ].filter(Boolean);
     $$("#dsp-sheet").innerHTML = `
@@ -737,6 +926,8 @@
         <div class="dsp-sheettitle">${esc(s.file)}</div>
         <table class="dsp-sheettab">${rows.map(r => `<tr><td>${esc(r[0])}</td><td>${esc(r[1])}</td></tr>`).join("")}</table>
         ${s.swaps.length ? `<div class="dsp-sheetsub">Mount first <span class="dsp-anyslot">\u2014 any free tray, order doesn't matter</span></div><ul class="dsp-mounts">${s.swaps.map(x => `<li><i style="background:${esc(x.color)}"></i>${esc(x.spool ? x.spool + " (" + x.color + ")" : x.color)}${x.brand ? " \u00b7 " + esc(x.brand) : ""}</li>`).join("")}</ul>` : '<div class="dsp-sheetsub">No spool changes needed \u2713</div>'}
+        ${s.hand ? `<div class="dsp-sheetsub">✋ Placed by hand</div>
+        <div class="dsp-moverow"><button class="dsp-movego dsp-unplace" data-job="${esc(s.job_id)}">Undo - let the scheduler place it</button></div>` : ""}
         <div class="dsp-sheetsub">Move this job</div>
         <div class="dsp-moverow">
           <select class="dsp-moveto">
@@ -756,7 +947,9 @@
       </div>`;
     $$("#dsp-sheet").style.display = "flex";
     $$("#dsp-sheet").onclick = e => { if (e.target.id === "dsp-sheet" || e.target.classList.contains("dsp-sheetclose")) $$("#dsp-sheet").style.display = "none"; };
-    const go = $$(".dsp-movego");
+    const up = $$(".dsp-unplace");
+    if (up) up.onclick = async () => { $$("#dsp-sheet").style.display = "none"; await unplace(up.dataset.job, up); };
+    const go = $$(".dsp-movego:not(.dsp-unplace)");
     if (go) go.onclick = async () => {
       const val = $$(".dsp-moveto").value;
       await jpost("/api/dispatch/jobs/assign", { id: go.dataset.job, printer: val === "auto" ? "auto" : +val });
@@ -907,7 +1100,12 @@
     step(50, "planning…");
     // 2.45.5: replan means replan. Without ?fresh=1 this served the cached
     // plan (at most a tick old), so the button changed nothing you could see.
-    const p = await jget("/api/dispatch/plan?fresh=1");
+    // 2.47.9: and it now means START OVER (Danny's call): the server clears
+    // every hand placement - dragged prints, printer pins, push-backs - and
+    // plans from scratch. The answer carries the new plan.
+    const rp = await jpost("/api/dispatch/replan", {});
+    const p = { ok: rp.ok, body: rp.body && rp.body.plan ? rp.body.plan : rp.body };
+    const cleared = (rp.body && rp.body.cleared) || 0;
     if (!p.ok || !p.body || !p.body.slots) {
       // Never overwrite a good plan with a failed fetch: what is on screen is
       // still true, and saying so beats blanking it.
@@ -924,7 +1122,11 @@
     step(100, n ? n + " change" + (n === 1 ? "" : "s") : "no changes");
     const hold = Math.max(0, 400 - (Date.now() - t0));
     setTimeout(() => { if (bar) bar.style.display = "none"; }, hold + 550);
+    // the step read the queue before the clear; re-read it so no row keeps a hand mark
+    const d2 = await jget("/api/dispatch");
+    if (d2.ok && d2.body) STATE = d2.body;
     render();
+    if (cleared) toast("Planned from scratch - " + cleared + " hand placement" + (cleared === 1 ? "" : "s") + " cleared");
   }
   function renderChanges() {
     const box = $$("#dsp-changes");
@@ -1269,6 +1471,32 @@
       .dsp-gtext b{font-size:11.5px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       .dsp-gtext span{font-size:10px;color:#cfe0f5;opacity:.85;white-space:nowrap}
       .dsp-gblk b.dsp-swapn,.dsp-gblk b.dsp-clash,.dsp-gblk b.dsp-idle{flex:none;font-size:10.5px}
+      /* ---- 2.47.9: placed by hand, and dragging a print ------------------- */
+      /* The hand mark sits with the other badges; a hand-placed block also
+         gets a solid amber edge (amber = "you decided this", as maintenance
+         and the lock already use it). */
+      .dsp-hand{flex:none;font-size:10.5px;color:var(--signal,#FFB200);font-weight:700}
+      .dsp-kit b.dsp-hand{margin-left:0;font-size:11px}
+      .dsp-ghand{box-shadow:inset 0 0 0 1px var(--signal,#FFB200)}
+      @media (pointer:fine){ .dsp-gblk{cursor:grab} }
+      .dsp-gsrc{opacity:.35;filter:none}
+      .dsp-gghost{position:fixed !important;bottom:auto !important;z-index:80;pointer-events:none;opacity:.9;
+        box-shadow:0 8px 22px rgba(0,0,0,.5);cursor:grabbing}
+      .dsp-guide.dsp-bdragging,.dsp-guide.dsp-bdragging *{cursor:grabbing;user-select:none}
+      .dsp-gdrop{position:absolute;top:1px;bottom:1px;width:3px;margin-left:-2px;z-index:5;pointer-events:none;
+        background:var(--signal,#FFB200);border-radius:2px}
+      .dsp-gdrop span{position:absolute;left:7px;top:50%;transform:translateY(-50%);white-space:nowrap;
+        font-size:11px;font-weight:700;padding:2px 7px;border-radius:9px;
+        background:var(--panel,#1b1e24);border:1px solid var(--signal,#FFB200);color:var(--signal,#FFB200)}
+      .dsp-gdropbad{background:var(--bad,#F26B5E)}
+      .dsp-gdropbad span{border-color:var(--bad,#F26B5E);color:var(--bad,#F26B5E)}
+      .dsp-toast{position:fixed;left:50%;bottom:22px;transform:translate(-50%,12px);z-index:90;max-width:min(560px,calc(100vw - 32px));
+        padding:9px 14px;border-radius:9px;font-size:13px;line-height:1.4;pointer-events:none;opacity:0;
+        background:var(--panel-2,#23262d);border:1px solid var(--line,#3C4250);color:var(--ink,#F4F6FA);
+        box-shadow:0 8px 24px rgba(0,0,0,.45);transition:opacity .18s ease,transform .18s ease}
+      .dsp-toaston{opacity:1;transform:translate(-50%,0)}
+      .dsp-toastbad{border-color:var(--bad,#F26B5E)}
+      .dsp-jhand{font-size:11.5px;color:var(--signal,#FFB200);white-space:nowrap}
       /* ---- replan progress + change list ---------------------------------- */
       .dsp-pbar{margin:6px 0}
       .dsp-pbtrack{height:4px;border-radius:3px;background:var(--panel-2,#23262d);overflow:hidden}
@@ -1389,7 +1617,7 @@
       <div class="dsp-chipbox" id="dsp-chips"></div>
       <button id="dsp-jobs-toggle" class="dsp-toggle">JOBS <span id="dsp-jobs-sum"></span> <b id="dsp-jobs-caret">▾</b></button>
       <div id="dsp-jobs"></div>
-      <div class="dsp-h">PLAN <button id="dsp-replan" class="dsp-mini">↻ replan</button> <button id="dsp-adopt" class="dsp-mini" title="Match prints already running on your printers to queued jobs, so Dispatch stops scheduling work the farm is already doing">⤓ claim running prints</button></div>
+      <div class="dsp-h">PLAN <button id="dsp-replan" class="dsp-mini" title="Plan everything again from scratch. This clears every hand placement - prints you dragged, printer pins and push-backs.">↻ replan</button> <button id="dsp-adopt" class="dsp-mini" title="Match prints already running on your printers to queued jobs, so Dispatch stops scheduling work the farm is already doing">⤓ claim running prints</button></div>
       <div class="dsp-pbar" id="dsp-progress" style="display:none">
         <div class="dsp-pbtrack"><div class="dsp-pbfill"></div></div>
         <div class="dsp-pblabel"></div>
