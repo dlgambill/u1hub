@@ -77,6 +77,14 @@ printers, and nothing leaves your network unless you turn remote access on.
 
 ---
 
+### 2.47.11 - a tidier House rules card, and downloads that build again
+
+- **Every box lines up.** In Settings, House rules, every box now ends at the same right edge, on a computer and on a phone. The unit (mm, %, loops, layers, mm/s) sits inside its box instead of beside it, so a longer unit no longer makes its box shorter, and the dropdowns line up with the rest.
+- **The flexi designer list shows every name.** It grows to fit the whole list plus a spare line for the next name, instead of showing three names and cutting the fourth in half.
+- **Suggestions per day looks like a setting, not a rule.** It is a spending limit, so it no longer turns gold like a rule that is switched on.
+- **The back-to-top button stays out of the way.** On a phone it used to float over the bottom-right box while you scrolled the card. Now it steps aside while it would cover the House rules card and comes back once you scroll past it.
+- **2.47.10 never got its downloads, so this is the one to grab.** GitHub retired the Mac machine the Apple Silicon build ran on, that build stopped, and the release was never published. The builds now run on GitHub's current Mac machines, so 2.47.11 is the first downloadable build with everything since 2.44.0. (Best practice: name an explicit, current build machine like macos-15 rather than macos-latest, so a release only changes machines when you choose to, and keep any best-effort build off the path that publishes the release.)
+
 ### 2.47.10 - house rules get their own card in Settings
 
 - **One place for the shop's rules.** Settings has a new House rules card. Everything that used to sit under Models, Folder and was really a shop rule lives there now: tuning files when they are marked for print, the daily limit, infill and pattern, the lowest layer height, the flexi designer list, the brim gap and the prime tower. The Folder panel keeps only folder settings, plus a link that opens the card.

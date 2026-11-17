@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- U1 Print Hub — index v2.47.10 -->
+<!-- U1 Print Hub — index v2.47.11 -->
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
@@ -787,9 +787,24 @@
 (function(){
   var b = document.getElementById("totop"); if(!b) return;
   var shown = false, queued = false;
+  // 2.47.11: a form marked .totop-avoid (the House rules card) keeps its
+  // controls clear - while the button's spot sits over that form (on a phone
+  // the form runs edge to edge), the button steps aside instead of covering a
+  // box someone is about to tap. The whole form counts, not each box, so the
+  // button does not blink on and off between rows.
+  function covers(){
+    var forms = document.querySelectorAll(".totop-avoid");
+    if(!forms.length) return false;
+    var r = b.getBoundingClientRect(), pad = 8;
+    for(var i = 0; i < forms.length; i++){
+      var f = forms[i].getBoundingClientRect();
+      if(f.width && f.height && f.left < r.right + pad && f.right > r.left - pad && f.top < r.bottom + pad && f.bottom > r.top - pad) return true;
+    }
+    return false;
+  }
   function update(){
     queued = false;
-    var on = window.scrollY > Math.max(600, window.innerHeight);
+    var on = window.scrollY > Math.max(600, window.innerHeight) && !covers();
     if(on !== shown){ shown = on; b.classList.toggle("show", on); }
   }
   function queue(){ if(!queued){ queued = true; requestAnimationFrame(update); } }
@@ -806,7 +821,7 @@
 })();
 </script>
 
-<script>const VERSION = "2.47.10";</script>
+<script>const VERSION = "2.47.11";</script>
 <script src="app.js"></script>
 <!-- @client-modules -->
 </body>

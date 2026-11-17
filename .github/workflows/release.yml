@@ -12,9 +12,12 @@ name: release
 # (U1HUB_PROFILE=lite does the same thing for any binary). No second compile,
 # no fork, nothing to drift.
 #
+# Runner labels: GitHub retires macOS images (macos-14 broke the 2.47.10 release),
+# so pin explicit current labels - macos-15 (arm64) and macos-15-intel.
+#
 # The three reliable targets (Linux, Windows, Apple-Silicon mac) build and publish
-# the release promptly. Intel-Mac is a SEPARATE best-effort job: GitHub's free
-# macos-13 runners are often unavailable for a long time, so it must NOT block the
+# the release promptly. Intel-Mac is a SEPARATE best-effort job: GitHub's Intel
+# mac runners (macos-15-intel) can queue for a long time, so it must NOT block the
 # release. It attaches its binaries to the already-published release if/when it
 # runs; if it never gets a runner, the release still ships with the other six.
 #
@@ -45,10 +48,10 @@ jobs:
         include:
           - { runner: ubuntu-latest,  target: node22-linux-x64,    out: U1-Print-Hub-Linux-x64,             lite: U1-Print-Hub-Lite-Linux-x64,             explorer: linux,   explorer_out: 3MF-Explorer-Linux-x64 }
           - { runner: windows-latest, target: node22-win-x64,      out: U1-Print-Hub-Windows-x64.exe,       lite: U1-Print-Hub-Lite-Windows-x64.exe,       explorer: win,     explorer_out: 3MF-Explorer-Windows-x64.exe }
-          - { runner: macos-14,       target: node22-macos-arm64,  out: U1-Print-Hub-macOS-AppleSilicon,    lite: U1-Print-Hub-Lite-macOS-AppleSilicon,    explorer: mac-arm, explorer_out: 3MF-Explorer-macOS-AppleSilicon }
+          - { runner: macos-15,       target: node22-macos-arm64,  out: U1-Print-Hub-macOS-AppleSilicon,    lite: U1-Print-Hub-Lite-macOS-AppleSilicon,    explorer: mac-arm, explorer_out: 3MF-Explorer-macOS-AppleSilicon }
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: "22"
       - name: Install NASM (Windows source-build fallback)
@@ -61,7 +64,7 @@ jobs:
       - name: Make Lite copy (same binary - the Hub keys off "lite" in its filename)
         run: cp dist/${{ matrix.out }} dist/${{ matrix.lite }}
       - name: Check out 3MF Explorer
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: dlgambill/3mf-explorer
           ref: ${{ env.EXPLORER_REF }}
@@ -74,19 +77,19 @@ jobs:
           npm run build -- ${{ matrix.explorer }}
           cp "dist/${{ matrix.explorer_out }}" "../dist/${{ matrix.explorer_out }}"
       - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ${{ matrix.out }}
           path: dist/${{ matrix.out }}
           if-no-files-found: error
       - name: Upload 3MF Explorer artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ${{ matrix.explorer_out }}
           path: dist/${{ matrix.explorer_out }}
           if-no-files-found: error
       - name: Upload Lite artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ${{ matrix.lite }}
           path: dist/${{ matrix.lite }}
@@ -98,7 +101,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download all build artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           path: dist
           merge-multiple: true
@@ -142,17 +145,17 @@ jobs:
             _(Intel-Mac builds are best-effort and may attach a few minutes after the rest.)_
 
   # Best-effort Intel-Mac build. Runs after the release exists and appends its
-  # binaries to it. continue-on-error so a stuck/unavailable macos-13 runner never
+  # binaries to it. continue-on-error so a stuck/unavailable Intel runner never
   # fails the overall release.
   build-intel:
     name: build U1-Print-Hub-macOS-Intel (best effort)
     needs: release
-    runs-on: macos-13
+    runs-on: macos-15-intel
     timeout-minutes: 60
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: "22"
       - name: Install dependencies
@@ -162,7 +165,7 @@ jobs:
       - name: Make Lite copy (same binary - the Hub keys off "lite" in its filename)
         run: cp dist/U1-Print-Hub-macOS-Intel dist/U1-Print-Hub-Lite-macOS-Intel
       - name: Check out 3MF Explorer
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: dlgambill/3mf-explorer
           ref: ${{ env.EXPLORER_REF }}

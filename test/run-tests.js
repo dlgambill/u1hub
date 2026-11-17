@@ -6319,6 +6319,29 @@ async function stopHub() {
     ok(/raw\.split\("\?"\)\[0\]/.test(appSrc), "H22: a deep link with view state after ? still opens the right view");
   }
 
+  console.log("\n== 2.47.11 ==");
+  {
+    // Danny's phone and desktop shots of the 2.47.10 House rules card, and the
+    // v2.47.10 release run that died on GitHub's retired macos-14 runner.
+    const mui = fs.readFileSync(path.join(REPO, "public", "modules", "models-ui.js"), "utf8");
+    ok(/\.hr-unit\{position:absolute;/.test(mui) && /\.field\.hr-has-unit\{padding-right:/.test(mui) && /'<input class="field' \+ \(unit \? " hr-has-unit" : ""\)/.test(mui),
+      "2.47.11: a House rules unit sits inside its box, so every box ends at the same right edge");
+    ok(/data-hrrow="hrFlexi" style="align-items:start">' \+ hrName\("Flexi designers", ""\) \+ '<div class="hr-in"><textarea/.test(mui) && !/grid-column:span 2/.test(mui),
+      "2.47.11: the flexi list sits in the same control column as every other box");
+    ok(/ta\.rows = Math\.max\(4, String\(ta\.value \|\| ""\)\.split\("\\n"\)\.length \+ 1\);/.test(mui) && /hrFit\(q\("hrFlexi"\)\);/.test(mui) && /if \(e\.target\.id === "hrFlexi"\) hrFit\(e\.target\);/.test(mui),
+      "2.47.11: the flexi list grows to show every name plus a spare line (never under 4), on load and while typing");
+    ok(/"hrDaily", "hr-limit"\);/.test(mui) && /row\.classList\.toggle\("on", !!on && !row\.classList\.contains\("hr-limit"\)\)/.test(mui) && !/row\.classList\.toggle\("on", v != null/.test(mui),
+      "2.47.11: Suggestions per day is a limit, not a rule - it never takes the rule-on color");
+    const idx = fs.readFileSync(path.join(REPO, "public", "index.html"), "utf8");
+    ok(/HR\.classList\.add\("totop-avoid"\)/.test(mui) && /function covers\(\)\{/.test(idx) && /document\.querySelectorAll\("\.totop-avoid"\)/.test(idx) && /Math\.max\(600, window\.innerHeight\) && !covers\(\);/.test(idx),
+      "2.47.11: the back-to-top button steps aside while it would sit over the House rules card, and keeps its old rule everywhere else");
+    const rel = fs.readFileSync(path.join(REPO, ".github", "workflows", "release.yml"), "utf8");
+    const labels = [...rel.matchAll(/(?:runs-on|runner):\s*([\w.-]+)/g)].map(m => m[1]).filter(l => !/^\$/.test(l));
+    ok(!labels.some(l => /^macos-1[34]$/.test(l)) && labels.includes("macos-15") && labels.includes("macos-15-intel"),
+      "2.47.11: release.yml builds on current mac runners (macos-15 arm64, macos-15-intel), none GitHub has retired", labels);
+    ok(/build-intel:[\s\S]*?needs: release[\s\S]*?continue-on-error: true/.test(rel), "2.47.11: the Intel mac build still runs after publish and can never block it");
+  }
+
   console.log("\n== 2.47.7: Dispatch counts a near-match roll as loaded ==");
   {
     // Danny, 2026-11-02: Dispatch put Dino Clickers on U6 (3 roll changes) while U7 sat idle

@@ -1051,23 +1051,37 @@
     s.id = "hrcss";
     s.textContent = [
       "#setHouse .hr-grp{margin-top:16px; padding-bottom:4px; font-size:11px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-dim); border-bottom:1px solid var(--line);}",
-      "#setHouse .hr-row{display:grid; grid-template-columns:minmax(150px,210px) 150px 1fr; gap:4px 14px; align-items:center; padding:7px 0; border-bottom:1px solid var(--line-soft);}",
+      "#setHouse .hr-row{display:grid; grid-template-columns:minmax(150px,210px) 170px 1fr; gap:4px 14px; align-items:center; padding:7px 0; border-bottom:1px solid var(--line-soft);}",
       "#setHouse .hr-name{font-size:13px; color:var(--ink); line-height:1.3;}",
       "#setHouse .hr-key{display:block; font-family:var(--mono); font-size:10.5px; color:var(--ink-faint); word-break:break-all;}",
-      "#setHouse .hr-in{display:flex; align-items:center; gap:6px; min-width:0;}",
+      // 2.47.11: every control fills the same column, so all of them end at
+      // one right edge; a unit sits inside its box, not beside it.
+      "#setHouse .hr-in{position:relative; display:flex; align-items:center; min-width:0;}",
       "#setHouse .hr-in .field{width:100%; min-width:0; padding:6px 8px; font-size:13px;}",
-      "#setHouse .hr-unit{font-family:var(--mono); font-size:11px; color:var(--ink-faint); flex:none;}",
+      "#setHouse .hr-in .field.hr-has-unit{padding-right:46px;}",
+      "#setHouse .hr-unit{position:absolute; right:9px; top:50%; transform:translateY(-50%); font-family:var(--mono); font-size:11px; color:var(--ink-faint); pointer-events:none;}",
       "#setHouse .hr-ex{font-size:12px; color:var(--ink-faint); line-height:1.4;}",
       "#setHouse .hr-row.on .hr-name{color:var(--signal);}",
       "#setHouse .hr-always{font-size:12px; color:var(--ink-faint); padding:7px 0; border-bottom:1px solid var(--line-soft);}",
-      "#setHouse textarea.field{width:100%; font-family:var(--mono); font-size:12px;}",
-      "@media (max-width:640px){#setHouse .hr-row{grid-template-columns:1fr 130px;} #setHouse .hr-ex{grid-column:1 / -1;}}"
+      "#setHouse textarea.field{width:100%; font-family:var(--mono); font-size:12px; line-height:1.45; resize:vertical;}",
+      "@media (max-width:640px){#setHouse .hr-row{grid-template-columns:1fr 130px;} #setHouse .hr-ex{grid-column:1 / -1;} #setHouse .hr-row.hr-wide .hr-in{grid-column:1 / -1;}}"
     ].join("\n");
     document.head.appendChild(s);
   }
   const hrName = (name, key) => '<div class="hr-name">' + esc(name) + (key ? '<code class="hr-key">' + esc(key) + "</code>" : "") + "</div>";
-  const hrRow = (name, key, input, ex, id) => '<div class="hr-row" data-hrrow="' + esc(id) + '">' + hrName(name, key) + '<div class="hr-in">' + input + "</div>" + '<div class="hr-ex">' + esc(ex) + "</div></div>";
-  const hrText = (id, unit) => '<input class="field" id="' + id + '" inputmode="decimal" autocomplete="off" spellcheck="false" placeholder="not set">' + (unit ? '<span class="hr-unit">' + esc(unit) + "</span>" : "");
+  const hrRow = (name, key, input, ex, id, cls) => '<div class="hr-row' + (cls ? " " + cls : "") + '" data-hrrow="' + esc(id) + '">' + hrName(name, key) + '<div class="hr-in">' + input + "</div>" + '<div class="hr-ex">' + esc(ex) + "</div></div>";
+  // A row marked hr-limit (the daily limit) is a setting, not a rule: it never
+  // takes the "rule on" color, whatever its value.
+  const hrOn = (row, on) => { if (row) row.classList.toggle("on", !!on && !row.classList.contains("hr-limit")); };
+  // The flexi list shows every name plus one empty line (never fewer than 4
+  // rows), and grows past that if long names wrap.
+  function hrFit(ta) {
+    if (!ta) return;
+    ta.style.height = "";
+    ta.rows = Math.max(4, String(ta.value || "").split("\n").length + 1);
+    if (ta.scrollHeight > ta.clientHeight + 1) ta.style.height = (ta.scrollHeight + ta.offsetHeight - ta.clientHeight) + "px";
+  }
+  const hrText = (id, unit) => '<input class="field' + (unit ? " hr-has-unit" : "") + '" id="' + id + '" inputmode="decimal" autocomplete="off" spellcheck="false" placeholder="not set">' + (unit ? '<span class="hr-unit">' + esc(unit) + "</span>" : "");
   const hrSelect = (id, vals, names) => '<select class="field" id="' + id + '"><option value="">not set</option>' + vals.map(v => '<option value="' + esc(v) + '">' + esc((names && names[v]) || v) + "</option>").join("") + "</select>";
   function buildHouse(house) {
     const host = document.getElementById("setModules");
@@ -1082,8 +1096,8 @@
       }
       if (g === "Supports") {
         h += '<div class="hr-always">Always on: supports the designer painted are never switched off, and a flexi model keeps the designer\'s support settings.</div>';
-        h += '<div class="hr-row" data-hrrow="hrFlexi" style="align-items:start">' + hrName("Flexi designers", "") + '<div class="hr-in" style="grid-column:span 2"><textarea class="field" id="hrFlexi" rows="3" spellcheck="false" placeholder="one designer per line (none yet)"></textarea></div>' +
-          '<div class="hr-ex" style="grid-column:1 / -1">Models from these designers keep the designer\'s support settings, because supports fuse flexi joints. A model named Flexi or Articulated counts without being listed.</div></div>';
+        h += '<div class="hr-row hr-wide" data-hrrow="hrFlexi" style="align-items:start">' + hrName("Flexi designers", "") + '<div class="hr-in"><textarea class="field" id="hrFlexi" rows="4" spellcheck="false" placeholder="one designer per line (none yet)"></textarea></div>' +
+          '<div class="hr-ex">Models from these designers keep the designer\'s support settings, because supports fuse flexi joints. A model named Flexi or Articulated counts without being listed.</div></div>';
       }
       for (const r of rules.filter(x => x.group === g)) {
         const id = "hrF-" + r.key;
@@ -1108,14 +1122,18 @@
           body = '<div class="hr-row" data-hrrow="hrPretune">' + hrName("Tune marked files", "") +
             '<div class="hr-in"><label class="hint" style="display:flex; align-items:center; gap:6px; cursor:pointer"><input type="checkbox" id="hrPretune"> On</label></div>' +
             '<div class="hr-ex">The AI suggests settings for each 3MF marked for print and saves them into a copy; Open in Orca opens that copy. Your file is not changed. Needs the AI pre-flight key.</div></div>' +
-            hrRow("Suggestions per day", "", hrText("hrDaily", ""), "At most this many new AI suggestions a day, a few cents each. A file asked about before costs nothing.", "hrDaily");
+            hrRow("Suggestions per day", "", hrText("hrDaily", ""), "At most this many new AI suggestions a day, a few cents each. A file asked about before costs nothing.", "hrDaily", "hr-limit");
         } else body = byGroup(g);
         return body ? '<div class="hr-grp">' + esc(g) + "</div>" + body : "";
       }).join("") +
       '<div class="row" style="margin-top:12px; gap:8px; flex-wrap:wrap"><button class="btn ghost" id="hrSave">Save house rules</button><span class="pstatus" id="hrMsg"></span></div>';
+    HR.classList.add("totop-avoid");   // the back-to-top button stands aside while it would cover these controls
     host.appendChild(HR);
     HR.querySelector("#hrSave").addEventListener("click", saveHouse);
-    HR.addEventListener("input", e => { const row = e.target.closest(".hr-row"); if (row && e.target.id !== "hrPretune") row.classList.toggle("on", !!String(e.target.value || "").trim()); });
+    HR.addEventListener("input", e => {
+      if (e.target.id === "hrFlexi") hrFit(e.target);
+      const row = e.target.closest(".hr-row"); if (row && e.target.id !== "hrPretune") hrOn(row, String(e.target.value || "").trim());
+    });
     const gear = document.getElementById("gear");
     if (gear) gear.addEventListener("click", () => setTimeout(() => { const st = document.getElementById("setup"); if (st && st.classList.contains("show")) loadHouse(); }, 0));
   }
@@ -1124,11 +1142,12 @@
     if (HR.contains(document.activeElement) && document.activeElement.id !== "hrSave") return;   // never under a person's typing
     HRSTATE = d;
     const H = d.house, q = id => HR.querySelector("#" + CSS.escape(id));
-    const put = (id, v) => { const el = q(id); if (!el) return; el.value = v == null ? "" : String(v); const row = el.closest(".hr-row"); if (row) row.classList.toggle("on", v != null && String(v) !== ""); };
+    const put = (id, v) => { const el = q(id); if (!el) return; el.value = v == null ? "" : String(v); hrOn(el.closest(".hr-row"), v != null && String(v) !== ""); };
     q("hrPretune").checked = !!(d.pretune && d.pretune.on);
     put("hrDaily", d.pretune ? d.pretune.max : 25);
     for (const sp of HR_SPECIAL) put(sp[0], H[sp[7]]);
     q("hrFlexi").value = (H.flexiDesigners || []).join("\n");
+    hrFit(q("hrFlexi"));
     for (const r of H.forceRules || []) put("hrF-" + r.key, (H.force || {})[r.key]);
     const n = HR_SPECIAL.filter(sp => H[sp[7]] != null).length + Object.keys(H.force || {}).length;
     q("hrHint").textContent = n ? n + " rule" + (n === 1 ? "" : "s") + " on" : "all off - the AI and each file decide";
