@@ -13,9 +13,10 @@ You run the Hub on a computer that stays on. Your phone, or any browser, opens
 it like a web page. From there you can see every machine at once, send prints,
 watch cameras, plan your printing week, know what filament to buy before you
 run out, ask what settings a model wants before you slice it, and whether a
-plate is worth printing at all. New in 2.46: a model you mark for print can
-get its settings worked out in the background, so it opens in Orca already
-tuned.
+plate is worth printing at all. New in 2.47: drag a print to where you want
+it on the Dispatch timeline, and set your shop's own House rules for the
+files the AI tunes. The [changelog](docs/CHANGELOG.md) has the details,
+release by release.
 
 Nothing gets installed on the printers. The Hub talks to the software they
 already run, and nothing leaves your network unless you turn remote access on,
@@ -117,8 +118,8 @@ Both apps need to be looking at the same model library, but they don't have
 to reach it the same way - one can use a mapped drive letter and the other the
 network path, or 3MF Explorer can run on a different computer.
 
-**Marked files can come back already tuned.** Tick Tune files when they are
-marked for print under ⚙ Folder (it starts off, because each tune is a paid
+**Marked files can come back already tuned.** Tick Tune marked files in
+Settings, House rules (it starts off, because each tune is a paid
 AI call), and when a model is marked for print the Hub asks for its settings
 in the background, the same way the Settings button below does, and saves
 the answer into a copy of the file. The card shows ✦ tuned and how many
@@ -147,20 +148,42 @@ Orca with those suggestions already filled in, marked as changes so you can
 put any of them back. Your own file is never touched; keep the tuned project
 with Save As in Orca, or let the copy clean itself up after three days.
 
-The AI works inside your shop's rules, and the Hub checks its answer against
-them before anything is written. You set them under ⚙ Folder: an infill
-percentage and pattern (12% gyroid to start; the AI can go higher on a part
-it calls structural) and the lowest layer height (0.16 mm to start). Leave
-either box blank and the AI decides that one. Two rules always hold:
-supports the designer painted stay on, and flexi models keep the designer's
-support settings exactly as they are, because supports grow into the joint
-gaps and fuse them. A model counts as flexi when its name says Flexi or
-Articulated, or when its designer is on
-your flexi designer list, which starts empty for you to fill in. Anything a
-rule held back is listed on the card, so you can see what the AI wanted and
-why it did not get it.
-
 ![Settings for a 3MF: what to set in Orca, what the file had, and why](docs/models-settings.png)
+
+**Set your shop's House rules.** The AI works inside your rules, and the Hub
+checks its answer against them before anything is written. They all live on
+one House rules card in Settings, in groups: quality, walls and infill,
+supports, brim, speed and the prime tower. Each rule says in
+a line what it does to a file. Some favorites: an infill and pattern (the AI
+can still go higher on a part it calls structural), the thinnest layer it may
+pick, an aligned seam, how many walls, and an outer-only brim with a set gap
+from the part. Temperatures and fans are left out on purpose, because they
+depend on the material.
+
+Blank always means off: the AI's suggestion or the file's own setting stands.
+A new install starts with every rule off, so nothing changes until you fill
+one in. A change applies to the next file tuned, and copies already tuned stay
+as they are. The card won't save two rules that fight each other, like a
+layer height under your own minimum.
+
+Two protections are always on, whatever you set: supports the designer
+painted stay on, and flexi models keep the designer's support settings
+exactly as they are, because supports grow into the joint gaps and fuse them.
+A model counts as flexi when its name says Flexi or Articulated, or when its
+designer is on your flexi designer list, which starts empty for you to fill
+in. Anything a rule held back is listed on the model's card, so you can see
+what the AI wanted and why it did not get it.
+
+**A smaller prime tower.** The U1 has a nozzle for every color, so a color
+change only has to clear a little ooze, not flush a shared nozzle. Three
+House rules (prime volume, rib length and tower brim) shrink the tower on
+every file the AI tunes, which saves filament and plate space. They start
+blank, so try a smaller tower on one multicolor plate before you trust it
+everywhere.
+
+![Settings, House rules: the shop's rules for tuned files, with the ones that are on in color](docs/house-rules.png)
+
+<img src="docs/house-rules-phone.png" width="300" alt="The House rules card on a phone">
 
 **Plan your whole printing day.** The Dispatch tab schedules your queue across
 every printer, inside the hours you are actually home to swap plates. It flags
@@ -188,14 +211,36 @@ five minutes apart instead of asking you to clear three at once.
 
 Home early? A printer sitting empty before your hours start says so - idle
 until 4:00 PM, say - and one press starts the next job in line on it right
-now. Replan always works from a fresh plan, never a saved one.
+now.
+
+**Drag a print to where you want it.** On a computer, grab any planned print
+on the timeline and drop it. Drop it on another printer's row and it moves to
+that printer. Drop it between two prints and it takes that spot in line, so
+you can pull a rush job ahead of the others. While you drag, a marker shows
+the printer and about when it would start. A print you place stays put, and
+wears a small ✋ so you can tell: the planner won't move it to save a few
+minutes or a roll change. Undo it from its row, or press Replan, which now
+means start over - it clears every print you placed by hand and builds the
+plan fresh. A drop that can't work (a running print, or a printer that is
+down or offline) snaps back and says why. On a phone the timeline still just
+swipes.
+
+![Dragging a print to another printer: the marker shows where it lands and about when it starts](docs/dispatch-drag.png)
+
+![A print placed by hand wears the ✋ mark and stays where you put it](docs/dispatch-placed.png)
+
+**Fewer needless roll changes.** Dispatch now treats a roll as loaded when
+it is a close match for the color a file asks for, the same way the printer
+card does, so a job goes to the printer that already has its colors instead
+of one that needs a swap.
 
 Getting around the timeline is easy from anywhere on it. It fits in the
 window, with the time ruler pinned to the top and its scrollbar always in
 view. Earlier and later buttons page through the day and now jumps back to
-the present. With a mouse you can drag the lanes, and the arrow keys work
-once you've clicked into it. On a phone, swipe it any direction - it keeps
-your place while it refreshes, so the last printer is always within reach.
+the present. With a mouse you can drag any empty part of the lanes, and the
+arrow keys work once you've clicked into it. On a phone, swipe it any
+direction - it keeps your place while it refreshes, so the last printer is
+always within reach.
 
 ![Dispatch: the plan laid out across the fleet, with the earlier / now / later controls above the timeline](docs/dispatch.png)
 
@@ -416,7 +461,7 @@ network setup.
 **The AI features send data out, and only when you ask.** Pressing an AI
 button asks. So does marking a file for print if you turned tuning on - that
 sends the same brief as the Settings button, once per file, up to the daily
-limit. Tuning starts off, and unticking it under ⚙ Folder stops it
+limit. Tuning starts off, and unticking it in Settings, House rules stops it
 completely. For a gcode:
 a text brief of a few thousand characters - the file name, the slicer
 settings Orca wrote into it, the filaments it was sliced for, the object
