@@ -205,9 +205,62 @@ function applyTuning(ps, settings) {
 // 2.47.8: brimGap - when a part has a brim it is outer only, this far from the
 // part (Danny, 2026-11-09: "when a brim is used, it is outside only and always
 // a 0.2mm gap"). OFF by default like the prime tower rules.
-const HOUSE = { infill: "12%", infillPct: 12, pattern: "gyroid", minLayer: 0.16, primeVolume: null, ribLength: null, towerBrim: null, brimGap: null };
+// 2.47.10: every rule starts OFF, infill, pattern and minimum layer included.
+// A new farm's files are tuned on the AI's word and the file's own values
+// until the farm sets its rules in Settings > House rules. The infill pattern
+// is its own rule now (it used to ride along with the infill rule).
+const HOUSE = { infill: null, infillPct: null, pattern: null, minLayer: null, primeVolume: null, ribLength: null, towerBrim: null, brimGap: null, force: {} };
 const FLEXI_DESIGNERS = [];
 const PATTERNS = TUNE.sparse_infill_pattern.vals;
+
+// 2.47.10: house rules that force one TUNE value on every tuned file
+// (models.house.force in config.json: { orcaKey: value }, blank = off).
+// Only keys TUNE already writes and validates, and only ones that are safe
+// across every file. Left out on purpose: the per-filament keys (temperatures,
+// fans, slow-down time - they depend on the material, and applyTuning will not
+// write one value over mixed materials anyway), enable_prime_tower (forcing it
+// off ruins a multicolor print, forcing it on wastes filament on one color),
+// and the keys that already have their own rule (infill density and pattern,
+// prime volume, rib length, tower brim, brim gap).
+// The special cases still hold: on a flexi the support rules are not applied,
+// and supports the designer painted are never switched off.
+const HOUSE_FORCE = [
+  { key: "layer_height", group: "Quality", label: "Layer height", unit: "mm", explain: "Every tuned file prints at this layer height." },
+  { key: "initial_layer_print_height", group: "Quality", label: "First layer height", unit: "mm", explain: "Sets how thick the first layer on the bed is." },
+  { key: "seam_position", group: "Quality", label: "Seam position", explain: "Where each layer starts and ends on the outside wall.", names: { nearest: "Nearest", aligned: "Aligned", back: "Back", random: "Random" } },
+  { key: "ironing_type", group: "Quality", label: "Ironing", explain: "Smooths top surfaces with an extra pass of the hot nozzle.", names: { "no ironing": "No ironing", top: "Top surfaces", topmost: "Topmost surface only", solid: "All solid layers" } },
+  { key: "only_one_wall_top", group: "Quality", label: "One wall on top surfaces", explain: "Top surfaces get a single wall, which looks cleaner on flat tops." },
+  { key: "wall_loops", group: "Walls & infill", label: "Walls", unit: "loops", explain: "How many wall loops every part gets." },
+  { key: "top_shell_layers", group: "Walls & infill", label: "Top layers", unit: "layers", explain: "How many solid layers close off the top of a part." },
+  { key: "bottom_shell_layers", group: "Walls & infill", label: "Bottom layers", unit: "layers", explain: "How many solid layers make the bottom of a part." },
+  { key: "detect_thin_wall", group: "Walls & infill", label: "Detect thin walls", explain: "Walls too thin for two lines print as one line instead of being skipped." },
+  { key: "enable_support", group: "Supports", label: "Supports", explain: "Turns supports on or off. Flexi models and painted supports are left as the designer set them." },
+  { key: "support_type", group: "Supports", label: "Support type", explain: "Tree or normal supports, placed automatically or only where painted.", names: { "normal(auto)": "Normal (auto)", "tree(auto)": "Tree (auto)", "normal(manual)": "Normal (painted only)", "tree(manual)": "Tree (painted only)" } },
+  { key: "support_threshold_angle", group: "Supports", label: "Support angle", unit: "°", explain: "Overhangs steeper than this angle get support." },
+  { key: "support_on_build_plate_only", group: "Supports", label: "Supports from the bed only", explain: "Supports only grow up from the bed, never from the part itself." },
+  { key: "brim_type", group: "Brim & adhesion", label: "Brim type", explain: "The brim every file gets. With a brim gap set, only Outer only or No brim fit.", names: { auto_brim: "Auto", brim_ears: "Mouse ears", outer_only: "Outer only", inner_only: "Inner only", outer_and_inner: "Outer and inner", no_brim: "No brim" } },
+  { key: "brim_width", group: "Brim & adhesion", label: "Brim width", unit: "mm", explain: "How far a brim reaches out from the part." },
+  { key: "skirt_loops", group: "Brim & adhesion", label: "Skirt loops", unit: "loops", explain: "How many outline loops are drawn around the parts before they print." },
+  { key: "elefant_foot_compensation", group: "Brim & adhesion", label: "Elephant foot compensation", unit: "mm", explain: "Pulls the first layer in a little so the bottom edge does not bulge." },
+  { key: "outer_wall_speed", group: "Speed", label: "Outer wall speed", unit: "mm/s", explain: "How fast the outside wall, the one people see, is printed." },
+  { key: "inner_wall_speed", group: "Speed", label: "Inner wall speed", unit: "mm/s", explain: "How fast the hidden inner walls are printed." },
+  { key: "sparse_infill_speed", group: "Speed", label: "Infill speed", unit: "mm/s", explain: "How fast the infill inside the part is printed." },
+  { key: "initial_layer_speed", group: "Speed", label: "First layer speed", unit: "mm/s", explain: "How fast the whole first layer is printed." }
+];
+const FORCE_BY_KEY = Object.fromEntries(HOUSE_FORCE.map(r => [r.key, r]));
+// What the Settings card needs to draw and check each forced rule: the TUNE
+// rule (kind, range, choices) next to its words.
+const houseForceMeta = () => HOUSE_FORCE.map(r => { const t = TUNE[r.key]; return { ...r, kind: t.kind, lo: t.lo, hi: t.hi, int: !!t.int, vals: t.vals || null }; });
+// The rules no tuned file can follow at once. h is houseConf's answer;
+// returns the reason, or null when the rules fit together.
+function houseConflict(R) {
+  const F = (R && R.force) || {};
+  if (F.layer_height != null && R.minLayer != null && Number(F.layer_height) < R.minLayer)
+    return "The layer height rule (" + F.layer_height + " mm) is under the minimum layer height (" + R.minLayer + " mm)";
+  if (F.brim_type != null && R.brimGap != null && !["outer_only", "no_brim"].includes(F.brim_type))
+    return "With a brim gap set, a brim is always outer only, so the brim type rule can only be Outer only or No brim";
+  return null;
+}
 
 // config.json models -> { infillPct (null = off), infill, pattern, minLayer (null = off) }.
 // Absent keys fall back to HOUSE; an explicit null or "" turns that rule off.
@@ -221,13 +274,22 @@ function houseConf(models) {
   };
   const infillPct = numOrOff(h.infill, HOUSE.infillPct, 0, 100);
   const pat = String(h.pattern == null ? "" : h.pattern).trim().toLowerCase();
-  const pattern = PATTERNS.includes(pat) ? pat : HOUSE.pattern;
+  const pattern = PATTERNS.includes(pat) ? pat : HOUSE.pattern;   // 2.47.10: blank or unknown = off
   const minLayer = numOrOff(h.minLayer, HOUSE.minLayer, 0.04, 0.32);
+  // 2.47.10: the forced rules, each checked against TUNE (a bad value is off)
+  const force = {};
+  const fh = h.force && typeof h.force === "object" ? h.force : {};
+  for (const r of HOUSE_FORCE) {
+    const v = fh[r.key];
+    if (v == null || String(v).trim() === "") continue;
+    const n = normalize(r.key, v);
+    if (!n.error) force[r.key] = n.value;
+  }
   // 2.47.5: out of range means off here (the default is off), not a fallback
   const offOr = (v, lo, hi) => { const n = numOrOff(v, null, lo, hi); return n; };
   const primeVolume = offOr(h.primeVolume, 1, 150), ribLength = offOr(h.ribLength, 0, 50), towerBrim = offOr(h.towerBrim, 0, 20);
   const brimGap = offOr(h.brimGap, 0, 2);   // 2.47.8
-  return { infillPct, infill: infillPct == null ? null : infillPct + "%", pattern, minLayer, primeVolume, ribLength, towerBrim, brimGap };
+  return { infillPct, infill: infillPct == null ? null : infillPct + "%", pattern, minLayer, primeVolume, ribLength, towerBrim, brimGap, force };
 }
 // The flexi designer list from config.json models (one name per entry).
 function flexiList(models) {
@@ -238,7 +300,6 @@ function flexiList(models) {
 // a print-in-place hinge or box is not a flexi, and it may need supports.
 const FLEXI_RE = /\b(flexi|flexy|articulated|articulating)\b/i;
 const SUPPORT_KEYS = new Set(["enable_support", "support_type", "support_threshold_angle", "support_on_build_plate_only"]);
-const INFILL_KEYS = new Set(["sparse_infill_density", "sparse_infill_pattern"]);
 
 // texts: title, file name, part names; designer: the designer folder;
 // designers: the shop's list of designers whose models are flexis.
@@ -289,7 +350,37 @@ function primeRules(ps, R, res) {
 }
 function houseRules(ps, settings, h) {
   const R = (h && h.rules) || HOUSE;
-  return brimRules(ps, R, primeRules(ps, R, houseRulesCore(ps, settings, h)));
+  return brimRules(ps, R, primeRules(ps, R, forceRules(ps, R, h || {}, houseRulesCore(ps, settings, h))));
+}
+// 2.47.10: the forced rules (Settings > House rules). Each one replaces the
+// AI's row for that key, with the reason on the card, and is written to every
+// tuned file. Runs after houseRulesCore, so a forced brim type still meets the
+// brim rule after it, and before primeRules, so the tower rules see the result.
+// Never on a flexi's supports, never turning painted supports off, never under
+// the minimum layer (the route refuses that pair; this is the second lock).
+function forceRules(ps, R, h, res) {
+  const F = R.force || {};
+  const keys = Object.keys(F).filter(k => FORCE_BY_KEY[k]);
+  if (!keys.length) return res;
+  const flexi = h.flexi && h.flexi.flexi;
+  const designerSupports = String((ps || {}).enable_support) === "1";
+  const painted = h.supportPaint == null || h.supportPaint > 0;
+  const held = [];
+  for (const k of keys) {
+    let why = null;
+    if (flexi && SUPPORT_KEYS.has(k)) why = "flexi - supports stay as the designer set them (" + (h.flexi.why || "flexi") + ")";
+    else if (k === "enable_support" && F[k] === "0" && designerSupports && painted) why = h.supportPaint ? "the designer painted supports on " + h.supportPaint + " faces; they stay on" : "supports stay on - the painted supports could not be counted";
+    else if (k === "layer_height" && R.minLayer != null && Number(F[k]) < R.minLayer) why = "layers never below " + R.minLayer + " mm";
+    if (why) { res.notes.push({ key: k, value: F[k], reason: "house rule: " + why }); continue; }
+    held.push(k);
+  }
+  const settings = [];
+  for (const row of res.settings) {
+    if (held.includes(row.key)) { res.notes.push({ key: row.key, value: row.value != null ? String(row.value) : "", reason: "house rule: the shop sets this (" + F[row.key] + ")" }); continue; }
+    settings.push(row);
+  }
+  for (const k of held) settings.push({ key: k, label: FORCE_BY_KEY[k].label + " (house)", value: F[k], set: F[k], why: "house rule" });
+  return { settings, notes: res.notes };
 }
 // 2.47.8: a part brim, when there is one, is outer only with the shop's gap.
 // "Is there one" is the AI's brim_type when it set one, else the file's; no
@@ -336,24 +427,33 @@ function houseRulesCore(ps, settings, h) {
       }
     }
     if (key === "layer_height" && R.minLayer != null && numOf(row) < R.minLayer) { note(row, "layers never below " + R.minLayer + " mm"); continue; }
-    if (INFILL_KEYS.has(key) && R.infillPct != null) {
-      if (!structural) { note(row, "infill is " + R.infill + " " + R.pattern + " unless the part is structural"); continue; }
-      if (key === "sparse_infill_density") density = row; else pattern = row;
-      continue;
+    // 2.47.10: infill density and pattern are separate rules (either may be
+    // off); with both on, the notes read as they always have.
+    const infillWhy = () => "infill is " + R.infill + (R.pattern != null ? " " + R.pattern : "") + " unless the part is structural";
+    if (key === "sparse_infill_density" && R.infillPct != null) {
+      if (!structural) { note(row, infillWhy()); continue; }
+      density = row; continue;
+    }
+    if (key === "sparse_infill_pattern" && R.pattern != null) {
+      if (R.infillPct != null && !structural) { note(row, infillWhy()); continue; }
+      pattern = row; continue;
     }
     out.push(row);
   }
-  if (R.infillPct == null) return { settings: out, notes };   // infill rule off: the AI's infill stands
   // Infill last, so it reads as the house setting it is.
-  let d = R.infill;
-  if (structural && density) {
-    const n = numOf(density);
-    if (n >= R.infillPct) d = n + "%";
-    else note(density, "structural infill is never under the house " + R.infill);
+  if (R.infillPct != null) {   // off: the AI's infill stands
+    let d = R.infill;
+    if (structural && density) {
+      const n = numOf(density);
+      if (n >= R.infillPct) d = n + "%";
+      else note(density, "structural infill is never under the house " + R.infill);
+    }
+    out.push({ key: "sparse_infill_density", label: structural ? "Infill (structural)" : "Infill (house)", value: d, set: d, why: structural ? (h.structural.why || "structural part") : "house default" });
   }
-  if (structural && pattern && valOf(pattern).toLowerCase() !== R.pattern) note(pattern, "infill pattern is " + R.pattern);
-  out.push({ key: "sparse_infill_density", label: structural ? "Infill (structural)" : "Infill (house)", value: d, set: d, why: structural ? (h.structural.why || "structural part") : "house default" });
-  out.push({ key: "sparse_infill_pattern", label: "Infill pattern (house)", value: R.pattern, set: R.pattern, why: "house default" });
+  if (R.pattern != null) {     // off: the AI's pattern stands
+    if (pattern && valOf(pattern).toLowerCase() !== R.pattern) note(pattern, "infill pattern is " + R.pattern);
+    out.push({ key: "sparse_infill_pattern", label: "Infill pattern (house)", value: R.pattern, set: R.pattern, why: "house default" });
+  }
   return { settings: out, notes };
 }
 
@@ -373,4 +473,4 @@ function tuneBuffer(buf, settings, house) {
   return { buffer: zipWrite(out), applied: r.applied, skipped: hr.notes.concat(r.skipped), printer: String(ps.printer_model || "") };
 }
 
-module.exports = { TUNE, normalize, applyTuning, tuneBuffer, HOUSE, FLEXI_DESIGNERS, isFlexi, designerFromRel, houseRules, houseConf, flexiList };
+module.exports = { TUNE, normalize, applyTuning, tuneBuffer, HOUSE, HOUSE_FORCE, houseForceMeta, houseConflict, FLEXI_DESIGNERS, isFlexi, designerFromRel, houseRules, houseConf, flexiList };

@@ -113,16 +113,22 @@ const SYSTEM = [
 // stated to the model either. MODEL_SYSTEM is the default-rules version.
 function houseLine(R) {
   R = R || TUNING.HOUSE;
-  const infill = R.infillPct != null
-    ? "infill is " + R.infill + " " + R.pattern + " unless the part is structural (it carries a load, takes a screw, clips or hangs something); if it is, set \"structural\" to {\"is\":true,\"why\":\"...\"} and give the infill density you want (" + R.infill + " or more)."
-    : "infill is yours to choose; when the part is structural (it carries a load, takes a screw, clips or hangs something), also set \"structural\" to {\"is\":true,\"why\":\"...\"}.";
+  // 2.47.10: the pattern is its own rule (either may be off)
+  const infill = (R.infillPct != null
+    ? "infill is " + R.infill + (R.pattern != null ? " " + R.pattern : "") + " unless the part is structural (it carries a load, takes a screw, clips or hangs something); if it is, set \"structural\" to {\"is\":true,\"why\":\"...\"} and give the infill density you want (" + R.infill + " or more)."
+    : "infill is yours to choose; when the part is structural (it carries a load, takes a screw, clips or hangs something), also set \"structural\" to {\"is\":true,\"why\":\"...\"}.") +
+    (R.infillPct == null && R.pattern != null ? " The infill pattern is always " + R.pattern + "." : "");
+  // 2.47.10: settings the shop fixes for every file (Settings > House rules)
+  const F = R.force || {};
+  const fixed = Object.keys(F).map(k => k + " " + F[k]);
+  const forced = fixed.length ? " The shop fixes these for every file, so do not suggest them: " + fixed.join(", ") + "." : "";
   const floor = R.minLayer != null ? " Layer height is never below " + R.minLayer + " mm." : "";
   // 2.47.5: the prime tower's size is the shop's when it set one
   const pt = [R.primeVolume != null ? "prime volume " + R.primeVolume + " mm3" : null, R.ribLength != null ? "rib length " + R.ribLength + " mm" : null, R.towerBrim != null ? "tower brim " + R.towerBrim + " mm" : null].filter(Boolean);
   const tower = pt.length ? " The prime tower's size is set by the shop (" + pt.join(", ") + ") - do not suggest prime tower size changes." : "";
   // 2.47.8: the brim's shape and gap are the shop's; the AI decides whether and how wide
   const brim = R.brimGap != null ? " A brim, when a part needs one, is always outer only (brim_type outer_only) with a " + R.brimGap + " mm gap (brim_object_gap) - decide only whether a brim is needed and its width." : "";
-  return "HOUSE RULES (the shop's own, enforced after you answer - work inside them): " + infill + floor + tower + brim +
+  return "HOUSE RULES (the shop's own, enforced after you answer - work inside them): " + infill + floor + tower + brim + forced +
     " On flexi or articulated models, support settings stay exactly as the designer set them - do not suggest support changes for those (supports grow into the joint gaps and fuse them). Supports the designer painted stay on. When an area of a non-flexi model needs support the designer did not give it, say where in \"watch\" (e.g. \"wing tips overhang - paint supports there\").";
 }
 function modelSystem(R) { return MODEL_SYSTEM_PARTS.map(p => p === "@HOUSE" ? houseLine(R) : p).join("\n"); }
@@ -142,6 +148,8 @@ const MODEL_SYSTEM_PARTS = [
   "\"set\" is the exact value Orca stores for that key, with no units, so the Hub can load it into the project: plain numbers (0.12, 220, 3), percentages with a % sign (15%), on/off as 1 or 0, and choices as Orca's internal value (tree(auto), normal(auto), auto_brim, outer_only, brim_ears, no_brim, aligned, no ironing). One value per key - never a range or a list. Use null for advice that is not a single Orca setting."
 ];
 const MODEL_SYSTEM = modelSystem(TUNING.HOUSE);
+// The 2.47 default rules as the answer cache key wrote them (see ruleSig).
+const RULES_247 = JSON.stringify({ infillPct: 12, infill: "12%", pattern: "gyroid", minLayer: 0.16, primeVolume: null, ribLength: null, towerBrim: null, brimGap: null });
 
 // Keys worth carrying from the project's own settings, and their answer.
 const PROJECT_KEYS = [
@@ -560,7 +568,12 @@ function register(ctx) {
       // was, so answers saved under 2.47 are still reused; changed rules
       // change the key, because they change what the model is told.
       const hrules = TUNING.houseConf((ctx.cfg && ctx.cfg.models) || {});
-      const ruleSig = JSON.stringify(hrules) === JSON.stringify(TUNING.houseConf({})) ? "" : "\nhouse " + JSON.stringify(hrules);
+      // 2.47.10: the defaults are all off now, so "" stays pinned to the rules
+      // it has always meant (12% gyroid, 0.16 mm), and the forced rules join
+      // the key only when there are some - a farm whose rules did not change
+      // keeps its saved answers.
+      const sigR = { ...hrules }; if (!Object.keys(sigR.force || {}).length) delete sigR.force;
+      const ruleSig = JSON.stringify(sigR) === RULES_247 ? "" : "\nhouse " + JSON.stringify(sigR);
       const keyText = lines.join("\n") + "\n" + pb.filter(l => !/^  bed now|^TARGET PRINTER/.test(l)).join("\n") + "\n" + c.model + (g.thumb ? "\n" + g.thumb.name : "") + "\nprompt v2.47" + ruleSig;
       const ckey = crypto.createHash("sha1").update(keyText).digest("hex");
       const hit = !force && MCACHE.find(r => r.key === ckey);

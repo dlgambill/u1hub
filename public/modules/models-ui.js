@@ -297,10 +297,9 @@
   // (It did, and a Save pressed on the blanks wiped the folder - 2026-09-22.)
   function renderCfg() {
     const box = EL.querySelector("#mdl-cfg");
-    if (box.querySelector("#mdl-folder") && [box.querySelector("#mdl-folder"), box.querySelector("#mdl-orca"), box.querySelector("#mdl-u1t"), box.querySelector("#mdl-pretunemax"), box.querySelector("#mdl-hinfill"), box.querySelector("#mdl-hminlayer"), box.querySelector("#mdl-flexi")].includes(document.activeElement)) return;
+    if (box.querySelector("#mdl-folder") && [box.querySelector("#mdl-folder"), box.querySelector("#mdl-orca"), box.querySelector("#mdl-u1t")].includes(document.activeElement)) return;
     const folder = DATA && DATA.folder ? DATA.folder : "";
     const orca = DATA && DATA.orcaExe ? DATA.orcaExe : (SETTINGS && SETTINGS.orcaExe ? SETTINGS.orcaExe : "");
-    const HOUSE = (DATA && DATA.house) || (SETTINGS && SETTINGS.house) || null;   // 2.47.1
     box.innerHTML =
       '<label>3MF folder <span class="hint">designer folders inside it become the list on the left; up to four levels deep; folders starting with _ are skipped</span></label>' +
       '<input class="field" id="mdl-folder" placeholder="' + (folder ? "" : "loading…") + '" value="' + esc(folder) + '">' +
@@ -308,29 +307,9 @@
       '<input class="field" id="mdl-orca" placeholder="C:\\Program Files\\Snapmaker_Orca\\snapmaker-orca.exe" value="' + esc(orca) + '">' +
       '<label>U1 template <span class="hint">for Convert to U1: a project saved in Snapmaker Orca with the U1 and your usual filaments; blank uses u1_template.3mf at the top of the folder' + (DATA && DATA.u1_template ? " (found: " + esc(DATA.u1_template) + ")" : " (none found yet)") + '</span></label>' +
       '<input class="field" id="mdl-u1t" placeholder="' + esc(folder ? folder.replace(/[\\/]+$/, "") + "\\u1_template.3mf" : "u1_template.3mf") + '" value="' + esc(DATA && DATA.u1_template_set || "") + '">' +
-      // 2.46: tune on Mark for print.
-      '<label class="row" style="gap:8px; align-items:center; margin-top:8px"><input type="checkbox" id="mdl-pretune"' + (DATA && DATA.pretune && DATA.pretune.on ? " checked" : "") + '> Tune files when they are marked for print <span class="hint">the AI suggests settings for each marked 3MF and saves them into a copy; Open in Orca opens that copy, your file is not changed. Needs the AI pre-flight key.</span></label>' +
-      '<label>New suggestions per day, at most <span class="hint">a few cents each; a file asked about before costs nothing</span></label>' +
-      '<input class="field" id="mdl-pretunemax" type="number" min="0" step="1" style="max-width:120px" value="' + esc(DATA && DATA.pretune ? DATA.pretune.max : 25) + '">' +
-      // 2.47.1: the shop rules the AI's settings are held to (blank = rule off).
-      '<label style="margin-top:10px">Shop rules for AI settings <span class="hint">the Hub holds every suggestion to these before anything is written; leave a box blank to let the AI decide that one</span></label>' +
-      '<div class="row" style="gap:8px; flex-wrap:wrap; align-items:center">' +
-        '<span class="hint">infill</span><input class="field" id="mdl-hinfill" placeholder="AI decides" style="max-width:90px" value="' + esc(HOUSE && HOUSE.infill != null ? HOUSE.infill + "%" : "") + '">' +
-        '<select class="field" id="mdl-hpattern" style="max-width:150px">' + ((HOUSE && HOUSE.patterns) || ["gyroid"]).map(p => '<option' + ((HOUSE ? HOUSE.pattern : "gyroid") === p ? " selected" : "") + ">" + esc(p) + "</option>").join("") + '</select>' +
-        '<span class="hint">unless structural · layers never below</span><input class="field" id="mdl-hminlayer" placeholder="no minimum" style="max-width:90px" value="' + esc(HOUSE && HOUSE.minLayer != null ? HOUSE.minLayer + " mm" : "") + '">' +
-      '</div>' +
-      // 2.47.5: prime tower size (blank keeps each file's own)
-      '<div class="row" style="gap:8px; flex-wrap:wrap; align-items:center; margin-top:6px">' +
-        '<span class="hint">prime tower: prime volume</span><input class="field" id="mdl-hprime" placeholder="file\'s own" style="max-width:90px" value="' + esc(HOUSE && HOUSE.primeVolume != null ? HOUSE.primeVolume + " mm3" : "") + '">' +
-        '<span class="hint">rib length</span><input class="field" id="mdl-hrib" placeholder="file\'s own" style="max-width:80px" value="' + esc(HOUSE && HOUSE.ribLength != null ? HOUSE.ribLength + " mm" : "") + '">' +
-        '<span class="hint">brim</span><input class="field" id="mdl-htbrim" placeholder="file\'s own" style="max-width:80px" value="' + esc(HOUSE && HOUSE.towerBrim != null ? HOUSE.towerBrim + " mm" : "") + '">' +
-      '</div>' +
-      // 2.47.8: a part brim is outer only with the shop's gap (blank keeps each file's brim)
-      '<div class="row" style="gap:8px; flex-wrap:wrap; align-items:center; margin-top:6px">' +
-        '<span class="hint">part brim: outer only, gap</span><input class="field" id="mdl-hbrimgap" placeholder="file\'s own" style="max-width:80px" value="' + esc(HOUSE && HOUSE.brimGap != null ? HOUSE.brimGap + " mm" : "") + '">' +
-      '</div>' +
-      '<label>Flexi designers <span class="hint">one per line: their models keep the designer\'s support settings, because supports fuse flexi joints. A model named Flexi or Articulated counts without being listed.</span></label>' +
-      '<textarea class="field" id="mdl-flexi" rows="3" spellcheck="false" style="width:100%; font-family:var(--mono); font-size:12px" placeholder="(none yet)">' + esc(((HOUSE && HOUSE.flexiDesigners) || []).join("\n")) + '</textarea>' +
+      // 2.47.10: the tuning switch, the daily limit, the shop rules and the
+      // flexi list moved to Settings > House rules - one place to edit them.
+      '<div class="hint" style="margin-top:10px">AI tuning, its daily limit and the shop\'s print rules: <a href="#settings" id="mdl-houselink" style="color:var(--signal)">House rules are in Settings</a></div>' +
       '<div class="row" style="margin-top:8px; gap:8px"><button class="btn primary" id="mdl-save" style="font-size:12px; padding:5px 12px">Save</button><span class="pstatus" id="mdl-cfgmsg"></span></div>' +
       // H22 (2.44): designer aliases - folder name = display name, one per line.
       '<label>Designer names <span class="hint">the designer list comes from the top folders; rename or merge them here without touching a file: <code>folder name = Display Name</code>, one per line. Folders that cannot be a designer (numbers, temperatures, one or two letters) are grouped as (unsorted).</span></label>' +
@@ -359,20 +338,11 @@
       m.className = "pstatus ok"; m.textContent = Object.keys(ALIASES).length + " name" + (Object.keys(ALIASES).length === 1 ? "" : "s") + " saved.";
       CREATOR = ""; OFFSET = 0; load();
     });
+    box.querySelector("#mdl-houselink").addEventListener("click", e => { e.preventDefault(); openHouseCard(); });
     box.querySelector("#mdl-save").addEventListener("click", async () => {
       const fv = box.querySelector("#mdl-folder").value.trim();
       if (!fv) { const m = box.querySelector("#mdl-cfgmsg"); m.className = "pstatus err"; m.textContent = "Enter the folder path (it was left blank)."; return; }
       const body = { folder: fv, orcaExe: box.querySelector("#mdl-orca").value, u1Template: box.querySelector("#mdl-u1t").value };
-      if ((DATA && DATA.pretune) || (SETTINGS && SETTINGS.pretune))
-        Object.assign(body, { pretune: box.querySelector("#mdl-pretune").checked, pretuneDailyMax: box.querySelector("#mdl-pretunemax").value });
-      // 2.47.1: a blank rule box means "rule off", so the rules are only sent
-      // once the server's values were drawn into the form (the 2.27.1 lesson:
-      // a Save pressed on a half-loaded form must not wipe anything).
-      if ((DATA && DATA.house) || (SETTINGS && SETTINGS.house))
-        Object.assign(body, { houseInfill: box.querySelector("#mdl-hinfill").value, housePattern: box.querySelector("#mdl-hpattern").value,
-          houseMinLayer: box.querySelector("#mdl-hminlayer").value, flexiDesigners: box.querySelector("#mdl-flexi").value,
-          housePrimeVolume: box.querySelector("#mdl-hprime").value, houseRibLength: box.querySelector("#mdl-hrib").value, houseTowerBrim: box.querySelector("#mdl-htbrim").value,
-          houseBrimGap: box.querySelector("#mdl-hbrimgap").value });
       const r = await jpost("/api/models/settings", body);
       const m = box.querySelector("#mdl-cfgmsg");
       if (!r.ok) { m.className = "pstatus err"; m.textContent = r.d.error || "Could not save"; return; }
@@ -1054,6 +1024,145 @@
     if (Q + "|" + CREATOR + "|" + SORT + "|" + REQ_ONLY !== before) { const qi = EL.querySelector("#mdl-q"); if (qi) qi.value = Q; const seg = EL.querySelector("#mdl-sort"); if (seg) { seg.outerHTML = sortSeg(); bindSort(); } OFFSET = 0; }
     load(); pollSessions(true); jget("/api/advisor").then(s => { if (s) ADV = s; });
   }
+
+  // ---- 2.47.10: House rules, a card in Settings --------------------------
+  // Everything that is a shop rule for tuned files lives here, and only here:
+  // the tuning switch and daily limit, the special rules (infill, pattern,
+  // minimum layer, flexi designers, brim gap, prime tower) and one optional
+  // rule for each TUNE setting the server lists in house.forceRules. Blank is
+  // always off. The server checks every value against TUNE again; this card
+  // only draws and sends. A change applies to the next tune.
+  const HR_GROUPS = ["AI tuning", "Quality", "Walls & infill", "Supports", "Brim & adhesion", "Speed", "Prime tower"];
+  // The special rules: [id, group, name, Orca key, unit, explanation, body field]
+  const HR_SPECIAL = [
+    ["hrMinLayer", "Quality", "Minimum layer height", "layer_height", "mm", "The AI may never pick a layer thinner than this.", "houseMinLayer", "minLayer"],
+    ["hrInfill", "Walls & infill", "Infill", "sparse_infill_density", "%", "Every file gets this infill, unless the AI calls the part structural and says why - then it may go higher, never lower.", "houseInfill", "infill"],
+    ["hrPattern", "Walls & infill", "Infill pattern", "sparse_infill_pattern", "", "Every file's infill uses this pattern.", "housePattern", "pattern"],
+    ["hrBrimGap", "Brim & adhesion", "Brim gap", "brim_object_gap", "mm", "When a part has a brim, it is outer only and this far from the part.", "houseBrimGap", "brimGap"],
+    ["hrPrime", "Prime tower", "Prime volume", "prime_volume", "mm3", "How much filament is purged into the prime tower at each tool change.", "housePrimeVolume", "primeVolume"],
+    ["hrRib", "Prime tower", "Rib length", "wipe_tower_extra_rib_length", "mm", "How far the prime tower's rib walls reach out.", "houseRibLength", "ribLength"],
+    ["hrTBrim", "Prime tower", "Tower brim", "prime_tower_brim_width", "mm", "The brim around the prime tower."
+      , "houseTowerBrim", "towerBrim"]
+  ];
+  let HR = null, HRSTATE = null;
+  function hrStyle() {
+    if (document.getElementById("hrcss")) return;
+    const s = document.createElement("style");
+    s.id = "hrcss";
+    s.textContent = [
+      "#setHouse .hr-grp{margin-top:16px; padding-bottom:4px; font-size:11px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-dim); border-bottom:1px solid var(--line);}",
+      "#setHouse .hr-row{display:grid; grid-template-columns:minmax(150px,210px) 150px 1fr; gap:4px 14px; align-items:center; padding:7px 0; border-bottom:1px solid var(--line-soft);}",
+      "#setHouse .hr-name{font-size:13px; color:var(--ink); line-height:1.3;}",
+      "#setHouse .hr-key{display:block; font-family:var(--mono); font-size:10.5px; color:var(--ink-faint); word-break:break-all;}",
+      "#setHouse .hr-in{display:flex; align-items:center; gap:6px; min-width:0;}",
+      "#setHouse .hr-in .field{width:100%; min-width:0; padding:6px 8px; font-size:13px;}",
+      "#setHouse .hr-unit{font-family:var(--mono); font-size:11px; color:var(--ink-faint); flex:none;}",
+      "#setHouse .hr-ex{font-size:12px; color:var(--ink-faint); line-height:1.4;}",
+      "#setHouse .hr-row.on .hr-name{color:var(--signal);}",
+      "#setHouse .hr-always{font-size:12px; color:var(--ink-faint); padding:7px 0; border-bottom:1px solid var(--line-soft);}",
+      "#setHouse textarea.field{width:100%; font-family:var(--mono); font-size:12px;}",
+      "@media (max-width:640px){#setHouse .hr-row{grid-template-columns:1fr 130px;} #setHouse .hr-ex{grid-column:1 / -1;}}"
+    ].join("\n");
+    document.head.appendChild(s);
+  }
+  const hrName = (name, key) => '<div class="hr-name">' + esc(name) + (key ? '<code class="hr-key">' + esc(key) + "</code>" : "") + "</div>";
+  const hrRow = (name, key, input, ex, id) => '<div class="hr-row" data-hrrow="' + esc(id) + '">' + hrName(name, key) + '<div class="hr-in">' + input + "</div>" + '<div class="hr-ex">' + esc(ex) + "</div></div>";
+  const hrText = (id, unit) => '<input class="field" id="' + id + '" inputmode="decimal" autocomplete="off" spellcheck="false" placeholder="not set">' + (unit ? '<span class="hr-unit">' + esc(unit) + "</span>" : "");
+  const hrSelect = (id, vals, names) => '<select class="field" id="' + id + '"><option value="">not set</option>' + vals.map(v => '<option value="' + esc(v) + '">' + esc((names && names[v]) || v) + "</option>").join("") + "</select>";
+  function buildHouse(house) {
+    const host = document.getElementById("setModules");
+    if (!host || HR || !house) return;
+    hrStyle();
+    const rules = house.forceRules || [];
+    const byGroup = g => {
+      let h = "";
+      for (const sp of HR_SPECIAL.filter(x => x[1] === g)) {
+        const input = sp[0] === "hrPattern" ? hrSelect("hrPattern", house.patterns || [], null) : hrText(sp[0], sp[4]);
+        h += hrRow(sp[2], sp[3], input, sp[5], sp[0]);
+      }
+      if (g === "Supports") {
+        h += '<div class="hr-always">Always on: supports the designer painted are never switched off, and a flexi model keeps the designer\'s support settings.</div>';
+        h += '<div class="hr-row" data-hrrow="hrFlexi" style="align-items:start">' + hrName("Flexi designers", "") + '<div class="hr-in" style="grid-column:span 2"><textarea class="field" id="hrFlexi" rows="3" spellcheck="false" placeholder="one designer per line (none yet)"></textarea></div>' +
+          '<div class="hr-ex" style="grid-column:1 / -1">Models from these designers keep the designer\'s support settings, because supports fuse flexi joints. A model named Flexi or Articulated counts without being listed.</div></div>';
+      }
+      for (const r of rules.filter(x => x.group === g)) {
+        const id = "hrF-" + r.key;
+        let input;
+        if (r.kind === "bool") input = hrSelect(id, ["1", "0"], { "1": "On", "0": "Off" });
+        else if (r.kind === "enum") input = hrSelect(id, r.vals || [], r.names);
+        else input = hrText(id, r.unit || (r.kind === "pct" ? "%" : ""));
+        const range = r.kind === "num" ? " (" + r.lo + " to " + r.hi + (r.unit ? " " + r.unit : "") + ")" : "";
+        h += hrRow(r.label, r.key, input, r.explain + range, id);
+      }
+      return h;
+    };
+    HR = document.createElement("div");
+    HR.id = "setHouse";
+    HR.innerHTML =
+      '<label class="fl" style="margin-top:18px">House rules <span class="hint" id="hrHint">for files the AI tunes</span></label>' +
+      '<div class="hint" style="margin-top:4px; max-width:640px">The Hub holds every AI suggestion to these rules before it writes a tuned copy of a file. ' +
+      'Anything left blank (not set) is off: the AI\'s suggestion or the file\'s own value stands. A change applies to the next file tuned - copies already tuned stay as they are.</div>' +
+      HR_GROUPS.map(g => {
+        let body = "";
+        if (g === "AI tuning") {
+          body = '<div class="hr-row" data-hrrow="hrPretune">' + hrName("Tune marked files", "") +
+            '<div class="hr-in"><label class="hint" style="display:flex; align-items:center; gap:6px; cursor:pointer"><input type="checkbox" id="hrPretune"> On</label></div>' +
+            '<div class="hr-ex">The AI suggests settings for each 3MF marked for print and saves them into a copy; Open in Orca opens that copy. Your file is not changed. Needs the AI pre-flight key.</div></div>' +
+            hrRow("Suggestions per day", "", hrText("hrDaily", ""), "At most this many new AI suggestions a day, a few cents each. A file asked about before costs nothing.", "hrDaily");
+        } else body = byGroup(g);
+        return body ? '<div class="hr-grp">' + esc(g) + "</div>" + body : "";
+      }).join("") +
+      '<div class="row" style="margin-top:12px; gap:8px; flex-wrap:wrap"><button class="btn ghost" id="hrSave">Save house rules</button><span class="pstatus" id="hrMsg"></span></div>';
+    host.appendChild(HR);
+    HR.querySelector("#hrSave").addEventListener("click", saveHouse);
+    HR.addEventListener("input", e => { const row = e.target.closest(".hr-row"); if (row && e.target.id !== "hrPretune") row.classList.toggle("on", !!String(e.target.value || "").trim()); });
+    const gear = document.getElementById("gear");
+    if (gear) gear.addEventListener("click", () => setTimeout(() => { const st = document.getElementById("setup"); if (st && st.classList.contains("show")) loadHouse(); }, 0));
+  }
+  function paintHouse(d) {
+    if (!HR || !d || !d.house) return;
+    if (HR.contains(document.activeElement) && document.activeElement.id !== "hrSave") return;   // never under a person's typing
+    HRSTATE = d;
+    const H = d.house, q = id => HR.querySelector("#" + CSS.escape(id));
+    const put = (id, v) => { const el = q(id); if (!el) return; el.value = v == null ? "" : String(v); const row = el.closest(".hr-row"); if (row) row.classList.toggle("on", v != null && String(v) !== ""); };
+    q("hrPretune").checked = !!(d.pretune && d.pretune.on);
+    put("hrDaily", d.pretune ? d.pretune.max : 25);
+    for (const sp of HR_SPECIAL) put(sp[0], H[sp[7]]);
+    q("hrFlexi").value = (H.flexiDesigners || []).join("\n");
+    for (const r of H.forceRules || []) put("hrF-" + r.key, (H.force || {})[r.key]);
+    const n = HR_SPECIAL.filter(sp => H[sp[7]] != null).length + Object.keys(H.force || {}).length;
+    q("hrHint").textContent = n ? n + " rule" + (n === 1 ? "" : "s") + " on" : "all off - the AI and each file decide";
+  }
+  function hrSay(cls, text) { const m = HR && HR.querySelector("#hrMsg"); if (!m) return; m.className = "pstatus" + (cls ? " " + cls : ""); m.textContent = text || ""; }
+  async function saveHouse() {
+    // The 2.27.1 lesson: never send a form whose values were not drawn from
+    // the server first - blank means "off" here, so it would wipe the rules.
+    if (!HRSTATE) return hrSay("err", "The rules have not loaded yet - try again in a moment.");
+    const q = id => HR.querySelector("#" + CSS.escape(id));
+    const body = { pretune: q("hrPretune").checked, pretuneDailyMax: q("hrDaily").value.trim(), flexiDesigners: q("hrFlexi").value, houseForce: {} };
+    for (const sp of HR_SPECIAL) body[sp[6]] = q(sp[0]).value;
+    for (const r of HRSTATE.house.forceRules || []) body.houseForce[r.key] = q("hrF-" + r.key).value;
+    hrSay("work", "Saving...");
+    const r = await jpost("/api/models/house", body);
+    if (!r.ok) return hrSay("err", r.d.error || "Could not save");
+    document.activeElement && document.activeElement.blur && HR.contains(document.activeElement) && document.activeElement.blur();
+    paintHouse(r.d);
+    hrSay("ok", "Saved. The next file tuned follows these rules.");
+  }
+  async function loadHouse() {
+    const d = await jget("/api/models/house");
+    if (!d) return;
+    buildHouse(d.house);
+    paintHouse(d);
+  }
+  // From the Folder panel's link: open Settings at this card.
+  function openHouseCard() {
+    const st = document.getElementById("setup");
+    if (st) st.classList.add("show");
+    loadHouse().then(() => { const c = document.getElementById("setHouse"); if (c) c.scrollIntoView({ behavior: "smooth", block: "start" }); });
+  }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", loadHouse);
+  else loadHouse();
 
   window.HubModules.register("models", { tab: "Models", mount, onShow });
 })();

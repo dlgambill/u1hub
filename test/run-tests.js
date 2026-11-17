@@ -4487,7 +4487,9 @@ async function stopHub() {
         const bl = amod.modelBriefLines("s.3mf", fs2, null, [], { n: 1, of: 1 }).join("\n");
         ok(/SUPPORT PAINT: 4 faces/.test(bl), "brief: the designer's painted supports are named", bl.split("\n").find(l => /SUPPORT/.test(l)));
       }
-      ok(/HOUSE RULES/.test(amod.MODEL_SYSTEM) && /12% gyroid/.test(amod.MODEL_SYSTEM) && /0\.16/.test(amod.MODEL_SYSTEM) && /fastest/.test(amod.MODEL_SYSTEM) && /"structural"/.test(amod.MODEL_SYSTEM),
+      // 2.47.10: the rules start off, so the 12% gyroid / 0.16 mm line is what a farm with those rules is told
+      const sys12 = amod.modelSystem(require(path.join(REPO, "modules", "tuning.js")).houseConf({ house: { infill: 12, pattern: "gyroid", minLayer: 0.16 } }));
+      ok(/HOUSE RULES/.test(sys12) && /12% gyroid/.test(sys12) && /0\.16/.test(sys12) && /fastest/.test(amod.MODEL_SYSTEM) && /"structural"/.test(amod.MODEL_SYSTEM),
         "the suggester is told the house rules and the goal (best look at the fastest speed), and asked to flag structural parts");
       ok(amod.parseSuggestion('{"summary":"s","settings":[{"key":"wall_loops","value":"4"}],"structural":{"is":true,"why":"carries a load"}}').structural.is === true &&
          amod.parseSuggestion('{"summary":"s","settings":[{"key":"wall_loops","value":"4"}]}').structural.is === false,
@@ -4574,8 +4576,10 @@ async function stopHub() {
          !T.isFlexi({ texts: ["Charizard Dice Tower", "Flexible filament guide"], designer: "Vulture Labs", designers: ["3DGOB"] }).flexi,
         "flexi: Flexi or Articulated in the title or a part name, or a designer on the list - \"Flexible\" is not \"Flexi\", and Print-in-Place alone is not a flexi (2.47.1)");
       const hps = { layer_height: "0.2", enable_support: "0", sparse_infill_density: "15%", sparse_infill_pattern: "grid", wall_loops: "2" };
+      // 2.47.10: every rule starts off; these checks run with the 12% gyroid / 0.16 mm rules set
+      const DR = T.houseConf({ house: { infill: 12, pattern: "gyroid", minLayer: 0.16 } });
       const ai = [{ key: "enable_support", value: "1" }, { key: "support_type", value: "tree(auto)" }, { key: "layer_height", value: "0.12 mm", set: "0.12" }, { key: "sparse_infill_density", value: "20%" }, { key: "brim_width", value: "8" }];
-      let h = T.houseRules(hps, ai, { flexi: { flexi: true, why: "the title says Flexi" }, supportPaint: 0, structural: { is: false } });
+      let h = T.houseRules(hps, ai, { flexi: { flexi: true, why: "the title says Flexi" }, supportPaint: 0, structural: { is: false }, rules: DR });
       let hk = h.settings.map(x => x.key);
       ok(!hk.includes("enable_support") && !hk.includes("support_type") && h.notes.some(n => n.key === "enable_support" && /flexi/i.test(n.reason)),
         "a flexi keeps the designer's support settings - the AI's support rows are dropped, with the reason", h.notes);
@@ -4583,17 +4587,17 @@ async function stopHub() {
         "layers never below 0.16 mm; a brim suggestion still goes through", h.notes);
       ok(h.settings.find(x => x.key === "sparse_infill_density").set === "12%" && h.settings.find(x => x.key === "sparse_infill_pattern").set === "gyroid" && h.notes.some(n => n.key === "sparse_infill_density" && /12% gyroid/.test(n.reason)),
         "infill is the house 12% gyroid; the AI's 20% is refused when it did not call the part structural", h.settings);
-      h = T.houseRules(hps, ai, { flexi: { flexi: false }, supportPaint: 0, structural: { is: true, why: "a wall hook that carries weight" } });
+      h = T.houseRules(hps, ai, { flexi: { flexi: false }, supportPaint: 0, structural: { is: true, why: "a wall hook that carries weight" }, rules: DR });
       hk = h.settings.map(x => x.key);
       ok(hk.includes("enable_support") && h.settings.find(x => x.key === "sparse_infill_density").set === "20%" && h.settings.find(x => x.key === "sparse_infill_pattern").set === "gyroid",
         "structural, with a reason: the AI's 20% stands (as gyroid), and on a non-flexi it may turn supports on", h.settings);
-      h = T.houseRules(hps, [{ key: "sparse_infill_density", value: "8%" }], { flexi: { flexi: false }, supportPaint: 0, structural: { is: true, why: "x" } });
+      h = T.houseRules(hps, [{ key: "sparse_infill_density", value: "8%" }], { flexi: { flexi: false }, supportPaint: 0, structural: { is: true, why: "x" }, rules: DR });
       ok(h.settings.find(x => x.key === "sparse_infill_density").set === "12%", "structural never means less than the house 12%", h.settings);
       h = T.houseRules({ ...hps, enable_support: "1" }, [{ key: "enable_support", value: "0" }], { flexi: { flexi: false }, supportPaint: 40, structural: { is: false } });
       ok(!h.settings.some(x => x.key === "enable_support") && h.notes.some(n => /painted/.test(n.reason)), "supports the designer painted are never switched off", h.notes);
       h = T.houseRules({ ...hps, enable_support: "1" }, [{ key: "enable_support", value: "0" }], { flexi: { flexi: false }, supportPaint: null, structural: { is: false } });
       ok(!h.settings.some(x => x.key === "enable_support"), "…nor when the paint could not be counted (the safe side)", h.notes);
-      const th = T.tuneBuffer(zin, ai, { flexi: { flexi: true, why: "t" }, supportPaint: 0, structural: { is: false } });
+      const th = T.tuneBuffer(zin, ai, { flexi: { flexi: true, why: "t" }, supportPaint: 0, structural: { is: false }, rules: DR });
       const thps = JSON.parse(zipEntryContent(zipRead(th.buffer).find(x => x.name === "Metadata/project_settings.config")).toString());
       ok(thps.enable_support === undefined && thps.sparse_infill_density === "12%" && thps.sparse_infill_pattern === "gyroid" && thps.brim_width === "8" && th.skipped.some(x => /flexi/i.test(x.reason)),
         "tuneBuffer with the house rules: house infill written, the AI's flexi supports not, and the reasons ride in the skipped list", { ps: thps, skipped: th.skipped });
@@ -4606,11 +4610,11 @@ async function stopHub() {
         "out of the box no designer is a flexi designer; a model named Flexi still is");
       ok(T.flexiList({ flexiDesigners: [" 3DGOB ", "", "IXPatch"] }).join() === "3DGOB,IXPatch", "the farm's list is read from config, blanks dropped");
       let hc = T.houseConf({});
-      ok(hc.infillPct === 12 && hc.infill === "12%" && hc.pattern === "gyroid" && hc.minLayer === 0.16, "no house block in config: the 12% gyroid / 0.16 mm defaults", hc);
+      ok(hc.infillPct === null && hc.infill === null && hc.pattern === null && hc.minLayer === null, "2.47.10: no house block in config: infill, pattern and minimum layer are all off", hc);
       hc = T.houseConf({ house: { infill: null, pattern: "grid", minLayer: "" } });
       ok(hc.infillPct === null && hc.infill === null && hc.minLayer === null && hc.pattern === "grid", "blank or null turns a rule off", hc);
       hc = T.houseConf({ house: { infill: "15%", pattern: "nonsense", minLayer: 0.2 } });
-      ok(hc.infillPct === 15 && hc.pattern === "gyroid" && hc.minLayer === 0.2, "own numbers are used; a pattern Orca does not have falls back to gyroid", hc);
+      ok(hc.infillPct === 15 && hc.pattern === null && hc.minLayer === 0.2, "own numbers are used; a pattern Orca does not have is off (2.47.10)", hc);
       const ai2 = [{ key: "layer_height", value: "0.12" }, { key: "sparse_infill_density", value: "20%" }, { key: "sparse_infill_pattern", value: "grid" }];
       h = T.houseRules(hps, ai2, { flexi: { flexi: false }, supportPaint: 0, structural: { is: false }, rules: T.houseConf({ house: { infill: null, minLayer: null } }) });
       ok(h.settings.length === 3 && !h.notes.length && h.settings.find(x => x.key === "sparse_infill_density").value === "20%",
@@ -4679,7 +4683,86 @@ async function stopHub() {
       const sysB = amod2.modelSystem(bR);
       ok(/outer only/.test(sysB) && /0\.2 mm gap/.test(sysB) && !/brim_object_gap/.test(amod2.modelSystem(T.houseConf({}))), "the AI is told the brim shape and gap are the shop's, only when the rule is on");
       const muiB = fs.readFileSync(path.join(REPO, "public", "modules", "models-ui.js"), "utf8");
-      ok(/id="mdl-hbrimgap"/.test(muiB) && /houseBrimGap: box\.querySelector\("#mdl-hbrimgap"\)\.value/.test(muiB), "the Folder panel draws the brim gap box and sends it on Save");
+      ok(/\["hrBrimGap", "Brim & adhesion", "Brim gap", "brim_object_gap"/.test(muiB) && /"houseBrimGap", "brimGap"\]/.test(muiB), "the House rules card draws the brim gap box and sends it on Save (2.47.10: moved from the Folder panel)");
+      // 2.47.10: House rules move to a Settings card; every rule starts off;
+      // one optional rule per TUNE key that is safe to force on every file.
+      console.log("\n== 2.47.10: House rules in Settings, every rule off until set ==");
+      const H0 = T.houseConf({});
+      ok(T.HOUSE.infillPct === null && T.HOUSE.pattern === null && T.HOUSE.minLayer === null && T.HOUSE.brimGap === null && T.HOUSE.primeVolume === null && Object.keys(T.HOUSE.force).length === 0 &&
+         H0.infillPct === null && H0.pattern === null && H0.minLayer === null && H0.ribLength === null && H0.towerBrim === null && Object.keys(H0.force).length === 0,
+        "2.47.10: a new farm starts with every house rule off (infill, pattern and minimum layer included)", H0);
+      const aiAll = [{ key: "layer_height", value: "0.08" }, { key: "sparse_infill_density", value: "30%" }, { key: "sparse_infill_pattern", value: "grid" }, { key: "wall_loops", value: "5" }, { key: "brim_type", value: "brim_ears" }];
+      h = T.houseRules(hps, aiAll, { flexi: { flexi: false }, supportPaint: 0, structural: { is: false }, rules: H0 });
+      ok(JSON.stringify(h.settings) === JSON.stringify(aiAll) && h.notes.length === 0, "2.47.10: with every rule off, the AI's rows go through untouched and nothing is noted", h);
+      ok(amod2.modelSystem(H0) === amod2.MODEL_SYSTEM && /infill is yours to choose/.test(amod2.MODEL_SYSTEM) && !/never below/.test(amod2.MODEL_SYSTEM) && !/fixes these/.test(amod2.MODEL_SYSTEM),
+        "2.47.10: the AI is told no shop rules when none are set");
+      const FKEYS = T.HOUSE_FORCE.map(r => r.key);
+      ok(FKEYS.length === 21 && FKEYS.every(k => T.TUNE[k] && !T.TUNE[k].filament) &&
+         !FKEYS.some(k => ["enable_prime_tower", "sparse_infill_density", "sparse_infill_pattern", "prime_volume", "wipe_tower_extra_rib_length", "prime_tower_brim_width", "brim_object_gap"].includes(k)) &&
+         T.HOUSE_FORCE.every(r => r.label && r.explain && /\.$/.test(r.explain) && !r.explain.includes("—") && ["Quality", "Walls & infill", "Supports", "Brim & adhesion", "Speed"].includes(r.group)),
+        "2.47.10: the forced rules are TUNE keys only - no per-filament keys, no prime tower switch, none that already has its own rule - each with a group and a one-line explanation", FKEYS);
+      const meta = T.houseForceMeta();
+      ok(meta.length === FKEYS.length && meta.every(m => m.kind === T.TUNE[m.key].kind && (m.kind !== "num" || (m.lo === T.TUNE[m.key].lo && m.hi === T.TUNE[m.key].hi)) && (m.kind !== "enum" || m.vals.join() === T.TUNE[m.key].vals.join())),
+        "2.47.10: the card gets each rule's range or choices straight from TUNE");
+      // each rule: applied when set, absent when blank
+      const nf0 = { flexi: { flexi: false }, supportPaint: 0, structural: { is: false } };
+      for (const m of meta) {
+        const t = T.TUNE[m.key];
+        const want = t.kind === "bool" ? "1" : t.kind === "enum" ? t.vals[t.vals.length - 1] : String(t.int ? Math.round((t.lo + t.hi) / 2) : Math.round((t.lo + t.hi) / 2 * 100) / 100);
+        const other = t.kind === "bool" ? "0" : t.kind === "enum" ? t.vals[0] : String(t.lo);
+        const R1 = T.houseConf({ house: { force: { [m.key]: want } } });
+        const on = T.houseRules(hps, [{ key: m.key, value: other }], { ...nf0, rules: R1 });
+        const off = T.houseRules(hps, [{ key: m.key, value: other }], { ...nf0, rules: T.houseConf({ house: { force: { [m.key]: "" } } }) });
+        const row = on.settings.filter(x => x.key === m.key);
+        ok(R1.force[m.key] === T.normalize(m.key, want).value && row.length === 1 && row[0].set === R1.force[m.key] && on.notes.some(n => n.key === m.key && /^house rule: the shop sets this/.test(n.reason)) &&
+           off.settings.length === 1 && off.settings[0].value === other && !off.notes.length,
+          "2.47.10: " + m.key + " - set to " + want + " it replaces the AI's " + other + " (with the reason); blank leaves the AI's value alone", { on, off });
+      }
+      ok(Object.keys(T.houseConf({ house: { force: { layer_height: "9", wall_loops: "2.5", nozzle_temperature: "220", post_process: "x.bat" } } }).force).length === 0,
+        "2.47.10: a forced value out of TUNE's range, or a key that is not a house rule, is read as off");
+      const fps = { ...hps, enable_support: "1" };
+      h = T.houseRules(fps, [], { flexi: { flexi: true, why: "t" }, supportPaint: 0, structural: { is: false }, rules: T.houseConf({ house: { force: { support_type: "tree(auto)", enable_support: "0", wall_loops: "3" } } }) });
+      ok(!h.settings.some(x => /support/.test(x.key)) && h.settings.some(x => x.key === "wall_loops" && x.set === "3") && h.notes.filter(n => /flexi/.test(n.reason)).length === 2,
+        "2.47.10: a flexi keeps the designer's supports even when the shop forces support rules; the other rules still apply", h);
+      h = T.houseRules(fps, [], { flexi: { flexi: false }, supportPaint: 40, structural: { is: false }, rules: T.houseConf({ house: { force: { enable_support: "0" } } }) });
+      ok(!h.settings.some(x => x.key === "enable_support") && h.notes.some(n => /painted supports on 40 faces/.test(n.reason)), "2.47.10: a forced supports-off never turns off supports the designer painted", h);
+      h = T.houseRules(fps, [], { flexi: { flexi: false }, supportPaint: null, structural: { is: false }, rules: T.houseConf({ house: { force: { enable_support: "0" } } }) });
+      ok(!h.settings.some(x => x.key === "enable_support"), "2.47.10: ...nor when the paint could not be counted", h);
+      h = T.houseRules(fps, [], { flexi: { flexi: false }, supportPaint: 0, structural: { is: false }, rules: T.houseConf({ house: { force: { enable_support: "0" } } }) });
+      ok(h.settings.some(x => x.key === "enable_support" && x.set === "0"), "2.47.10: ...but turns off unpainted supports", h);
+      const RL = T.houseConf({ house: { minLayer: 0.16, force: { layer_height: "0.12" } } });
+      ok(/under the minimum layer height/.test(T.houseConflict(RL) || "") && !T.houseRules(hps, [], { ...nf0, rules: RL }).settings.some(x => x.key === "layer_height"),
+        "2.47.10: a forced layer under the minimum is a conflict, and never written");
+      const RB = T.houseConf({ house: { brimGap: 0.2, force: { brim_type: "brim_ears" } } });
+      ok(/Outer only or No brim/.test(T.houseConflict(RB) || "") && T.houseConflict(T.houseConf({ house: { brimGap: 0.2, force: { brim_type: "no_brim" } } })) === null, "2.47.10: with a brim gap set, only outer only or no brim fits as a forced brim type");
+      h = T.houseRules({ ...hps, brim_type: "no_brim" }, [{ key: "brim_type", value: "auto" }], { ...nf0, rules: T.houseConf({ house: { brimGap: 0.2, force: { brim_type: "outer_only" } } }) });
+      ok(h.settings.filter(x => x.key === "brim_type").length === 1 && h.settings.find(x => x.key === "brim_type").set === "outer_only" && h.settings.find(x => x.key === "brim_object_gap").set === "0.2",
+        "2.47.10: a forced outer-only brim gets the shop's gap from the brim rule", h.settings);
+      // the pattern is its own rule now
+      h = T.houseRules(hps, [{ key: "sparse_infill_density", value: "30%" }, { key: "sparse_infill_pattern", value: "grid" }], { ...nf0, rules: T.houseConf({ house: { pattern: "gyroid" } }) });
+      ok(h.settings.find(x => x.key === "sparse_infill_density").value === "30%" && h.settings.find(x => x.key === "sparse_infill_pattern").set === "gyroid" && h.notes.some(n => n.key === "sparse_infill_pattern" && /pattern is gyroid/.test(n.reason)),
+        "2.47.10: pattern on, infill off - the AI's 30% stands, the pattern is the shop's", h);
+      h = T.houseRules(hps, [{ key: "sparse_infill_density", value: "30%" }, { key: "sparse_infill_pattern", value: "grid" }], { ...nf0, rules: T.houseConf({ house: { infill: 15 } }) });
+      ok(h.settings.find(x => x.key === "sparse_infill_density").set === "15%" && h.settings.find(x => x.key === "sparse_infill_pattern").value === "grid" && h.notes.some(n => /infill is 15% unless/.test(n.reason)),
+        "2.47.10: infill on, pattern off - the shop's 15%, the AI's grid", h);
+      // tuneBuffer writes a forced rule and marks it changed for Orca
+      const fz = T.tuneBuffer(zin, [{ key: "wall_loops", value: "5" }], { ...nf0, rules: T.houseConf({ house: { force: { wall_loops: "3", outer_wall_speed: "150" } } }) });
+      const fzps = JSON.parse(zipEntryContent(zipRead(fz.buffer).find(x => x.name === "Metadata/project_settings.config")).toString());
+      ok(fzps.wall_loops === "3" && fzps.outer_wall_speed === "150" && /outer_wall_speed/.test(fzps.different_settings_to_system[0]) && /wall_loops/.test(fzps.different_settings_to_system[0]) && fz.skipped.some(x => x.key === "wall_loops" && /house rule/.test(x.reason)),
+        "2.47.10: tuneBuffer writes the forced rules and lists them in different_settings_to_system, so Snapmaker Orca honors them", { wall_loops: fzps.wall_loops, diff: fzps.different_settings_to_system[0] });
+      const sysF = amod2.modelSystem(T.houseConf({ house: { force: { wall_loops: "3", seam_position: "back" } } }));
+      ok(/fixes these for every file, so do not suggest them: seam_position back, wall_loops 3\./.test(sysF), "2.47.10: the AI is told the settings the shop fixes, so it does not spend suggestions on them");
+      // the Settings card, and the Folder panel without the rules
+      const mui10 = fs.readFileSync(path.join(REPO, "public", "modules", "models-ui.js"), "utf8");
+      const card10 = mui10.slice(mui10.indexOf("// ---- 2.47.10: House rules, a card in Settings"), mui10.indexOf('window.HubModules.register("models"'));
+      ok(card10.length > 3000 && /HR\.id = "setHouse"/.test(card10) && /document\.getElementById\("setModules"\)/.test(card10) && /jpost\("\/api\/models\/house", body\)/.test(card10) && /id="hrSave"/.test(card10) &&
+         /"AI tuning", "Quality", "Walls & infill", "Supports", "Brim & adhesion", "Speed", "Prime tower"/.test(card10),
+        "2.47.10: the House rules card is drawn in Settings, grouped, and saves to /api/models/house");
+      ok(/<option value="">not set<\/option>/.test(card10) && /placeholder="not set"/.test(card10) && /Anything left blank \(not set\) is off/.test(card10) && !card10.includes("—"),
+        "2.47.10: blank reads as not set (off) on every rule, and the card's words use no em dash");
+      const cfg10 = mui10.slice(mui10.indexOf("function renderCfg()"), mui10.indexOf("// H22: the view's state rides in the URL hash"));
+      ok(!/mdl-hinfill|mdl-hpattern|mdl-hminlayer|mdl-hprime|mdl-hrib|mdl-htbrim|mdl-hbrimgap|mdl-pretune|mdl-flexi|houseInfill|pretuneDailyMax/.test(cfg10) && /id="mdl-houselink"/.test(cfg10) && /openHouseCard\(\)/.test(cfg10) && /House rules are in Settings/.test(cfg10),
+        "2.47.10: the Folder panel keeps only folder settings, with a link that opens the House rules card");
     }
 
     // The route, against a mock Messages endpoint that understands content blocks.
@@ -4789,8 +4872,8 @@ async function stopHub() {
       // 2.47.1: tuning on Mark for print is OFF until someone turns it on.
       {
         const lst = await jget("/api/models?limit=1");
-        ok(lst.body && lst.body.pretune && lst.body.pretune.on === false && lst.body.house && lst.body.house.infill === 12 && Array.isArray(lst.body.house.flexiDesigners) && lst.body.house.flexiDesigners.length === 0,
-          "fresh install: tuning on Mark for print is off, the rules are the 12% default and the flexi list is empty", lst.body && { pretune: lst.body.pretune, house: lst.body.house });
+        ok(lst.body && lst.body.pretune && lst.body.pretune.on === false && lst.body.house && lst.body.house.infill === null && lst.body.house.pattern === null && lst.body.house.minLayer === null && Array.isArray(lst.body.house.flexiDesigners) && lst.body.house.flexiDesigners.length === 0,
+          "fresh install: tuning on Mark for print is off, every rule is off (2.47.10) and the flexi list is empty", lst.body && { pretune: lst.body.pretune, house: lst.body.house });
         const rel0 = "Harness/Default Off/default off.3mf";
         fs.mkdirSync(path.dirname(path.join(mroot, rel0)), { recursive: true });
         fs.writeFileSync(path.join(mroot, rel0), buildZip(files.concat([{ name: "Metadata/z.txt", data: Buffer.from("z") }])));
@@ -4821,6 +4904,34 @@ async function stopHub() {
         ok(rs.status === 200 && rs.body.house.brimGap === null, "…and blank turns it off again", rs.body && rs.body.house);
         rs = await jpost("/api/models/settings", { houseInfill: "12%", houseMinLayer: "0.16", housePattern: "gyroid", flexiDesigners: "" });
         ok(rs.status === 200 && rs.body.house.infill === 12 && rs.body.house.minLayer === 0.16 && rs.body.house.flexiDesigners.length === 0, "and back to the defaults for the rest of the harness", rs.body && rs.body.house);
+        // 2.47.10: the House rules card's routes
+        console.log("\n== 2.47.10: House rules card routes ==");
+        const TT = require(path.join(REPO, "modules", "tuning.js"));
+        let hg = await jget("/api/models/house");
+        ok(hg.status === 200 && hg.body.pretune && hg.body.house && hg.body.house.forceRules.length === TT.HOUSE_FORCE.length && Object.keys(hg.body.house.force).length === 0 &&
+           hg.body.house.infill === 12 && hg.body.house.minLayer === 0.16 && hg.body.house.pattern === "gyroid",
+          "2.47.10: GET /api/models/house draws the card - the saved house values still read, every forced rule listed and off", hg.body && { infill: hg.body.house.infill, force: hg.body.house.force });
+        rs = await jpost("/api/models/house", { houseForce: { wall_loops: "3", support_type: "Tree (auto)", layer_height: "0.2 mm", seam_position: "back" } });
+        ok(rs.status === 200 && rs.body.house.force.wall_loops === "3" && rs.body.house.force.support_type === "tree(auto)" && rs.body.house.force.layer_height === "0.2" && rs.body.house.force.seam_position === "back" && rs.body.house.infill === 12,
+          "2.47.10: the card saves forced rules as Orca's own values and leaves the other rules alone", rs.body && rs.body.house.force);
+        const bad10 = [[{ houseForce: { wall_loops: "2.5" } }, /Walls: must be a whole number/], [{ houseForce: { outer_wall_speed: "900" } }, /Outer wall speed: outside 10-500/],
+          [{ houseForce: { support_type: "spaghetti" } }, /Support type: not one of Orca's choices/], [{ houseForce: { nozzle_temperature: "220" } }, /not a setting the house rules can set/],
+          [{ houseForce: { layer_height: "0.12" } }, /under the minimum layer height/], [{ houseForce: "wall_loops=3" }, /list of settings/],
+          [{ houseBrimGap: "0.2", houseForce: { brim_type: "brim_ears" } }, /Outer only or No brim/], [{ houseInfill: "150" }, /0 to 100/], [{ pretuneDailyMax: -1 }, /daily limit/]];
+        for (const [body, re] of bad10) {
+          const rb = await jpost("/api/models/house", body);
+          ok(rb.status === 400 && re.test(rb.body.error || ""), "2.47.10: the route refuses " + JSON.stringify(body) + " with the reason", rb.body);
+        }
+        hg = await jget("/api/models/house");
+        ok(hg.body.house.force.wall_loops === "3" && hg.body.house.brimGap === null && !hg.body.house.force.brim_type && hg.body.house.infill === 12 && hg.body.pretune.max === 25,
+          "2.47.10: a refused save changes nothing - all or nothing", hg.body.house);
+        rs = await jpost("/api/models/house", { pretune: true, pretuneDailyMax: "30", flexiDesigners: "IXPatch\n3DGOB", housePattern: "", houseMinLayer: "0.16" });
+        ok(rs.status === 200 && rs.body.pretune.on === true && rs.body.pretune.max === 30 && rs.body.house.flexiDesigners.join() === "IXPatch,3DGOB" && rs.body.house.pattern === null,
+          "2.47.10: the card saves the switch, the daily limit, the flexi list, and a blank pattern turns that rule off", rs.body && { pretune: rs.body.pretune, house: rs.body.house.pattern });
+        rs = await jpost("/api/models/settings", { houseForce: { skirt_loops: "2" } });
+        ok(rs.status === 200 && rs.body.house.force.skirt_loops === "2" && rs.body.house.force.wall_loops === "3", "2.47.10: the older settings route takes forced rules too (older pages and scripts keep working)", rs.body && rs.body.house.force);
+        rs = await jpost("/api/models/house", { pretuneDailyMax: 25, flexiDesigners: "", housePattern: "gyroid", houseForce: Object.fromEntries(TT.HOUSE_FORCE.map(r => [r.key, ""])) });
+        ok(rs.status === 200 && Object.keys(rs.body.house.force).length === 0 && rs.body.house.pattern === "gyroid" && rs.body.pretune.max === 25, "2.47.10: blank turns every forced rule off again", rs.body && rs.body.house.force);
       }
       const relB = "Harness/Tune Me/tune me.3mf";
       const absB = path.join(mroot, relB);
@@ -4912,11 +5023,11 @@ async function stopHub() {
       const ptCode = mjs3.slice(mjs3.indexOf("// ---- 2.46: Mark for print tunes"), mjs3.indexOf("// ---- end 2.46")).replace(/\/\/.*$/gm, "");
       ok(ptCode.length > 1500 && !/Sync\(/.test(ptCode), "the background tuner does no synchronous file IO", ptCode.length);
       const mui2 = fs.readFileSync(path.join(REPO, "public", "modules", "models-ui.js"), "utf8");
-      ok(/data-openorig=/.test(mui2) && /original: true/.test(mui2) && /mdl-tune/.test(mui2) && /id="mdl-pretune"/.test(mui2) && /pretuneDailyMax/.test(mui2),
-        "the card shows the tune and an Open original button, and the Folder panel has the switch and the daily limit");
-      ok(/id="mdl-hinfill"/.test(mui2) && /id="mdl-hminlayer"/.test(mui2) && /id="mdl-hpattern"/.test(mui2) && /id="mdl-flexi"/.test(mui2) &&
-         /DATA && DATA\.pretune && DATA\.pretune\.on \? " checked"/.test(mui2) && /if \(\(DATA && DATA\.house\) \|\| \(SETTINGS && SETTINGS\.house\)\)/.test(mui2),
-        "2.47.1: the Folder panel has the shop rules and the flexi list, the switch is unticked unless the server says on, and the rules are only sent once they were loaded");
+      ok(/data-openorig=/.test(mui2) && /original: true/.test(mui2) && /mdl-tune/.test(mui2) && /id="hrPretune"/.test(mui2) && /pretuneDailyMax/.test(mui2),
+        "the card shows the tune and an Open original button, and the House rules card has the switch and the daily limit");
+      ok(/"hrInfill"/.test(mui2) && /"hrMinLayer"/.test(mui2) && /hrSelect\("hrPattern"/.test(mui2) && /id="hrFlexi"/.test(mui2) &&
+         /q\("hrPretune"\)\.checked = !!\(d\.pretune && d\.pretune\.on\)/.test(mui2) && /if \(!HRSTATE\) return hrSay/.test(mui2),
+        "2.47.1 / 2.47.10: the House rules card has the shop rules and the flexi list, the switch is unticked unless the server says on, and the rules are only sent once they were loaded");
       await jpost("/api/models/settings", { orcaExe: path.join(tmp, "no-such-orca.exe"), u1Template: "", clear: true });
       await jpost("/api/models/settings", { folder: mroot });
     }

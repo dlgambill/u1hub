@@ -1038,6 +1038,88 @@ function register(ctx) {
     });
   });
 
+  // The tuning switch, the daily limit and the house rules from a request
+  // body (only the fields it carries change). Works on a copy: returns
+  // { error } and changes nothing, or { next, changed }.
+  function applyHouse(b, cur) {
+    const next = { ...cur };
+    let changed = false;
+    // 2.46: tune on Mark for print, and the daily limit on new answers.
+    if ("pretune" in b) { next.pretune = b.pretune !== false && b.pretune !== "false"; changed = true; }
+    if ("pretuneDailyMax" in b) {
+      const n = Number(b.pretuneDailyMax);
+      if (b.pretuneDailyMax === "" || b.pretuneDailyMax == null || !Number.isFinite(n) || n < 0) return { error: "The daily limit should be a whole number, 0 or more" };
+      next.pretuneDailyMax = Math.floor(n); changed = true;
+    }
+    // 2.47.1: the shop rules the AI works inside. A blank infill or minimum
+    // layer turns that rule off (stored as null); the pattern must be one of
+    // Orca's. The flexi designer list is one name per line (or an array).
+    if ("houseInfill" in b || "houseMinLayer" in b || "housePattern" in b || "housePrimeVolume" in b || "houseRibLength" in b || "houseTowerBrim" in b || "houseBrimGap" in b) {
+      const h = { ...((next.house && typeof next.house === "object") ? next.house : {}) };
+      const cur0 = TUNE.houseConf(next);
+      if ("houseInfill" in b) {
+        const s = String(b.houseInfill == null ? "" : b.houseInfill).trim().replace(/%$/, "");
+        const n = Number(s);
+        if (s && !(Number.isFinite(n) && n >= 0 && n <= 100)) return { error: "Infill should be a percentage from 0 to 100, or blank to let the AI choose" };
+        h.infill = s ? n : null;
+      } else if (h.infill === undefined) h.infill = cur0.infillPct;
+      if ("houseMinLayer" in b) {
+        const s = String(b.houseMinLayer == null ? "" : b.houseMinLayer).trim().replace(/\s*mm$/i, "");
+        const n = Number(s);
+        if (s && !(Number.isFinite(n) && n >= 0.04 && n <= 0.32)) return { error: "The minimum layer height should be from 0.04 to 0.32 mm, or blank for no minimum" };
+        h.minLayer = s ? n : null;
+      } else if (h.minLayer === undefined) h.minLayer = cur0.minLayer;
+      if ("housePattern" in b) {
+        // 2.47.10: blank turns the pattern rule off (it is its own rule now)
+        const p = String(b.housePattern || "").trim().toLowerCase();
+        if (p && !TUNE.TUNE.sparse_infill_pattern.vals.includes(p)) return { error: "The infill pattern should be one of Orca's (gyroid, grid, cubic, …), or blank to let the AI choose" };
+        h.pattern = p || null;
+      }
+      // 2.47.5: the prime tower's size (blank = off, the file's own stands)
+      const tw = [["housePrimeVolume", "primeVolume", 1, 150, "The prime volume should be from 1 to 150 mm3, or blank to keep each file's"],
+                  ["houseRibLength", "ribLength", 0, 50, "The prime tower rib length should be from 0 to 50 mm, or blank to keep each file's"],
+                  ["houseTowerBrim", "towerBrim", 0, 20, "The prime tower brim should be from 0 to 20 mm, or blank to keep each file's"],
+                  // 2.47.8: a part brim is outer only with this gap (blank = each file's brim)
+                  ["houseBrimGap", "brimGap", 0, 2, "The brim gap should be from 0 to 2 mm, or blank to keep each file's brim"]];
+      for (const [field, key, lo, hi, msg] of tw) {
+        if (!(field in b)) continue;
+        const s = String(b[field] == null ? "" : b[field]).trim().replace(/\s*(mm3|mm³|mm)$/i, "");
+        const n = Number(s);
+        if (s && !(Number.isFinite(n) && n >= lo && n <= hi)) return { error: msg };
+        h[key] = s ? n : null;
+      }
+      next.house = h; changed = true;
+    }
+    if ("flexiDesigners" in b) {
+      const raw = Array.isArray(b.flexiDesigners) ? b.flexiDesigners : String(b.flexiDesigners || "").split(/\r?\n/);
+      const seen = new Set();
+      next.flexiDesigners = raw.map(x => String(x || "").trim()).filter(x => x && !seen.has(x.toLowerCase()) && seen.add(x.toLowerCase()));
+      changed = true;
+    }
+    // 2.47.10: the forced rules (Settings > House rules): { orcaKey: value },
+    // each checked against TUNE; blank or null turns that one off.
+    if ("houseForce" in b) {
+      const f = b.houseForce;
+      if (!f || typeof f !== "object" || Array.isArray(f)) return { error: "The house rules should be a list of settings" };
+      const h = { ...((next.house && typeof next.house === "object") ? next.house : {}) };
+      const force = { ...((h.force && typeof h.force === "object") ? h.force : {}) };
+      const meta = Object.fromEntries(TUNE.HOUSE_FORCE.map(r => [r.key, r]));
+      for (const [k, v] of Object.entries(f)) {
+        if (!meta[k]) return { error: k + " is not a setting the house rules can set" };
+        const s = v == null ? "" : String(v).trim();
+        if (!s) { delete force[k]; continue; }
+        const n = TUNE.normalize(k, s);
+        if (n.error) return { error: meta[k].label + ": " + n.error + " (or leave it blank for no rule)" };
+        force[k] = n.value;
+      }
+      h.force = force;
+      next.house = h; changed = true;
+    }
+    // Rules that no file could follow at once are refused together.
+    if (changed) { const why = TUNE.houseConflict(TUNE.houseConf(next)); if (why) return { error: why }; }
+    return { next, changed };
+  }
+
   // v2.27.1: a blank folder field no longer clears the setting. The form
   // drew blank inputs while the list was still loading, and a Save pressed
   // then wiped the folder back to the default (2026-09-22, access.log:
@@ -1061,63 +1143,37 @@ function register(ctx) {
       if (x) next.u1Template = x; else if (b.clear === true) delete next.u1Template;
       ctx.cfg.models = next;
     }
-    // 2.46: tune on Mark for print, and the daily limit on new answers.
-    if ("pretune" in b) { next.pretune = b.pretune !== false && b.pretune !== "false"; ctx.cfg.models = next; }
-    if ("pretuneDailyMax" in b) {
-      const n = Number(b.pretuneDailyMax);
-      if (b.pretuneDailyMax === "" || b.pretuneDailyMax == null || !Number.isFinite(n) || n < 0) return res.status(400).json({ error: "The daily limit should be a whole number, 0 or more" });
-      next.pretuneDailyMax = Math.floor(n); ctx.cfg.models = next;
-    }
-    // 2.47.1: the shop rules the AI works inside. A blank infill or minimum
-    // layer turns that rule off (stored as null); the pattern must be one of
-    // Orca's. The flexi designer list is one name per line (or an array).
-    if ("houseInfill" in b || "houseMinLayer" in b || "housePattern" in b || "housePrimeVolume" in b || "houseRibLength" in b || "houseTowerBrim" in b || "houseBrimGap" in b) {
-      const h = { ...((next.house && typeof next.house === "object") ? next.house : {}) };
-      const cur0 = TUNE.houseConf(next);
-      if ("houseInfill" in b) {
-        const s = String(b.houseInfill == null ? "" : b.houseInfill).trim().replace(/%$/, "");
-        const n = Number(s);
-        if (s && !(Number.isFinite(n) && n >= 0 && n <= 100)) return res.status(400).json({ error: "Infill should be a percentage from 0 to 100, or blank to let the AI choose" });
-        h.infill = s ? n : null;
-      } else if (h.infill === undefined) h.infill = cur0.infillPct;
-      if ("houseMinLayer" in b) {
-        const s = String(b.houseMinLayer == null ? "" : b.houseMinLayer).trim().replace(/\s*mm$/i, "");
-        const n = Number(s);
-        if (s && !(Number.isFinite(n) && n >= 0.04 && n <= 0.32)) return res.status(400).json({ error: "The minimum layer height should be from 0.04 to 0.32 mm, or blank for no minimum" });
-        h.minLayer = s ? n : null;
-      } else if (h.minLayer === undefined) h.minLayer = cur0.minLayer;
-      if ("housePattern" in b) {
-        const p = String(b.housePattern || "").trim().toLowerCase();
-        if (!TUNE.TUNE.sparse_infill_pattern.vals.includes(p)) return res.status(400).json({ error: "The infill pattern should be one of Orca's (gyroid, grid, cubic, …)" });
-        h.pattern = p;
-      }
-      // 2.47.5: the prime tower's size (blank = off, the file's own stands)
-      const tw = [["housePrimeVolume", "primeVolume", 1, 150, "The prime volume should be from 1 to 150 mm3, or blank to keep each file's"],
-                  ["houseRibLength", "ribLength", 0, 50, "The prime tower rib length should be from 0 to 50 mm, or blank to keep each file's"],
-                  ["houseTowerBrim", "towerBrim", 0, 20, "The prime tower brim should be from 0 to 20 mm, or blank to keep each file's"],
-                  // 2.47.8: a part brim is outer only with this gap (blank = each file's brim)
-                  ["houseBrimGap", "brimGap", 0, 2, "The brim gap should be from 0 to 2 mm, or blank to keep each file's brim"]];
-      for (const [field, key, lo, hi, msg] of tw) {
-        if (!(field in b)) continue;
-        const s = String(b[field] == null ? "" : b[field]).trim().replace(/\s*(mm3|mm³|mm)$/i, "");
-        const n = Number(s);
-        if (s && !(Number.isFinite(n) && n >= lo && n <= hi)) return res.status(400).json({ error: msg });
-        h[key] = s ? n : null;
-      }
-      next.house = h; ctx.cfg.models = next;
-    }
-    if ("flexiDesigners" in b) {
-      const raw = Array.isArray(b.flexiDesigners) ? b.flexiDesigners : String(b.flexiDesigners || "").split(/\r?\n/);
-      const seen = new Set();
-      next.flexiDesigners = raw.map(x => String(x || "").trim()).filter(x => x && !seen.has(x.toLowerCase()) && seen.add(x.toLowerCase()));
-      ctx.cfg.models = next;
-    }
+    // 2.46 / 2.47.1 / 2.47.10: the tuning switch, the daily limit and the
+    // house rules. The Settings card saves them through /api/models/house;
+    // this route still takes the same fields so older pages and scripts work.
+    const ha = applyHouse(b, next);
+    if (ha.error) return res.status(400).json({ error: ha.error });
+    if (ha.changed) ctx.cfg.models = ha.next;
     if (!ctx.saveConfig()) return res.status(500).json({ error: ctx.saveConfigError() });
     refresh();
     TPL.at = 0;
     const c = conf();
     const t = await u1Template(true);
     res.json({ ok: true, folder: c.folder, folder_found: fs.existsSync(c.folder), orcaExe: c.orcaExe, orca_found: fs.existsSync(c.orcaExe), u1_template: t.path, u1_template_set: c.u1Template, pretune: ptConf(), house: houseView() });
+  });
+
+  // 2.47.10: the House rules card in Settings. GET draws it; POST saves the
+  // same fields as above (pretune, pretuneDailyMax, house*, flexiDesigners)
+  // plus houseForce. All or nothing: one bad value and nothing is saved.
+  // A change applies to the next tune; copies already tuned are not touched.
+  app.get("/api/models/house", (req, res) => {
+    res.json({ pretune: ptConf(), house: houseView() });
+  });
+  app.post("/api/models/house", (req, res) => {
+    const b = req.body || {};
+    const cur = (ctx.cfg.models && typeof ctx.cfg.models === "object") ? ctx.cfg.models : {};
+    const ha = applyHouse(b, cur);
+    if (ha.error) return res.status(400).json({ error: ha.error });
+    if (ha.changed) {
+      ctx.cfg.models = ha.next;
+      if (!ctx.saveConfig()) { ctx.cfg.models = cur; return res.status(500).json({ error: ctx.saveConfigError() }); }
+    }
+    res.json({ ok: true, pretune: ptConf(), house: houseView() });
   });
 
   // Thumbnail: the plate PNG the designer saved inside the file, cached on
@@ -1551,7 +1607,10 @@ function register(ctx) {
   function houseView() {
     const m = (ctx.cfg && typeof ctx.cfg.models === "object" && ctx.cfg.models) || {};
     const r = TUNE.houseConf(m);
-    return { infill: r.infillPct, pattern: r.pattern, minLayer: r.minLayer, primeVolume: r.primeVolume, ribLength: r.ribLength, towerBrim: r.towerBrim, brimGap: r.brimGap, flexiDesigners: TUNE.flexiList(m), patterns: TUNE.TUNE.sparse_infill_pattern.vals };
+    // 2.47.10: force (the forced rules that are on) and forceRules (every one
+    // the card can set, with TUNE's range or choices) for the Settings card
+    return { infill: r.infillPct, pattern: r.pattern, minLayer: r.minLayer, primeVolume: r.primeVolume, ribLength: r.ribLength, towerBrim: r.towerBrim, brimGap: r.brimGap, flexiDesigners: TUNE.flexiList(m), patterns: TUNE.TUNE.sparse_infill_pattern.vals,
+      force: r.force, forceRules: TUNE.houseForceMeta() };
   }
   const today = () => new Date().toLocaleDateString("en-CA");
   const ptDirFor = rel => path.join(PRETUNE_DIR, crypto.createHash("sha1").update(String(rel)).digest("hex").slice(0, 16));

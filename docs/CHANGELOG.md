@@ -77,6 +77,13 @@ printers, and nothing leaves your network unless you turn remote access on.
 
 ---
 
+### 2.47.10 - house rules get their own card in Settings
+
+- **One place for the shop's rules.** Settings has a new House rules card. Everything that used to sit under Models, Folder and was really a shop rule lives there now: tuning files when they are marked for print, the daily limit, infill and pattern, the lowest layer height, the flexi designer list, the brim gap and the prime tower. The Folder panel keeps only folder settings, plus a link that opens the card.
+- **Many more rules you can set.** The card has an optional rule for 21 more settings the AI tuner already knows how to write - layer height, first layer, seam, ironing, walls, top and bottom layers, thin walls, supports, support type and angle, brim type and width, skirt, elephant foot and the main speeds. Each one says in a line what it does to a file. Temperatures and fans are left out on purpose, because they depend on the material.
+- **Blank always means off, and new farms start with everything off.** That now includes infill, pattern and minimum layer, which used to start at 12% gyroid and 0.16 mm. If you rely on those, set them once in the card. Infill and pattern are separate rules now, so you can set one without the other.
+- **The safety rules still win.** Flexi models keep the designer's supports, supports the designer painted are never turned off, and the card refuses rules that fight each other (a layer height under your minimum, or a brim type that isn't outer only when a brim gap is set). A change applies to the next file tuned - copies already tuned stay as they are. (Best practice: the server checks every rule against the same table the tuner writes from, so the card can never save a value the tuner would refuse, and every forced setting is marked as changed in the project so Snapmaker Orca actually uses it.)
+
 ### 2.47.9 - drag a planned print around the Dispatch timeline
 
 - **Drag a print to where you want it.** With a mouse, grab any planned print on the Dispatch timeline and drop it. Drop it on another printer's row and it moves to that printer. Drop it between two prints and it takes that spot in line - after the one on its left, before the one on its right - so you can pull a print ahead of others that were going to run first. While you drag, a marker shows the printer, the spot and roughly when it would start. Dragging empty space still scrolls the timeline, and on a phone nothing changes.
